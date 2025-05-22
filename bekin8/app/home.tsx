@@ -23,39 +23,60 @@ import {
 
 export default function HomeScreen() {
   const [isLit, setIsLit] = useState<boolean | null>(null);
+  const [friendLitCount, setFriendLitCount] = useState<number | null>(null);
 
   useEffect(() => {
-    const checkIfBeaconIsLit = async () => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    // check your own beacon
+    const checkUserBeacon = async () => {
       const user = auth.currentUser;
       if (!user) {
         setIsLit(false);
         return;
       }
-
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-
       const beaconsRef = collection(db, 'Beacons');
       const q = query(
         beaconsRef,
         where('ownerUid', '==', user.uid),
         where('createdAt', '>=', Timestamp.fromDate(startOfToday))
       );
-
       try {
         const snap = await getDocs(q);
-        if (!snap.empty && snap.docs[0].data().active) {
-          setIsLit(true);
-        } else {
-          setIsLit(false);
-        }
+        setIsLit(!snap.empty && snap.docs[0].data().active);
       } catch (err) {
-        console.error('Error checking beacon status:', err);
+        console.error('Error checking your beacon:', err);
         setIsLit(false);
       }
     };
 
-    checkIfBeaconIsLit();
+    // check friends' beacons (array of usernames)
+    const checkFriendBeacons = async () => {
+      const user = auth.currentUser;
+      const username = user?.displayName;
+      if (!user || !username) {
+        setFriendLitCount(0);
+        return;
+      }
+      const beaconsRef = collection(db, 'Beacons');
+      const q = query(
+        beaconsRef,
+        where('active', '==', true),
+        where('createdAt', '>=', Timestamp.fromDate(startOfToday)),
+        where('friends', 'array-contains', username)
+      );
+      try {
+        const snap = await getDocs(q);
+        setFriendLitCount(snap.size);
+      } catch (err) {
+        console.error("Error checking friends' beacons:", err);
+        setFriendLitCount(0);
+      }
+    };
+
+    checkUserBeacon();
+    checkFriendBeacons();
   }, []);
 
   const toggleBeacon = () => {
@@ -66,7 +87,7 @@ export default function HomeScreen() {
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: `${action}`,
+          text: action,
           style: isLit ? 'destructive' : 'default',
           onPress: async () => {
             const user = auth.currentUser;
@@ -77,7 +98,6 @@ export default function HomeScreen() {
 
             const startOfToday = new Date();
             startOfToday.setHours(0, 0, 0, 0);
-
             const beaconsRef = collection(db, 'Beacons');
             const q = query(
               beaconsRef,
@@ -95,8 +115,7 @@ export default function HomeScreen() {
                 await updateDoc(beaconDoc.ref, { active: !current });
                 setIsLit(!current);
               } else {
-                // create new beacon
-                // fetch friends list if needed
+                // create new beacon with friends' usernames
                 const friendsRef = doc(db, 'Friends', user.uid);
                 const friendsSnap = await getDoc(friendsRef);
                 let friendsList: string[] = [];
@@ -112,7 +131,7 @@ export default function HomeScreen() {
                   details: 'New beacon lit!',
                   active: true,
                   createdAt: Timestamp.now(),
-                  friends: friendsList,
+                  friends: friendsList,   // list of usernames
                 });
                 setIsLit(true);
               }
@@ -126,8 +145,8 @@ export default function HomeScreen() {
     );
   };
 
-  // show placeholder while loading
-  if (isLit === null) {
+  // loading state
+  if (isLit === null || friendLitCount === null) {
     return (
       <View style={styles.container}>
         <Text style={styles.status}>Checking beacon status…</Text>
@@ -151,11 +170,20 @@ export default function HomeScreen() {
       <Text style={styles.subtitle}>
         Tap the logs to {isLit ? 'extinguish' : 'light'} your beacon
       </Text>
-
       {isLit ? (
         <Text style={styles.statusActive}>Your beacon is ACTIVE</Text>
       ) : (
         <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
+      )}
+
+      {friendLitCount! > 0 ? (
+        <Text style={styles.friendActive}>
+          {friendLitCount} friend{friendLitCount > 1 ? 's' : ''} have active beacons
+        </Text>
+      ) : (
+        <Text style={styles.friendInactive}>
+          No friends have active beacons today
+        </Text>
       )}
     </View>
   );
@@ -193,10 +221,24 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: 'green',
+    marginBottom: 12,
   },
   statusInactive: {
     fontSize: 18,
     fontWeight: '600',
     color: 'red',
+    marginBottom: 12,
+  },
+  friendActive: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'green',
+    marginTop: 16,
+  },
+  friendInactive: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'red',
+    marginTop: 16,
   },
 });
