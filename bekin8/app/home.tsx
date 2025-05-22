@@ -1,15 +1,202 @@
-import { Text, View } from "react-native";
+// app/home.tsx
 
-export default function Home() {
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Alert,
+  StyleSheet,
+} from 'react-native';
+import { auth, db } from '../firebase.config'; // adjust path if needed
+import {
+  collection,
+  query,
+  where,
+  Timestamp,
+  getDocs,
+  getDoc,
+  addDoc,
+  updateDoc,
+  doc,
+} from 'firebase/firestore';
+
+export default function HomeScreen() {
+  const [isLit, setIsLit] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const checkIfBeaconIsLit = async () => {
+      const user = auth.currentUser;
+      if (!user) {
+        setIsLit(false);
+        return;
+      }
+
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      const beaconsRef = collection(db, 'Beacons');
+      const q = query(
+        beaconsRef,
+        where('ownerUid', '==', user.uid),
+        where('createdAt', '>=', Timestamp.fromDate(startOfToday))
+      );
+
+      try {
+        const snap = await getDocs(q);
+        if (!snap.empty && snap.docs[0].data().active) {
+          setIsLit(true);
+        } else {
+          setIsLit(false);
+        }
+      } catch (err) {
+        console.error('Error checking beacon status:', err);
+        setIsLit(false);
+      }
+    };
+
+    checkIfBeaconIsLit();
+  }, []);
+
+  const toggleBeacon = () => {
+    const action = isLit ? 'Extinguish' : 'Light';
+    Alert.alert(
+      `${action} Beacon`,
+      `Are you sure you want to ${action.toLowerCase()} your beacon?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: `${action}`,
+          style: isLit ? 'destructive' : 'default',
+          onPress: async () => {
+            const user = auth.currentUser;
+            if (!user) {
+              Alert.alert('Error', 'User not authenticated');
+              return;
+            }
+
+            const startOfToday = new Date();
+            startOfToday.setHours(0, 0, 0, 0);
+
+            const beaconsRef = collection(db, 'Beacons');
+            const q = query(
+              beaconsRef,
+              where('ownerUid', '==', user.uid),
+              where('createdAt', '>=', Timestamp.fromDate(startOfToday))
+            );
+
+            try {
+              const snap = await getDocs(q);
+
+              if (!snap.empty) {
+                // toggle existing beacon
+                const beaconDoc = snap.docs[0];
+                const current = beaconDoc.data().active;
+                await updateDoc(beaconDoc.ref, { active: !current });
+                setIsLit(!current);
+              } else {
+                // create new beacon
+                // fetch friends list if needed
+                const friendsRef = doc(db, 'Friends', user.uid);
+                const friendsSnap = await getDoc(friendsRef);
+                let friendsList: string[] = [];
+                if (friendsSnap.exists()) {
+                  const data = friendsSnap.data().friends;
+                  friendsList = Array.isArray(data)
+                    ? data.map((f: any) => f.username)
+                    : [];
+                }
+
+                await addDoc(beaconsRef, {
+                  ownerUid: user.uid,
+                  details: 'New beacon lit!',
+                  active: true,
+                  createdAt: Timestamp.now(),
+                  friends: friendsList,
+                });
+                setIsLit(true);
+              }
+            } catch (err) {
+              console.error('Error toggling beacon:', err);
+              Alert.alert('Error', 'Failed to update beacon.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // show placeholder while loading
+  if (isLit === null) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.status}>Checking beacon status…</Text>
+      </View>
+    );
+  }
+
   return (
-    <View
-      style={{
-        flex: 1,
-        justifyContent: "center",
-        alignItems: "center",
-      }}
-    >
-      <Text>Edit home to edit this screen.</Text>
+    <View style={styles.container}>
+      <TouchableOpacity
+        onPress={toggleBeacon}
+        activeOpacity={0.7}
+        style={styles.beaconContainer}
+      >
+        <Text style={styles.beaconIcon}>
+          {isLit ? '🔥🔥🔥' : '🪵🪵🪵'}
+        </Text>
+      </TouchableOpacity>
+
+      <Text style={styles.title}>🏡 Home</Text>
+      <Text style={styles.subtitle}>
+        Tap the logs to {isLit ? 'extinguish' : 'light'} your beacon
+      </Text>
+
+      {isLit ? (
+        <Text style={styles.statusActive}>Your beacon is ACTIVE</Text>
+      ) : (
+        <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
+      )}
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  beaconContainer: {
+    marginBottom: 24,
+  },
+  beaconIcon: {
+    fontSize: 64,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  status: {
+    fontSize: 16,
+    color: '#555',
+  },
+  statusActive: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: 'green',
+  },
+  statusInactive: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: 'red',
+  },
+});
