@@ -1,35 +1,35 @@
-// app/index.tsx
+// app/signup.tsx
 
 import React, { useState } from 'react';
 import { View, TextInput, Button, Text, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../firebase.config';
 
-export default function Index() {
+export default function SignUp() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  const handleLogin = async () => {
+  const handleSignUp = async () => {
     setError('');
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-      // on success: navigate or update state here
-      router.push("/home")
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+      // on success: navigate to login or home
+      router.replace('/');
     } catch (e: any) {
       setError(e.message);
     }
   };
 
-  const goToSignUp = () => {
-    router.push('/signup');
+  const goToSignIn = () => {
+    router.replace('/');
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Sign In</Text>
+      <Text style={styles.title}>Create Account</Text>
 
       <View style={styles.inputGroup}>
         <Text style={styles.label}>Email</Text>
@@ -57,9 +57,9 @@ export default function Index() {
       {error !== '' && <Text style={styles.error}>{error}</Text>}
 
       <View style={styles.buttonContainer}>
-        <Button title="Enter" onPress={handleLogin} />
-        <View style={styles.signUpButton}>
-          <Button title="Sign Up" onPress={goToSignUp} />
+        <Button title="Sign Up" onPress={handleSignUp} />
+        <View style={styles.switchButton}>
+          <Button title="Have an account? Sign In" onPress={goToSignIn} />
         </View>
       </View>
     </View>
@@ -103,7 +103,7 @@ const styles = StyleSheet.create({
   buttonContainer: {
     marginTop: 16,
   },
-  signUpButton: {
+  switchButton: {
     marginTop: 12,
   },
 });
