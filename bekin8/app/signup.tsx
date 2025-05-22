@@ -10,13 +10,21 @@ export default function SignUp() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
 
   const handleSignUp = async () => {
     setError('');
+
+    // Check password match
+    if (password !== confirmPassword) {
+      setError("Passwords don't match.");
+      return;
+    }
+
     try {
       await createUserWithEmailAndPassword(auth, email.trim(), password);
-      // on success: navigate to login or home
+      // on success: navigate to home
       router.replace('/');
     } catch (e: any) {
       setError(e.message);
@@ -51,6 +59,17 @@ export default function SignUp() {
           secureTextEntry
           value={password}
           onChangeText={setPassword}
+        />
+      </View>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.label}>Confirm Password</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="••••••••"
+          secureTextEntry
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
         />
       </View>
 

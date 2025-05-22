@@ -7,7 +7,9 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
+  Button,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config'; // adjust path if needed
 import {
   collection,
@@ -22,6 +24,7 @@ import {
 } from 'firebase/firestore';
 
 export default function HomeScreen() {
+  const router = useRouter();
   const [isLit, setIsLit] = useState<boolean | null>(null);
   const [friendLitCount, setFriendLitCount] = useState<number | null>(null);
 
@@ -185,6 +188,10 @@ export default function HomeScreen() {
           No friends have active beacons today
         </Text>
       )}
+
+      <View style={styles.feedButton}>
+        <Button title="Go to Feed" onPress={() => router.push('/feed')} />
+      </View>
     </View>
   );
 }
@@ -240,5 +247,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: 'red',
     marginTop: 16,
+  },
+  feedButton: {
+    marginTop: 24,
+    width: '60%',
   },
 });
