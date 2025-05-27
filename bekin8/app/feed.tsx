@@ -1,13 +1,7 @@
 // app/feed.tsx
 
 import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  ActivityIndicator,
-  StyleSheet,
-} from 'react-native';
+import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
   collection,
@@ -15,10 +9,9 @@ import {
   getDoc,
   query,
   where,
-  orderBy,
   getDocs,
+  orderBy,
   limit,
-  Timestamp,
 } from 'firebase/firestore';
 
 interface Post {
@@ -37,76 +30,91 @@ export default function Feed() {
     const loadFeed = async () => {
       const user = auth.currentUser;
       if (!user) {
+        console.log('No authenticated user');
         setLoading(false);
         return;
       }
 
-      // 1) Fetch friends list (array of { uid, username })
+      // 1) Fetch friends list
       const friendsRef = doc(db, 'Friends', user.uid);
       let friendObjs: { uid: string; username: string }[] = [];
       try {
-        const docSnap = await getDoc(friendsRef);
-        if (docSnap.exists()) {
-          const data = docSnap.data().friends;
+        const friendsSnap = await getDoc(friendsRef);
+        if (friendsSnap.exists()) {
+          const data = friendsSnap.data().friends;
           if (Array.isArray(data)) {
             friendObjs = data.filter(
               (f: any) => f.uid && f.username
             ) as { uid: string; username: string }[];
           }
         }
+        console.log('Loaded friends:', friendObjs);
       } catch (err) {
         console.error('Error fetching friends list:', err);
       }
 
-      const friendUids = friendObjs.map((f) => f.uid);
-      if (friendUids.length === 0) {
+      if (!friendObjs.length) {
+        console.log('No friends to load posts for');
         setPosts([]);
         setLoading(false);
         return;
       }
 
-      // 2) Query posts by authorUid in friendUids
-      const postsRef = collection(db, 'Posts');
-      let aggregated: Post[] = [];
-
-      // Firestore 'in' supports up to 10 values
-      const chunks: string[][] = [];
-      for (let i = 0; i < friendUids.length; i += 10) {
-        chunks.push(friendUids.slice(i, i + 10));
-      }
-
+      // 2) Fetch and aggregate posts
       try {
-        for (const chunk of chunks) {
-          const q = query(
-            postsRef,
-            where('authorUid', 'in', chunk),
-            orderBy('createdAt', 'desc'),
-            limit(50)
-          );
-          const snap = await getDocs(q);
-          snap.docs.forEach((doc) => {
-            const data = doc.data();
-            // Prefer stored authorUsername, fallback to lookup
-            let username = data.authorUsername;
-            if (!username) {
-              const match = friendObjs.find((f) => f.uid === data.authorUid);
-              username = match?.username || 'Unknown';
-            }
-            aggregated.push({
-              id: doc.id,
-              authorUid: data.authorUid,
-              authorUsername: username,
-              content: data.content,
-              createdAt: data.createdAt.toDate(),
-            });
-          });
-        }
+        const snapshots = await Promise.all(
+          friendObjs.map((friend) =>
+            getDocs(
+              query(
+                collection(db, 'Posts'),
+                where('author', '==', friend.uid),
+                orderBy('timestamp', 'desc'),
+                limit(50)
+              )
+            )
+          )
+        );
 
-        // sort aggregated posts by date desc
-        aggregated.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-        setPosts(aggregated);
+        const allPosts: Post[] = snapshots.flatMap((snap) =>
+          snap.docs.map((d) => {
+            const data = d.data();
+            const authorUid = data.author ?? data.authorUid;
+            const authorUsername =
+              data.authorUsername ||
+              friendObjs.find((f) => f.uid === authorUid)?.username ||
+              'Unknown';
+
+            // Normalize timestamp
+            const rawTs = data.timestamp ?? data.createdAt;
+            let createdAt: Date;
+            if (rawTs && typeof rawTs.toDate === 'function') {
+              createdAt = rawTs.toDate();
+            } else if (rawTs instanceof Date) {
+              createdAt = rawTs;
+            } else if (typeof rawTs === 'number') {
+              createdAt = new Date(rawTs);
+            } else {
+              createdAt = new Date();
+            }
+
+            return {
+              id: d.id,
+              authorUid,
+              authorUsername,
+              content: data.content,
+              createdAt,
+            };
+          })
+        );
+
+        // 3) Sort by date desc
+        allPosts.sort(
+          (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+        );
+        console.log('Aggregated posts count:', allPosts.length);
+        setPosts(allPosts);
       } catch (err) {
-        console.error('Error loading feed posts:', err);
+        console.error('Error loading friend posts:', err);
       } finally {
         setLoading(false);
       }
@@ -123,7 +131,7 @@ export default function Feed() {
     );
   }
 
-  if (posts.length === 0) {
+  if (!posts.length) {
     return (
       <View style={styles.center}>
         <Text>No posts from your friends yet.</Text>
@@ -140,7 +148,9 @@ export default function Feed() {
         <View style={styles.postContainer}>
           <Text style={styles.postAuthor}>{item.authorUsername}</Text>
           <Text style={styles.postContent}>{item.content}</Text>
-          <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
+          <Text style={styles.postDate}>
+            {item.createdAt.toLocaleString()}
+          </Text>
         </View>
       )}
     />
