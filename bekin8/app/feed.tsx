@@ -48,6 +48,10 @@ export default function Feed() {
             ) as { uid: string; username: string }[];
           }
         }
+        // Deduplicate friend list by uid
+        friendObjs = Array.from(
+          new Map(friendObjs.map((f) => [f.uid, f]))
+        ).map(([, f]) => f);
         console.log('Loaded friends:', friendObjs);
       } catch (err) {
         console.error('Error fetching friends list:', err);
@@ -87,8 +91,8 @@ export default function Feed() {
             // Normalize timestamp
             const rawTs = data.timestamp ?? data.createdAt;
             let createdAt: Date;
-            if (rawTs && typeof rawTs.toDate === 'function') {
-              createdAt = rawTs.toDate();
+            if (rawTs && typeof (rawTs as any).toDate === 'function') {
+              createdAt = (rawTs as any).toDate();
             } else if (rawTs instanceof Date) {
               createdAt = rawTs;
             } else if (typeof rawTs === 'number') {
@@ -107,12 +111,15 @@ export default function Feed() {
           })
         );
 
+        // Deduplicate posts by id
+        const uniquePosts = Array.from(
+          new Map(allPosts.map((post) => [post.id, post]))
+        ).map(([, post]) => post);
+
         // 3) Sort by date desc
-        allPosts.sort(
-          (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-        );
-        console.log('Aggregated posts count:', allPosts.length);
-        setPosts(allPosts);
+        uniquePosts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        console.log('Aggregated posts count:', uniquePosts.length);
+        setPosts(uniquePosts);
       } catch (err) {
         console.error('Error loading friend posts:', err);
       } finally {
@@ -142,15 +149,13 @@ export default function Feed() {
   return (
     <FlatList
       data={posts}
-      keyExtractor={(item) => item.id}
+      keyExtractor={(item, index) => `${item.id}-${index}`}
       contentContainerStyle={styles.list}
       renderItem={({ item }) => (
         <View style={styles.postContainer}>
           <Text style={styles.postAuthor}>{item.authorUsername}</Text>
           <Text style={styles.postContent}>{item.content}</Text>
-          <Text style={styles.postDate}>
-            {item.createdAt.toLocaleString()}
-          </Text>
+          <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
         </View>
       )}
     />
