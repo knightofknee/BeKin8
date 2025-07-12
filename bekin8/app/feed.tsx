@@ -14,8 +14,11 @@ import {
   limit,
 } from 'firebase/firestore';
 
+/**
+ * Post structure returned from Firestore
+ */
 interface Post {
-  id: string;
+  id: string; // Firestore document id (unique per post)
   authorUid: string;
   authorUsername: string;
   content: string;
@@ -27,51 +30,56 @@ export default function Feed() {
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
+    /**
+     * Loads the authenticated user’s feed once on mount.
+     *
+     * Steps:
+     * 1. Grab friend UIDs
+     * 2. Fetch latest posts per friend (batched promises)
+     * 3. Flatten + deduplicate by post.id (and timestamp as fallback)
+     * 4. Sort descending by createdAt
+     */
     const loadFeed = async () => {
       const user = auth.currentUser;
       if (!user) {
-        console.log('No authenticated user');
         setLoading(false);
         return;
       }
 
-      // 1) Fetch friends list
+      // === 1. Resolve friend list ===
       const friendsRef = doc(db, 'Friends', user.uid);
       let friendObjs: { uid: string; username: string }[] = [];
       try {
         const friendsSnap = await getDoc(friendsRef);
         if (friendsSnap.exists()) {
-          const data = friendsSnap.data().friends;
-          if (Array.isArray(data)) {
-            friendObjs = data.filter(
-              (f: any) => f.uid && f.username
-            ) as { uid: string; username: string }[];
-          }
+          const rawFriends = friendsSnap.data().friends ?? [];
+          // Keep {uid, username} pairs; filter out malformed entries
+          friendObjs = (rawFriends as any[])
+            .filter((f) => f?.uid && f?.username)
+            // Unique by uid
+            .reduce((acc, f) => {
+              if (!acc.find((x: { uid: any; }) => x.uid === f.uid)) acc.push({ uid: f.uid, username: f.username });
+              return acc;
+            }, [] as { uid: string; username: string }[]);
         }
-        // Deduplicate friend list by uid
-        friendObjs = Array.from(
-          new Map(friendObjs.map((f) => [f.uid, f]))
-        ).map(([, f]) => f);
-        console.log('Loaded friends:', friendObjs);
       } catch (err) {
         console.error('Error fetching friends list:', err);
       }
 
       if (!friendObjs.length) {
-        console.log('No friends to load posts for');
         setPosts([]);
         setLoading(false);
         return;
       }
 
-      // 2) Fetch and aggregate posts
+      // === 2. Fetch posts for each friend ===
       try {
-        const snapshots = await Promise.all(
-          friendObjs.map((friend) =>
+        const postSnaps = await Promise.all(
+          friendObjs.map((f) =>
             getDocs(
               query(
                 collection(db, 'Posts'),
-                where('author', '==', friend.uid),
+                where('author', '==', f.uid),
                 orderBy('timestamp', 'desc'),
                 limit(50)
               )
@@ -79,49 +87,45 @@ export default function Feed() {
           )
         );
 
-        const allPosts: Post[] = snapshots.flatMap((snap) =>
-          snap.docs.map((d) => {
-            const data = d.data();
-            const authorUid = data.author ?? data.authorUid;
-            const authorUsername =
-              data.authorUsername ||
-              friendObjs.find((f) => f.uid === authorUid)?.username ||
-              'Unknown';
-
-            // Normalize timestamp
+        const collected: Post[] = [];
+        postSnaps.forEach((snap, idx) => {
+          const friend = friendObjs[idx];
+          snap.docs.forEach((docSnap) => {
+            const data = docSnap.data();
             const rawTs = data.timestamp ?? data.createdAt;
-            let createdAt: Date;
-            if (rawTs && typeof (rawTs as any).toDate === 'function') {
-              createdAt = (rawTs as any).toDate();
-            } else if (rawTs instanceof Date) {
-              createdAt = rawTs;
-            } else if (typeof rawTs === 'number') {
-              createdAt = new Date(rawTs);
-            } else {
-              createdAt = new Date();
-            }
+            const createdAt: Date =
+              rawTs && typeof (rawTs as any).toDate === 'function'
+                ? (rawTs as any).toDate()
+                : rawTs instanceof Date
+                ? rawTs
+                : typeof rawTs === 'number'
+                ? new Date(rawTs)
+                : new Date();
 
-            return {
-              id: d.id,
-              authorUid,
-              authorUsername,
-              content: data.content,
+            collected.push({
+              id: docSnap.id,
+              authorUid: friend.uid,
+              authorUsername: friend.username,
+              content: data.content ?? '',
               createdAt,
-            };
-          })
-        );
+            });
+          });
+        });
 
-        // Deduplicate posts by id
-        const uniquePosts = Array.from(
-          new Map(allPosts.map((post) => [post.id, post]))
-        ).map(([, post]) => post);
+        // === 3. Deduplicate ===
+        const seen = new Map<string, Post>();
+        collected.forEach((p) => {
+          // Keep the newest version of a post id (if duplicates slipped through)
+          const existing = seen.get(p.id);
+          if (!existing || existing.createdAt < p.createdAt) seen.set(p.id, p);
+        });
+        const uniquePosts = Array.from(seen.values());
 
-        // 3) Sort by date desc
+        // === 4. Sort ===
         uniquePosts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-        console.log('Aggregated posts count:', uniquePosts.length);
         setPosts(uniquePosts);
       } catch (err) {
-        console.error('Error loading friend posts:', err);
+        console.error('Error loading posts:', err);
       } finally {
         setLoading(false);
       }
@@ -130,6 +134,7 @@ export default function Feed() {
     loadFeed();
   }, []);
 
+  // === RENDER STATES ===
   if (loading) {
     return (
       <View style={styles.center}>
@@ -149,7 +154,8 @@ export default function Feed() {
   return (
     <FlatList
       data={posts}
-      keyExtractor={(item, index) => `${item.id}-${index}`}
+      // Combines Firestore id (guaranteed unique) with createdAt in case the same id appears twice in different timelines
+      keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
       contentContainerStyle={styles.list}
       renderItem={({ item }) => (
         <View style={styles.postContainer}>
@@ -162,6 +168,7 @@ export default function Feed() {
   );
 }
 
+// === STYLES ===
 const styles = StyleSheet.create({
   center: {
     flex: 1,
