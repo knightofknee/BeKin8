@@ -5,6 +5,9 @@ node_modules/
 
 .env
 
+.DS_Store
+**/.DS_Store
+
 # Expo
 .expo/
 dist/
