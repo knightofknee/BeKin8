@@ -192,6 +192,9 @@ export default function HomeScreen() {
       <View style={styles.feedButton}>
         <Button title="Go to Feed" onPress={() => router.push('/feed')} />
       </View>
+      <View style={styles.feedButton}>
+        <Button title="Friends" onPress={() => router.push('/friends')} />
+      </View>
     </View>
   );
 }

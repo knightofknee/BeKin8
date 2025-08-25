@@ -1,7 +1,16 @@
 // app/feed.tsx
 
 import React, { useState, useEffect } from 'react';
-import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  FlatList,
+  ActivityIndicator,
+  StyleSheet,
+  Button,
+  Pressable,
+  Linking,
+} from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
   collection,
@@ -13,6 +22,7 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
+import { useRouter } from 'expo-router';
 
 /**
  * Post structure returned from Firestore
@@ -23,11 +33,13 @@ interface Post {
   authorUsername: string;
   content: string;
   createdAt: Date;
+  url?: string; // <-- added
 }
 
 export default function Feed() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const router = useRouter();
 
   useEffect(() => {
     /**
@@ -58,7 +70,8 @@ export default function Feed() {
             .filter((f) => f?.uid && f?.username)
             // Unique by uid
             .reduce((acc, f) => {
-              if (!acc.find((x: { uid: any; }) => x.uid === f.uid)) acc.push({ uid: f.uid, username: f.username });
+              if (!acc.find((x: { uid: any }) => x.uid === f.uid))
+                acc.push({ uid: f.uid, username: f.username });
               return acc;
             }, [] as { uid: string; username: string }[]);
         }
@@ -91,11 +104,11 @@ export default function Feed() {
         postSnaps.forEach((snap, idx) => {
           const friend = friendObjs[idx];
           snap.docs.forEach((docSnap) => {
-            const data = docSnap.data();
+            const data = docSnap.data() as any;
             const rawTs = data.timestamp ?? data.createdAt;
             const createdAt: Date =
-              rawTs && typeof (rawTs as any).toDate === 'function'
-                ? (rawTs as any).toDate()
+              rawTs && typeof rawTs.toDate === 'function'
+                ? rawTs.toDate()
                 : rawTs instanceof Date
                 ? rawTs
                 : typeof rawTs === 'number'
@@ -108,6 +121,7 @@ export default function Feed() {
               authorUsername: friend.username,
               content: data.content ?? '',
               createdAt,
+              url: data.url ?? data.link ?? data.href ?? undefined, // <-- added
             });
           });
         });
@@ -145,9 +159,14 @@ export default function Feed() {
 
   if (!posts.length) {
     return (
-      <View style={styles.center}>
-        <Text>No posts from your friends yet.</Text>
-      </View>
+      <>
+        <View style={styles.center}>
+          <Text>No posts from your friends yet.</Text>
+        </View>
+        <View style={styles.feedButton}>
+          <Button title="Add Friends" onPress={() => router.push('/friends')} />
+        </View>
+      </>
     );
   }
 
@@ -160,6 +179,23 @@ export default function Feed() {
       renderItem={({ item }) => (
         <View style={styles.postContainer}>
           <Text style={styles.postAuthor}>{item.authorUsername}</Text>
+
+          {/* URL (above text, below name). No validation; adds https:// if missing. */}
+          {item.url ? (
+            <Pressable
+              onPress={() =>
+                Linking.openURL(
+                  /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
+                )
+              }
+              style={{ marginBottom: 6 }}
+            >
+              <Text style={styles.postLink} numberOfLines={1}>
+                {String(item.url).replace(/^https?:\/\//i, '')}
+              </Text>
+            </Pressable>
+          ) : null}
+
           <Text style={styles.postContent}>{item.content}</Text>
           <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
         </View>
@@ -188,6 +224,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 4,
   },
+  postLink: {
+    color: '#2F6FED',
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
   postContent: {
     marginBottom: 8,
   },
@@ -195,5 +236,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#555',
     textAlign: 'right',
+  },
+  feedButton: {
+    marginTop: 24,
+    width: '60%',
   },
 });
