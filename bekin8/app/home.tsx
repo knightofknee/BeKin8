@@ -330,7 +330,7 @@ export default function HomeScreen() {
           <Button title="Friends" onPress={() => router.push('/friends')} />
         </View>
         <View style={styles.feedButton}>
-          <Button title="Create Post" onPress={() => router.push('/createPost')} />
+          <Button title="Create Post" onPress={() => router.push('/create-post')} />
         </View>
       </View>
     </>
