@@ -312,7 +312,7 @@ export default function HomeScreen() {
           </Text>
         </TouchableOpacity>
 
-        <Text style={styles.title}>🏡 Home</Text>
+        <Text style={styles.title}>Beacon options under construction</Text>
         <Text style={styles.subtitle}>
           Tap the log to {isLit ? 'extinguish' : 'light'} your beacon
         </Text>
