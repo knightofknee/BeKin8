@@ -1,6 +1,5 @@
 // app/home.tsx
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -23,10 +22,23 @@ import {
   doc,
 } from 'firebase/firestore';
 
+type FriendBeacon = {
+  id: string;
+  ownerUid: string;
+  displayName: string;
+};
+
 export default function HomeScreen() {
   const router = useRouter();
   const [isLit, setIsLit] = useState<boolean | null>(null);
-  const [friendLitCount, setFriendLitCount] = useState<number | null>(null);
+
+  // New: detailed list of friend beacons (today)
+  const [friendBeacons, setFriendBeacons] = useState<FriendBeacon[] | null>(null);
+
+  const friendLitCount = useMemo(
+    () => (friendBeacons ? friendBeacons.length : null),
+    [friendBeacons]
+  );
 
   useEffect(() => {
     const startOfToday = new Date();
@@ -58,28 +70,34 @@ export default function HomeScreen() {
     const checkFriendBeacons = async () => {
       const me = auth.currentUser;
       if (!me) {
-        setFriendLitCount(0);
+        setFriendBeacons([]);
         return;
       }
 
       const beaconsRef = collection(db, 'Beacons');
 
-      // 1) Build my friend UID list from users/{uid}/friends (preferred) or Friends/{uid}
+      // 1) Build my friend UID list and a uid->username map
       const friendUids: string[] = [];
+      const friendNameByUid: Record<string, string> = {};
 
-      // Preferred subcollection
+      // Preferred subcollection: users/{uid}/friends
       try {
         const friendsSub = collection(db, 'users', me.uid, 'friends');
         const friendsSubSnap = await getDocs(friendsSub);
         friendsSubSnap.forEach(fd => {
           const f: any = fd.data();
-          if (typeof f?.uid === 'string') friendUids.push(f.uid);
+          if (typeof f?.uid === 'string') {
+            friendUids.push(f.uid);
+            if (typeof f?.username === 'string') {
+              friendNameByUid[f.uid] = f.username;
+            }
+          }
         });
       } catch {
         // ignore
       }
 
-      // Fallback top-level Friends doc (array of strings or objects)
+      // Fallback top-level Friends/{uid}.friends
       try {
         if (friendUids.length === 0) {
           const topRef = doc(db, 'Friends', me.uid);
@@ -89,7 +107,13 @@ export default function HomeScreen() {
             if (Array.isArray(arr)) {
               arr.forEach((f: any) => {
                 if (f && typeof f === 'object' && typeof f.uid === 'string') {
-                  friendUids.push(f.uid);
+                  if (!friendUids.includes(f.uid)) friendUids.push(f.uid);
+                  if (typeof f.username === 'string') {
+                    friendNameByUid[f.uid] = f.username;
+                  }
+                } else if (typeof f === 'string') {
+                  // Only username, no uid — can't map to beacon owners reliably
+                  // but keep in mind for legacy 'friends' array matching (below)
                 }
               });
             }
@@ -134,37 +158,68 @@ export default function HomeScreen() {
         console.warn('ownerUid IN query failed:', e);
       }
 
-      // 3) Filter locally for "active today"
+      // 3) Filter locally for "active today" and build list of FriendBeacon
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const startMs = today.getTime();
 
-      let count = 0;
+      const results: FriendBeacon[] = [];
+      const ownersSeen = new Set<string>(); // de-dupe per owner
+
       candidateDocs.forEach(d => {
         const data: any = d.data();
         const active = !!data.active;
         const createdMs = data?.createdAt?.toMillis?.() ? data.createdAt.toMillis() : 0;
-        if (active && createdMs >= startMs) count++;
+        if (!active || createdMs < startMs) return;
+
+        const ownerUid = String(data.ownerUid ?? '');
+        if (!ownerUid || ownersSeen.has(ownerUid)) return;
+
+        const ownerName: string | undefined =
+          (typeof data.ownerName === 'string' && data.ownerName.trim()) ? data.ownerName.trim() :
+          (friendNameByUid[ownerUid] ?? undefined);
+
+        results.push({
+          id: d.id,
+          ownerUid,
+          displayName: ownerName ?? 'Friend',
+        });
+        ownersSeen.add(ownerUid);
       });
 
-      // 4) Optional: last-ditch legacy username fallback if still zero
-      if (count === 0 && me.displayName) {
+      // 4) Optional: legacy username-based fallbacks if still empty (your old 'friends' array)
+      if (results.length === 0 && me.displayName) {
         const username = me.displayName.trim();
         try {
           const qLegacy = query(beaconsRef, where('friends', 'array-contains', username));
           const legacySnap = await getDocs(qLegacy);
+          const ownersSeenLegacy = new Set<string>(ownersSeen);
           legacySnap.forEach(d => {
             const data: any = d.data();
             const active = !!data.active;
             const createdMs = data?.createdAt?.toMillis?.() ? data.createdAt.toMillis() : 0;
-            if (active && createdMs >= startMs) count++;
+            if (!active || createdMs < startMs) return;
+            const ownerUid = String(data.ownerUid ?? '');
+            if (!ownerUid || ownersSeenLegacy.has(ownerUid)) return;
+            const ownerName = (typeof data.ownerName === 'string' && data.ownerName.trim())
+              ? data.ownerName.trim()
+              : 'Friend';
+            results.push({
+              id: d.id,
+              ownerUid,
+              displayName: ownerName,
+            });
+            ownersSeenLegacy.add(ownerUid);
           });
         } catch (e) {
           console.warn('legacy friends query failed:', e);
         }
       }
 
-      setFriendLitCount(count);
+      // sort by name for stable UI
+      results.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+      setFriendBeacons(results);
     };
 
     checkUserBeacon();
@@ -224,7 +279,7 @@ export default function HomeScreen() {
                   // ignore
                 }
 
-                // Fallback: Friends/{uid}.friends array (strings or objects)
+                // Fallback: Friends/{uid}.friends array
                 try {
                   if (audienceUids.length === 0 && audienceUsernames.length === 0) {
                     const friendsRef = doc(db, 'Friends', user.uid);
@@ -277,7 +332,7 @@ export default function HomeScreen() {
   };
 
   // loading state
-  if (isLit === null || friendLitCount === null) {
+  if (isLit === null || friendBeacons === null) {
     return (
       <View style={styles.container}>
         <Text style={styles.status}>Checking beacon status…</Text>
@@ -287,16 +342,28 @@ export default function HomeScreen() {
 
   return (
     <>
-      {/* Simple friend beacons summary (you can replace with a full list later) */}
-      <View>
-        {friendLitCount! > 0 ? (
-          <Text style={styles.friendActive}>
-            {friendLitCount} friend{friendLitCount > 1 ? 's have active beacons' : ' has an active beacon'}
-          </Text>
+      {/* Friend beacons section */}
+      <View style={styles.friendsSection}>
+        {friendBeacons.length > 0 ? (
+          <>
+            <Text style={styles.friendActiveHeader}>
+              {friendBeacons.length} friend{friendBeacons.length > 1 ? 's have' : ' has'} active beacons
+            </Text>
+
+            {/* Chips grid: 🔥 Name */}
+            <View style={styles.chipsWrap}>
+              {friendBeacons.map((fb) => ( // return here for maybe separate component later, for showing details and tracking chat
+                <View key={fb.id} style={styles.chip}>
+                  <Text style={styles.chipIcon}>🔥</Text>
+                  <Text style={styles.chipText} numberOfLines={1}>
+                    {fb.displayName}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </>
         ) : (
-          <Text style={styles.friendInactive}>
-            No friends have active beacons today
-          </Text>
+          <Text style={styles.friendInactive}>No friends have active beacons today</Text>
         )}
       </View>
 
@@ -344,8 +411,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     alignItems: 'center',
     padding: 24,
-    justifyContent: 'flex-end', // push content to the bottom
-    paddingBottom: 50,          // breathing room above the bottom edge
+    justifyContent: 'flex-end',
+    paddingBottom: 50,
   },
   beaconContainer: {
     marginBottom: 24,
@@ -379,11 +446,17 @@ const styles = StyleSheet.create({
     color: 'red',
     marginBottom: 12,
   },
-  friendActive: {
+
+  // Friends section
+  friendsSection: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+  },
+  friendActiveHeader: {
     fontSize: 16,
     fontWeight: '600',
     color: 'green',
-    marginTop: 16,
+    marginBottom: 10,
   },
   friendInactive: {
     fontSize: 16,
@@ -391,6 +464,33 @@ const styles = StyleSheet.create({
     color: 'red',
     marginTop: 16,
   },
+
+  // Chips grid
+  chipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#eee',
+    backgroundColor: '#fafafa',
+    maxWidth: '100%',
+  },
+  chipIcon: {
+    fontSize: 14,
+    marginRight: 6,
+  },
+  chipText: {
+    fontSize: 14,
+    maxWidth: 160, // prevents overflow on very long names
+  },
+
   feedButton: {
     marginTop: 24,
     width: '60%',
