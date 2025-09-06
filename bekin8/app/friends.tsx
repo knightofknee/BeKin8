@@ -30,7 +30,7 @@ import { onAuthStateChanged } from "firebase/auth";
 type Friend = { uid?: string; username: string };
 
 type FriendRequest = {
-  id: string;            // `${senderUid}_${receiverUid}`
+  id: string;
   senderUid: string;
   receiverUid: string;
   status: "pending" | "accepted" | "rejected" | "cancelled";
@@ -52,6 +52,12 @@ const colors = {
 };
 
 export default function FriendsScreen() {
+  // Username
+  const [usernameInput, setUsernameInput] = useState("");
+  const [currentUsername, setCurrentUsername] = useState<string | null>(null);
+  const [busyUsername, setBusyUsername] = useState(false);
+
+  // Friends state
   const [name, setName] = useState("");
   const [friends, setFriends] = useState<Friend[]>([]);
   const [incoming, setIncoming] = useState<FriendRequest[]>([]);
@@ -67,7 +73,6 @@ export default function FriendsScreen() {
     setTimeout(() => setMessage({ text: "", type: null }), 2500);
   };
 
-  // --- Helpers ---
   const requestIdFor = (a: string, b: string) => `${a}_${b}`;
 
   const cleanAndDedupeFriends = (arr: any[]): Friend[] => {
@@ -84,7 +89,7 @@ export default function FriendsScreen() {
     }
     out.sort((a, b) => a.username.localeCompare(b.username));
     return out;
-    };
+  };
 
   const fetchFriends = async () => {
     const user = auth.currentUser;
@@ -99,12 +104,31 @@ export default function FriendsScreen() {
     }
   };
 
-  // --- Live subscriptions for pending requests ---
+  const fetchCurrentUsername = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    const profileRef = doc(db, "Profiles", user.uid);
+    const snap = await getDoc(profileRef);
+    if (snap.exists()) {
+      const u = (snap.data() as any)?.username;
+      if (typeof u === "string" && u.trim()) {
+        setCurrentUsername(u.trim());
+        setUsernameInput(u.trim());
+      } else {
+        setCurrentUsername(null);
+      }
+    } else {
+      setCurrentUsername(null);
+    }
+  };
+
   useEffect(() => {
-    let unsubAuth = onAuthStateChanged(auth, (user) => {
+    let cleanup: (() => void) | undefined;
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
       if (user) {
-        fetchFriends(); // load accepted friends (array doc)
-        // incoming: where receiver == me & pending
+        fetchFriends();
+        fetchCurrentUsername();
+
         const qIn = query(
           collection(db, "FriendRequests"),
           where("receiverUid", "==", user.uid),
@@ -115,7 +139,6 @@ export default function FriendsScreen() {
           setIncoming(arr);
         });
 
-        // outgoing: where sender == me & pending
         const qOut = query(
           collection(db, "FriendRequests"),
           where("senderUid", "==", user.uid),
@@ -126,7 +149,7 @@ export default function FriendsScreen() {
           setOutgoing(arr);
         });
 
-        unsubAuth = () => {
+        cleanup = () => {
           unsubIn();
           unsubOut();
         };
@@ -134,12 +157,70 @@ export default function FriendsScreen() {
         setFriends([]);
         setIncoming([]);
         setOutgoing([]);
+        setCurrentUsername(null);
       }
     });
-    return () => unsubAuth && (unsubAuth as any)();
+    return () => {
+      unsubAuth();
+      if (cleanup) cleanup();
+    };
   }, []);
 
-  // --- Add Friend now creates a FriendRequest (pending) ---
+  // Username setter (kept for later use)
+  const handleSetUsername = async () => {
+    const user = auth.currentUser;
+    if (!user) {
+      showMessage("Please log in first.", "error");
+      return;
+    }
+
+    const desired = usernameInput.trim();
+    if (!desired) {
+      showMessage("Username required.", "error");
+      return;
+    }
+    if (desired.length < 3 || desired.length > 20) {
+      showMessage("3–20 characters, please.", "error");
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(desired)) {
+      showMessage("Use letters, numbers, or underscore only.", "error");
+      return;
+    }
+
+    const desiredLower = desired.toLowerCase();
+
+    try {
+      setBusyUsername(true);
+      const profilesCol = collection(db, "Profiles");
+      const q1 = query(profilesCol, where("usernameLower", "==", desiredLower));
+      const snap = await getDocs(q1);
+
+      if (!snap.empty) {
+        const takenBy = snap.docs[0].id;
+        if (takenBy !== user.uid) {
+          showMessage("That username is already taken.", "error");
+          return;
+        }
+      }
+
+      await setDoc(
+        doc(db, "Profiles", user.uid),
+        { username: desired, usernameLower: desiredLower },
+        { merge: true }
+      );
+
+      setCurrentUsername(desired);
+      showMessage("Username saved!", "success");
+    } catch (e) {
+      console.error("handleSetUsername error", e);
+      showMessage("Failed to save username.", "error");
+    } finally {
+      setBusyUsername(false);
+    }
+  };
+
+  // --- handleAddFriend, acceptRequest, rejectRequest, cancelRequest (unchanged) ---
   const handleAddFriend = async () => {
     const input = name.trim();
     if (!input) return;
@@ -150,7 +231,6 @@ export default function FriendsScreen() {
       return;
     }
 
-    // Already a friend locally?
     if (friends.some((f) => f.username.toLowerCase() === input.toLowerCase())) {
       showMessage("Already friends.", "error");
       return;
@@ -159,7 +239,6 @@ export default function FriendsScreen() {
     try {
       setBusy(true);
 
-      // Look up by Profiles
       const profilesCol = collection(db, "Profiles");
       const q1 = query(profilesCol, where("usernameLower", "==", input.toLowerCase()));
       let snap = await getDocs(q1);
@@ -182,7 +261,6 @@ export default function FriendsScreen() {
         return;
       }
 
-      // Check for existing pending request in either direction
       const outId = requestIdFor(me.uid, targetUid);
       const inId = requestIdFor(targetUid, me.uid);
       const existingOut = await getDoc(doc(db, "FriendRequests", outId));
@@ -197,7 +275,9 @@ export default function FriendsScreen() {
         return;
       }
 
-      // Create/overwrite my outgoing pending request (idempotent)
+      const myProfileSnap = await getDoc(doc(db, "Profiles", me.uid));
+      const myUsername = (myProfileSnap.data() as any)?.username || "";
+
       await setDoc(
         doc(db, "FriendRequests", outId),
         {
@@ -206,7 +286,7 @@ export default function FriendsScreen() {
           status: "pending",
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-          senderUsername: (await (await getDoc(doc(db, "Profiles", me.uid))).data())?.username || "",
+          senderUsername: myUsername,
           receiverUsername: targetUsername,
         },
         { merge: true }
@@ -222,28 +302,24 @@ export default function FriendsScreen() {
     }
   };
 
-  // --- Actions on requests ---
   const acceptRequest = async (req: FriendRequest) => {
     const me = auth.currentUser;
     if (!me || req.receiverUid !== me.uid) return;
 
     try {
       setBusy(true);
-      // 1) Mark request accepted
       await updateDoc(doc(db, "FriendRequests", req.id), {
         status: "accepted",
         updatedAt: serverTimestamp(),
       });
 
-      // 2) Add to my Friends array
       const myFriendsRef = doc(db, "Friends", me.uid);
       const newFriend: Friend = {
         uid: req.senderUid,
-        username: req.senderUsername || req.senderUid, // fallback to UID if snapshot missing
+        username: req.senderUsername || req.senderUid,
       };
       await setDoc(myFriendsRef, { friends: arrayUnion(newFriend) }, { merge: true });
 
-      // (Sender will add their edge when their app sees this accepted request.)
       showMessage("Friend added!", "success");
       await fetchFriends();
     } catch (e) {
@@ -292,7 +368,7 @@ export default function FriendsScreen() {
     }
   };
 
-  // --- Row components ---
+  // Row components
   const RequestRowIncoming = ({ item }: { item: FriendRequest }) => (
     <View style={styles.row}>
       <View style={styles.avatar}>
@@ -363,7 +439,72 @@ export default function FriendsScreen() {
       <View style={styles.container}>
         <Text style={styles.header}>Friends</Text>
 
-        {/* Add Friend (now "Send Request") */}
+        {/* Username section */}
+        <View style={styles.card}>
+          {currentUsername ? (
+            <>
+              <Text style={styles.label}>Your username</Text>
+              <Text style={styles.rowTitle}>{currentUsername}</Text>
+
+              {/* --- Update form (disabled for now) ---
+              <View style={styles.inputRow}>
+                <TextInput
+                  value={usernameInput}
+                  onChangeText={setUsernameInput}
+                  placeholder="choose_a_username"
+                  placeholderTextColor={colors.subtle}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                  returnKeyType="done"
+                  onSubmitEditing={handleSetUsername}
+                />
+                <Pressable
+                  disabled={busyUsername}
+                  onPress={handleSetUsername}
+                  style={[styles.btn, { paddingHorizontal: 16 }]}
+                >
+                  {busyUsername ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.btnText}>Update</Text>
+                  )}
+                </Pressable>
+              </View>
+              */}
+            </>
+          ) : (
+            <>
+              <Text style={styles.label}>Set your username</Text>
+              <View style={styles.inputRow}>
+                <TextInput
+                  value={usernameInput}
+                  onChangeText={setUsernameInput}
+                  placeholder="choose_a_username"
+                  placeholderTextColor={colors.subtle}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                  returnKeyType="done"
+                  onSubmitEditing={handleSetUsername}
+                />
+                <Pressable
+                  disabled={busyUsername}
+                  onPress={handleSetUsername}
+                  style={[styles.btn, { paddingHorizontal: 16 }]}
+                >
+                  {busyUsername ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.btnText}>Save</Text>
+                  )}
+                </Pressable>
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Add Friend */}
         <View style={styles.card}>
           <Text style={styles.label}>Send a Friend Request (by username)</Text>
           <View style={styles.inputRow}>
@@ -402,7 +543,7 @@ export default function FriendsScreen() {
           )}
         </View>
 
-        {/* Active Friend Requests */}
+        {/* Requests */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Requests</Text>
           {incoming.length === 0 && outgoing.length === 0 ? (
@@ -435,7 +576,7 @@ export default function FriendsScreen() {
           )}
         </View>
 
-        {/* Friends List (no tapping) */}
+        {/* Friends */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>My Friends</Text>
           {friends.length === 0 ? (
