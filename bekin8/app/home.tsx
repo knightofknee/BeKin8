@@ -21,6 +21,7 @@ import {
   updateDoc,
   doc,
 } from 'firebase/firestore';
+import { reconcileFriendEdges } from '@/helpers/ReconcileFriendEdges';
 
 type FriendBeacon = {
   id: string;
@@ -222,8 +223,19 @@ export default function HomeScreen() {
       setFriendBeacons(results);
     };
 
+    (async () => {
+    if (auth.currentUser) {
+      try {
+        await reconcileFriendEdges();
+      } catch (e) {
+        console.warn("reconcileFriendEdges failed:", e);
+      }
+
+    }
     checkUserBeacon();
     checkFriendBeacons();
+  })();
+
   }, []);
 
   const toggleBeacon = () => {
@@ -380,6 +392,8 @@ export default function HomeScreen() {
         </TouchableOpacity>
 
         <Text style={styles.title}>Beacon options under construction</Text>
+        {/* carl calls for aid, carl is chilling at home, carl is up for anything
+        also date and time. */}
         <Text style={styles.subtitle}>
           Tap the log to {isLit ? 'extinguish' : 'light'} your beacon
         </Text>

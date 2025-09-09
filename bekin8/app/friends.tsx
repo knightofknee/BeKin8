@@ -26,6 +26,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
+import { reconcileFriendEdges } from "@/helpers/ReconcileFriendEdges";
 
 type Friend = { uid?: string; username: string };
 
@@ -126,6 +127,9 @@ export default function FriendsScreen() {
     let cleanup: (() => void) | undefined;
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       if (user) {
+        reconcileFriendEdges().catch((e) =>
+        console.warn("reconcileFriendEdges failed (friends):", e)
+    );
         fetchFriends();
         fetchCurrentUsername();
 
