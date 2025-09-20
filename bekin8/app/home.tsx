@@ -7,6 +7,9 @@ import {
   Alert,
   StyleSheet,
   Button,
+  Modal,
+  Pressable,
+  TextInput,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
@@ -20,6 +23,8 @@ import {
   addDoc,
   updateDoc,
   doc,
+  serverTimestamp,
+  setDoc,
 } from 'firebase/firestore';
 import { reconcileFriendEdges } from '@/helpers/ReconcileFriendEdges';
 
@@ -29,6 +34,30 @@ type FriendBeacon = {
   displayName: string;
 };
 
+// --- helpers for dates ---
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function endOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+function endOfNextSixDays(from: Date) {
+  const end = endOfDay(new Date(from));
+  end.setDate(end.getDate() + 6);
+  return end;
+}
+function sameDay(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() &&
+         a.getMonth() === b.getMonth() &&
+         a.getDate() === b.getDate();
+}
+
+const DEFAULT_BEACON_MESSAGE = 'Beacon lit — who’s in?';
+
 export default function HomeScreen() {
   const router = useRouter();
   const [isLit, setIsLit] = useState<boolean | null>(null);
@@ -36,34 +65,71 @@ export default function HomeScreen() {
   // New: detailed list of friend beacons (today)
   const [friendBeacons, setFriendBeacons] = useState<FriendBeacon[] | null>(null);
 
+  // Track the earliest active/scheduled beacon date for label
+  const [nextBeaconDate, setNextBeaconDate] = useState<Date | null>(null);
+
   const friendLitCount = useMemo(
     () => (friendBeacons ? friendBeacons.length : null),
     [friendBeacons]
   );
 
-  useEffect(() => {
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+  // --- modal state for scheduling/options ---
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [dayOffset, setDayOffset] = useState<number>(0); // 0..6
+  const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
+  const next7Days = useMemo(() => {
+    const base = startOfDay(new Date());
+    return Array.from({ length: 7 }).map((_, i) => {
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
+      const label =
+        i === 0
+          ? 'Today'
+          : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      return { date: d, label, offset: i };
+    });
+  }, []);
 
-    // --- Your own beacon (today) ---
+  useEffect(() => {
+    const todayStart = startOfDay(new Date());
+    const windowEnd = endOfNextSixDays(todayStart);
+
+    // --- Your own beacon: ANY in [today .. +6d] counts as lit (active OR scheduled) ---
     const checkUserBeacon = async () => {
       const user = auth.currentUser;
       if (!user) {
         setIsLit(false);
+        setNextBeaconDate(null);
         return;
       }
       const beaconsRef = collection(db, 'Beacons');
       const qOwn = query(
         beaconsRef,
         where('ownerUid', '==', user.uid),
-        where('createdAt', '>=', Timestamp.fromDate(startOfToday))
+        where('startAt', '>=', Timestamp.fromDate(todayStart)),
+        where('startAt', '<=', Timestamp.fromDate(windowEnd))
       );
       try {
         const snap = await getDocs(qOwn);
-        setIsLit(!snap.empty && !!snap.docs[0].data().active);
+        let lit = false;
+        let soonest: Date | null = null;
+
+        snap.forEach(d => {
+          const data: any = d.data();
+          const isCounting = data?.active || data?.scheduled;
+          const st: Date | null = data?.startAt?.toDate ? data.startAt.toDate() : null;
+          if (isCounting && st) {
+            lit = true;
+            if (!soonest || st.getTime() < soonest.getTime()) soonest = st;
+          }
+        });
+
+        setIsLit(lit);
+        setNextBeaconDate(soonest);
       } catch (err) {
         console.error('Error checking your beacon:', err);
         setIsLit(false);
+        setNextBeaconDate(null);
       }
     };
 
@@ -112,9 +178,6 @@ export default function HomeScreen() {
                   if (typeof f.username === 'string') {
                     friendNameByUid[f.uid] = f.username;
                   }
-                } else if (typeof f === 'string') {
-                  // Only username, no uid — can't map to beacon owners reliably
-                  // but keep in mind for legacy 'friends' array matching (below)
                 }
               });
             }
@@ -159,10 +222,9 @@ export default function HomeScreen() {
         console.warn('ownerUid IN query failed:', e);
       }
 
-      // 3) Filter locally for "active today" and build list of FriendBeacon
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const startMs = today.getTime();
+      // 3) Filter locally for "active today" (use startAt for date)
+      const startMs = todayStart.getTime();
+      const endMs = endOfDay(new Date(todayStart)).getTime();
 
       const results: FriendBeacon[] = [];
       const ownersSeen = new Set<string>(); // de-dupe per owner
@@ -170,8 +232,8 @@ export default function HomeScreen() {
       candidateDocs.forEach(d => {
         const data: any = d.data();
         const active = !!data.active;
-        const createdMs = data?.createdAt?.toMillis?.() ? data.createdAt.toMillis() : 0;
-        if (!active || createdMs < startMs) return;
+        const st = data?.startAt?.toMillis?.() ? data.startAt.toMillis() : 0;
+        if (!active || st < startMs || st > endMs) return;
 
         const ownerUid = String(data.ownerUid ?? '');
         if (!ownerUid || ownersSeen.has(ownerUid)) return;
@@ -188,35 +250,6 @@ export default function HomeScreen() {
         ownersSeen.add(ownerUid);
       });
 
-      // 4) Optional: legacy username-based fallbacks if still empty (your old 'friends' array)
-      if (results.length === 0 && me.displayName) {
-        const username = me.displayName.trim();
-        try {
-          const qLegacy = query(beaconsRef, where('friends', 'array-contains', username));
-          const legacySnap = await getDocs(qLegacy);
-          const ownersSeenLegacy = new Set<string>(ownersSeen);
-          legacySnap.forEach(d => {
-            const data: any = d.data();
-            const active = !!data.active;
-            const createdMs = data?.createdAt?.toMillis?.() ? data.createdAt.toMillis() : 0;
-            if (!active || createdMs < startMs) return;
-            const ownerUid = String(data.ownerUid ?? '');
-            if (!ownerUid || ownersSeenLegacy.has(ownerUid)) return;
-            const ownerName = (typeof data.ownerName === 'string' && data.ownerName.trim())
-              ? data.ownerName.trim()
-              : 'Friend';
-            results.push({
-              id: d.id,
-              ownerUid,
-              displayName: ownerName,
-            });
-            ownersSeenLegacy.add(ownerUid);
-          });
-        } catch (e) {
-          console.warn('legacy friends query failed:', e);
-        }
-      }
-
       // sort by name for stable UI
       results.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
@@ -224,25 +257,23 @@ export default function HomeScreen() {
     };
 
     (async () => {
-    if (auth.currentUser) {
-      try {
-        await reconcileFriendEdges();
-      } catch (e) {
-        console.warn("reconcileFriendEdges failed:", e);
+      if (auth.currentUser) {
+        try {
+          await reconcileFriendEdges();
+        } catch (e) {
+          console.warn('reconcileFriendEdges failed:', e);
+        }
       }
-
-    }
-    checkUserBeacon();
-    checkFriendBeacons();
-  })();
-
+      checkUserBeacon();
+      checkFriendBeacons();
+    })();
   }, []);
 
   const toggleBeacon = () => {
     const action = isLit ? 'Extinguish' : 'Light';
     Alert.alert(
       `${action} Beacon`,
-      `Are you sure you want to ${action.toLowerCase()} your beacon?`,
+      `Are you sure you want to ${action.toLowerCase()} your beacon${isLit ? ' (today and any upcoming within 7 days)' : ''}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -255,83 +286,55 @@ export default function HomeScreen() {
               return;
             }
 
-            const startOfToday = new Date();
-            startOfToday.setHours(0, 0, 0, 0);
+            const todayStart = startOfDay(new Date());
+            const windowEnd = endOfNextSixDays(todayStart);
             const beaconsRef = collection(db, 'Beacons');
-            const qOwn = query(
-              beaconsRef,
-              where('ownerUid', '==', user.uid),
-              where('createdAt', '>=', Timestamp.fromDate(startOfToday))
-            );
 
             try {
-              const snap = await getDocs(qOwn);
+              // Look for any beacon in the 7-day window by startAt
+              const qWindow = query(
+                beaconsRef,
+                where('ownerUid', '==', user.uid),
+                where('startAt', '>=', Timestamp.fromDate(todayStart)),
+                where('startAt', '<=', Timestamp.fromDate(windowEnd))
+              );
+              const snap = await getDocs(qWindow);
 
-              if (!snap.empty) {
-                // Toggle existing (light/unlight)
-                const beaconDoc = snap.docs[0];
-                const current = !!beaconDoc.data().active;
-                await updateDoc(beaconDoc.ref, { active: !current });
-                setIsLit(!current);
-              } else {
-                // Create new beacon with a proper audience (UIDs + usernames)
-                const audienceUids: string[] = [];
-                const audienceUsernames: string[] = [];
-
-                // Preferred source: users/{uid}/friends subcollection
-                try {
-                  const friendsSub = collection(db, 'users', user.uid, 'friends');
-                  const friendsSubSnap = await getDocs(friendsSub);
-                  friendsSubSnap.forEach((fd) => {
-                    const f: any = fd.data();
-                    if (typeof f?.uid === 'string') audienceUids.push(f.uid);
-                    if (typeof f?.username === 'string') audienceUsernames.push(f.username);
-                  });
-                } catch {
-                  // ignore
-                }
-
-                // Fallback: Friends/{uid}.friends array
-                try {
-                  if (audienceUids.length === 0 && audienceUsernames.length === 0) {
-                    const friendsRef = doc(db, 'Friends', user.uid);
-                    const friendsSnap = await getDoc(friendsRef);
-                    if (friendsSnap.exists()) {
-                      const data = (friendsSnap.data() as any).friends;
-                      if (Array.isArray(data)) {
-                        for (const f of data) {
-                          if (typeof f === 'string') {
-                            audienceUsernames.push(f);
-                          } else if (f && typeof f === 'object') {
-                            if (typeof f.username === 'string') audienceUsernames.push(f.username);
-                            if (typeof f.uid === 'string') audienceUids.push(f.uid);
-                          }
-                        }
-                      }
-                    }
-                  }
-                } catch {
-                  // ignore
-                }
-
-                // De-dupe & clean
-                const usernames = [...new Set(audienceUsernames)].filter(Boolean);
-                const uids = [...new Set(audienceUids)].filter(Boolean);
-
+              if (isLit && !snap.empty) {
+                // Extinguish: deactivate/cancel all in the window
+                const updates = snap.docs.map((b) =>
+                  updateDoc(b.ref, {
+                    active: false,
+                    scheduled: false,
+                    updatedAt: serverTimestamp(),
+                    // ensure they won't show as upcoming
+                    expiresAt: Timestamp.fromDate(new Date(Date.now() - 1000)),
+                  })
+                );
+                await Promise.all(updates);
+                setIsLit(false);
+                setNextBeaconDate(null);
+              } else if (!isLit) {
+                // Light for TODAY (quick action)
+                const todayStartLocal = startOfDay(new Date());
+                const todayEndLocal = endOfDay(new Date());
                 await addDoc(beaconsRef, {
                   ownerUid: user.uid,
-                  ownerName: user.displayName ?? null, // helpful for lists
-                  details: 'New beacon lit!',
+                  ownerName: user.displayName ?? null,
+                  message: DEFAULT_BEACON_MESSAGE,
+                  details: DEFAULT_BEACON_MESSAGE, // legacy-friendly
                   active: true,
+                  scheduled: true,
                   createdAt: Timestamp.now(),
-                  // New canonical visibility:
-                  audienceUids: uids,
-                  audienceUsernames: usernames,
-                  // Legacy compatibility:
-                  friends: usernames,
+                  updatedAt: serverTimestamp(),
+                  startAt: Timestamp.fromDate(todayStartLocal),
+                  expiresAt: Timestamp.fromDate(todayEndLocal),
+                  audienceUids: [],
+                  audienceUsernames: [],
+                  friends: [],
                 });
-
                 setIsLit(true);
+                setNextBeaconDate(todayStartLocal);
               }
             } catch (err) {
               console.error('Error toggling beacon:', err);
@@ -342,6 +345,103 @@ export default function HomeScreen() {
       ]
     );
   };
+
+  // Save from modal: schedule for chosen day (0..6) with message
+  const saveBeaconOptions = async () => {
+    const user = auth.currentUser;
+    if (!user) {
+      Alert.alert('Not signed in', 'Please sign in to set a beacon.');
+      return;
+    }
+    try {
+      const base = startOfDay(new Date());
+      base.setDate(base.getDate() + dayOffset);
+      const sd = startOfDay(base);
+      const ed = endOfDay(base);
+
+      const beaconsRef = collection(db, 'Beacons');
+
+      if (dayOffset === 0) {
+        // TODAY: upsert by startAt range
+        const qToday = query(
+          beaconsRef,
+          where('ownerUid', '==', user.uid),
+          where('startAt', '>=', Timestamp.fromDate(startOfDay(new Date()))),
+          where('startAt', '<=', Timestamp.fromDate(endOfDay(new Date())))
+        );
+        const snap = await getDocs(qToday);
+        if (!snap.empty) {
+          await updateDoc(snap.docs[0].ref, {
+            message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+            details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+            startAt: Timestamp.fromDate(sd),
+            expiresAt: Timestamp.fromDate(ed),
+            active: true,
+            scheduled: true,
+            updatedAt: serverTimestamp(),
+          });
+          setIsLit(true);
+          setNextBeaconDate(sd);
+          Alert.alert('Updated', 'Today’s beacon was updated.');
+        } else {
+          await addDoc(beaconsRef, {
+            ownerUid: user.uid,
+            ownerName: user.displayName ?? null,
+            message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+            details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+            active: true,
+            scheduled: true,
+            createdAt: Timestamp.now(),
+            updatedAt: serverTimestamp(),
+            startAt: Timestamp.fromDate(sd),
+            expiresAt: Timestamp.fromDate(ed),
+          });
+          setIsLit(true);
+          setNextBeaconDate(sd);
+          Alert.alert('Beacon set', 'Your beacon is live for today.');
+        }
+      } else {
+        // FUTURE: upsert deterministic doc id and mark scheduled
+        const yyyy = sd.getFullYear();
+        const mm = String(sd.getMonth() + 1).padStart(2, '0');
+        const dd = String(sd.getDate()).padStart(2, '0');
+        const docId = `${user.uid}_${yyyy}${mm}${dd}`;
+
+        await setDoc(
+          doc(db, 'Beacons', docId),
+          {
+            ownerUid: user.uid,
+            ownerName: user.displayName ?? null,
+            message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+            details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+            active: false,     // not active today…
+            scheduled: true,   // …but counts as lit in UI
+            startAt: Timestamp.fromDate(sd),
+            expiresAt: Timestamp.fromDate(ed),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        setIsLit(true);
+        setNextBeaconDate(sd);
+        Alert.alert('Scheduled', `Beacon scheduled for ${sd.toLocaleDateString()}.`);
+      }
+      setOptionsOpen(false);
+    } catch (e: any) {
+      console.error(e);
+      Alert.alert('Error', e?.message || 'Failed to save options.');
+    }
+  };
+
+  // Compute friendly label: "today" or weekday name in lowercase
+  const activeLabel = useMemo(() => {
+    if (!isLit || !nextBeaconDate) return null;
+    return sameDay(nextBeaconDate, new Date())
+      ? 'today'
+      : nextBeaconDate.toLocaleDateString(undefined, { weekday: 'long' });
+  }, [isLit, nextBeaconDate]);
 
   // loading state
   if (isLit === null || friendBeacons === null) {
@@ -364,7 +464,7 @@ export default function HomeScreen() {
 
             {/* Chips grid: 🔥 Name */}
             <View style={styles.chipsWrap}>
-              {friendBeacons.map((fb) => ( // return here for maybe separate component later, for showing details and tracking chat
+              {friendBeacons.map((fb) => ( // later: make these clickable to open details/chat
                 <View key={fb.id} style={styles.chip}>
                   <Text style={styles.chipIcon}>🔥</Text>
                   <Text style={styles.chipText} numberOfLines={1}>
@@ -391,15 +491,18 @@ export default function HomeScreen() {
           </Text>
         </TouchableOpacity>
 
-        <Text style={styles.title}>Beacon options under construction</Text>
-        {/* carl calls for aid, carl is chilling at home, carl is up for anything
-        also date and time. */}
+        {/* Open modal */}
+        <TouchableOpacity onPress={() => setOptionsOpen(true)} activeOpacity={0.8}>
+          <Text style={styles.title}>Beacon options</Text>
+        </TouchableOpacity>
         <Text style={styles.subtitle}>
-          Tap the log to {isLit ? 'extinguish' : 'light'} your beacon
+          Tap the {isLit ? 'fire to extinguish' : 'log to light'} your beacon
         </Text>
 
         {isLit ? (
-          <Text style={styles.statusActive}>Your beacon is ACTIVE</Text>
+          <Text style={styles.statusActive}>
+            Your beacon is ACTIVE for {activeLabel}
+          </Text>
         ) : (
           <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
         )}
@@ -414,6 +517,60 @@ export default function HomeScreen() {
           <Button title="Create Post" onPress={() => router.push('/create-post')} />
         </View>
       </View>
+
+      {/* Options Modal */}
+      <Modal visible={optionsOpen} animationType="slide" transparent>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Schedule / Edit Beacon</Text>
+              <Pressable onPress={() => setOptionsOpen(false)}>
+                <Text style={styles.close}>✕</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.modalLabel}>Day</Text>
+            <View style={styles.daysWrap}>
+              {next7Days.map(d => (
+                <Pressable
+                  key={d.offset}
+                  onPress={() => setDayOffset(d.offset)}
+                  style={[styles.dayChip, d.offset === dayOffset && styles.dayChipActive]}
+                >
+                  <Text style={[styles.dayChipText, d.offset === dayOffset && styles.dayChipTextActive]}>
+                    {d.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={[styles.modalLabel, { marginTop: 12 }]}>Message</Text>
+            <TextInput
+              style={styles.msgInput}
+              placeholder={DEFAULT_BEACON_MESSAGE}
+              value={message}
+              onChangeText={setMessage}
+              maxLength={140}
+              multiline
+            />
+            <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
+
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setOptionsOpen(false)}>
+                <Text style={styles.btnGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={saveBeaconOptions}>
+                <Text style={styles.btnPrimaryText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* <Text style={styles.modalFootNote}>
+              Tip: Saving for <Text style={{ fontWeight: '700' }}>{dayOffset === 0 ? 'Today' : next7Days[dayOffset].label}</Text>{' '}
+              {dayOffset === 0 ? 'updates/creates today’s beacon.' : 'creates a scheduled beacon that still counts as lit.'}
+            </Text> */}
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -453,6 +610,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: 'green',
     marginBottom: 12,
+    textTransform: 'none',
   },
   statusInactive: {
     fontSize: 18,
@@ -509,4 +667,52 @@ const styles = StyleSheet.create({
     marginTop: 24,
     width: '60%',
   },
+
+  // Modal styles
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: '#fff',
+    padding: 16,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+  },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalTitle: { fontSize: 18, fontWeight: '800' },
+  close: { fontSize: 22, paddingHorizontal: 8 },
+  modalLabel: { fontSize: 14, fontWeight: '600', marginTop: 8, marginBottom: 6 },
+
+  daysWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  dayChip: {
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  dayChipActive: { backgroundColor: '#2F6FED', borderColor: '#2F6FED' },
+  dayChipText: { color: '#0B1426', fontSize: 14 },
+  dayChipTextActive: { color: '#fff', fontWeight: '700' },
+
+  msgInput: {
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
+    padding: 10,
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  msgHint: { color: '#667085', fontSize: 12, marginTop: 4 },
+
+  modalBtnRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  btn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB' },
+  btnPrimary: { backgroundColor: '#2F6FED', borderColor: '#2F6FED' },
+  btnPrimaryText: { color: '#fff', fontWeight: '700' },
+  btnGhost: { backgroundColor: '#fff' },
+  btnGhostText: { color: '#0B1426', fontWeight: '600' },
+
+  modalFootNote: { marginTop: 8, color: '#667085' },
 });
