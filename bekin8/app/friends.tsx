@@ -128,8 +128,8 @@ export default function FriendsScreen() {
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       if (user) {
         reconcileFriendEdges().catch((e) =>
-        console.warn("reconcileFriendEdges failed (friends):", e)
-    );
+          console.warn("reconcileFriendEdges failed (friends):", e)
+        );
         fetchFriends();
         fetchCurrentUsername();
 
@@ -170,7 +170,7 @@ export default function FriendsScreen() {
     };
   }, []);
 
-  // Username setter (kept for later use)
+  // Username setter
   const handleSetUsername = async () => {
     const user = auth.currentUser;
     if (!user) {
@@ -224,7 +224,7 @@ export default function FriendsScreen() {
     }
   };
 
-  // --- handleAddFriend, acceptRequest, rejectRequest, cancelRequest (unchanged) ---
+  // --- Friend request actions ---
   const handleAddFriend = async () => {
     const input = name.trim();
     if (!input) return;
@@ -232,6 +232,12 @@ export default function FriendsScreen() {
     const me = auth.currentUser;
     if (!me) {
       showMessage("Please log in first.", "error");
+      return;
+    }
+
+    // Block requests when you don't have a username yet
+    if (!currentUsername || !currentUsername.trim()) {
+      showMessage("Set a username first.", "error");
       return;
     }
 
@@ -372,6 +378,9 @@ export default function FriendsScreen() {
     }
   };
 
+  // Derived flag: has a username?
+  const hasUsername = !!currentUsername?.trim();
+
   // Row components
   const RequestRowIncoming = ({ item }: { item: FriendRequest }) => (
     <View style={styles.row}>
@@ -387,14 +396,14 @@ export default function FriendsScreen() {
       <Pressable
         onPress={() => acceptRequest(item)}
         disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: colors.primary }]}
+        style={[styles.smallBtn, { backgroundColor: colors.primary, opacity: busy ? 0.5 : 1 }]}
       >
         <Text style={styles.smallBtnText}>Accept</Text>
       </Pressable>
       <Pressable
         onPress={() => rejectRequest(item)}
         disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: "#b00020" }]}
+        style={[styles.smallBtn, { backgroundColor: "#b00020", opacity: busy ? 0.5 : 1 }]}
       >
         <Text style={styles.smallBtnText}>Reject</Text>
       </Pressable>
@@ -415,7 +424,7 @@ export default function FriendsScreen() {
       <Pressable
         onPress={() => cancelRequest(item)}
         disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: "#444" }]}
+        style={[styles.smallBtn, { backgroundColor: "#444", opacity: busy ? 0.5 : 1 }]}
       >
         <Text style={styles.smallBtnText}>Cancel</Text>
       </Pressable>
@@ -449,33 +458,6 @@ export default function FriendsScreen() {
             <>
               <Text style={styles.label}>Your username</Text>
               <Text style={styles.rowTitle}>{currentUsername}</Text>
-
-              {/* --- Update form (disabled for now) ---
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={usernameInput}
-                  onChangeText={setUsernameInput}
-                  placeholder="choose_a_username"
-                  placeholderTextColor={colors.subtle}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                  returnKeyType="done"
-                  onSubmitEditing={handleSetUsername}
-                />
-                <Pressable
-                  disabled={busyUsername}
-                  onPress={handleSetUsername}
-                  style={[styles.btn, { paddingHorizontal: 16 }]}
-                >
-                  {busyUsername ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={styles.btnText}>Update</Text>
-                  )}
-                </Pressable>
-              </View>
-              */}
             </>
           ) : (
             <>
@@ -495,7 +477,7 @@ export default function FriendsScreen() {
                 <Pressable
                   disabled={busyUsername}
                   onPress={handleSetUsername}
-                  style={[styles.btn, { paddingHorizontal: 16 }]}
+                  style={[styles.btn, { paddingHorizontal: 16, opacity: busyUsername ? 0.6 : 1 }]}
                 >
                   {busyUsername ? (
                     <ActivityIndicator color="#fff" />
@@ -511,6 +493,11 @@ export default function FriendsScreen() {
         {/* Add Friend */}
         <View style={styles.card}>
           <Text style={styles.label}>Send a Friend Request (by username)</Text>
+          {!hasUsername && (
+            <Text style={[styles.subtle, { marginBottom: 8 }]}>
+              You need a username before you can send requests.
+            </Text>
+          )}
           <View style={styles.inputRow}>
             <TextInput
               value={name}
@@ -518,14 +505,18 @@ export default function FriendsScreen() {
               placeholder="friend_username"
               placeholderTextColor={colors.subtle}
               autoCapitalize="none"
-              style={styles.input}
+              style={[styles.input, !hasUsername && styles.inputDisabled]}
+              editable={hasUsername}
               returnKeyType="done"
-              onSubmitEditing={handleAddFriend}
+              onSubmitEditing={hasUsername ? handleAddFriend : undefined}
             />
             <Pressable
-              disabled={busy}
+              disabled={busy || !hasUsername}
               onPress={handleAddFriend}
-              style={[styles.btn, { paddingHorizontal: 16 }]}
+              style={[
+                styles.btn,
+                { paddingHorizontal: 16, opacity: busy || !hasUsername ? 0.5 : 1 },
+              ]}
             >
               {busy ? (
                 <ActivityIndicator color="#fff" />
@@ -624,6 +615,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     backgroundColor: "#fff",
+  },
+  inputDisabled: {
+    backgroundColor: "#F3F4F6",
   },
   btn: {
     backgroundColor: colors.primary,
