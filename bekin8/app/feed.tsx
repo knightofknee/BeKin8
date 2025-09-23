@@ -1,6 +1,5 @@
 // app/feed.tsx
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,11 +15,12 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   query,
   where,
-  getDocs,
   orderBy,
   limit,
+  onSnapshot,
 } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
 
@@ -33,7 +33,28 @@ interface Post {
   authorUsername: string;
   content: string;
   createdAt: Date;
-  url?: string; // <-- added
+  url?: string;
+}
+
+// tiny helper to fetch profile usernames when we only have uids
+async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  await Promise.all(
+    uids.map(async (uid) => {
+      try {
+        const snap = await getDoc(doc(db, 'Profiles', uid));
+        if (snap.exists()) {
+          const data: any = snap.data();
+          const uname =
+            (data?.username || data?.displayName || '').toString().trim();
+          if (uname) out[uid] = uname;
+        }
+      } catch {
+        /* ignore */
+      }
+    })
+  );
+  return out;
 }
 
 export default function Feed() {
@@ -41,112 +62,184 @@ export default function Feed() {
   const [loading, setLoading] = useState<boolean>(true);
   const router = useRouter();
 
-  useEffect(() => {
-    /**
-     * Loads the authenticated user’s feed once on mount.
-     *
-     * Steps:
-     * 1. Grab friend UIDs
-     * 2. Fetch latest posts per friend (batched promises)
-     * 3. Flatten + deduplicate by post.id (and timestamp as fallback)
-     * 4. Sort descending by createdAt
-     */
-    const loadFeed = async () => {
-      const user = auth.currentUser;
-      if (!user) {
-        setLoading(false);
-        return;
-      }
+  // === Feed loader kept as-is, but wrapped in useCallback so listeners can call it ===
+  const loadFeed = useCallback(async () => {
+    const user = auth.currentUser;
+    if (!user) {
+      setPosts([]);
+      setLoading(false);
+      return;
+    }
 
-      // === 1. Resolve friend list ===
+    // --- 1. Resolve friend list (from Friends doc + FriendEdges + users/{uid}/friends) ---
+    const friendMap = new Map<string, string>(); // uid -> username (may be empty for now)
+
+    // A) Legacy/canonical Friends doc
+    try {
       const friendsRef = doc(db, 'Friends', user.uid);
-      let friendObjs: { uid: string; username: string }[] = [];
-      try {
-        const friendsSnap = await getDoc(friendsRef);
-        if (friendsSnap.exists()) {
-          const rawFriends = friendsSnap.data().friends ?? [];
-          // Keep {uid, username} pairs; filter out malformed entries
-          friendObjs = (rawFriends as any[])
-            .filter((f) => f?.uid && f?.username)
-            // Unique by uid
-            .reduce((acc, f) => {
-              if (!acc.find((x: { uid: any }) => x.uid === f.uid))
-                acc.push({ uid: f.uid, username: f.username });
-              return acc;
-            }, [] as { uid: string; username: string }[]);
+      const friendsSnap = await getDoc(friendsRef);
+      if (friendsSnap.exists()) {
+        const rawFriends = (friendsSnap.data().friends ?? []) as any[];
+        rawFriends.forEach((f) => {
+          const uid = f?.uid;
+          const username = (f?.username || '').toString().trim();
+          if (uid) friendMap.set(uid, username || friendMap.get(uid) || '');
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching Friends doc:', err);
+    }
+
+    // B) Canonical FriendEdges (accepted)
+    try {
+      const me = user.uid;
+      const qEdges = query(
+        collection(db, 'FriendEdges'),
+        where('uids', 'array-contains', me),
+        where('state', '==', 'accepted')
+      );
+      const edgeSnap = await getDocs(qEdges);
+      edgeSnap.forEach((d) => {
+        const arr = (d.data() as any)?.uids || [];
+        const other = arr.find((u: string) => u !== me);
+        if (other) {
+          if (!friendMap.has(other)) friendMap.set(other, '');
         }
-      } catch (err) {
-        console.error('Error fetching friends list:', err);
-      }
+      });
+    } catch (e) {
+      console.warn('FriendEdges fetch failed:', e);
+    }
 
-      if (!friendObjs.length) {
-        setPosts([]);
-        setLoading(false);
-        return;
-      }
+    // C) users/{uid}/friends subcollection (often carries usernames)
+    try {
+      const subSnap = await getDocs(collection(db, 'users', user.uid, 'friends'));
+      subSnap.forEach((d) => {
+        const f: any = d.data();
+        if (typeof f?.uid === 'string') {
+          friendMap.set(
+            f.uid,
+            (f?.username || '').toString().trim() || friendMap.get(f.uid) || ''
+          );
+        }
+      });
+    } catch (e) {
+      // ignore
+    }
 
-      // === 2. Fetch posts for each friend ===
-      try {
-        const postSnaps = await Promise.all(
-          friendObjs.map((f) =>
-            getDocs(
-              query(
-                collection(db, 'Posts'),
-                where('author', '==', f.uid),
-                orderBy('timestamp', 'desc'),
-                limit(50)
-              )
+    const friendUids = Array.from(friendMap.keys());
+    if (!friendUids.length) {
+      setPosts([]);
+      setLoading(false);
+      return;
+    }
+
+    // If any usernames are missing, fetch from Profiles
+    const missingUids = friendUids.filter((u) => !friendMap.get(u));
+    if (missingUids.length) {
+      const fetched = await fetchUsernames(missingUids);
+      Object.entries(fetched).forEach(([uid, uname]) => {
+        friendMap.set(uid, uname);
+      });
+    }
+
+    // --- 2. Fetch posts for each friend ---
+    try {
+      const friendObjs = friendUids.map((uid) => ({
+        uid,
+        username: friendMap.get(uid) || 'Friend',
+      }));
+
+      const postSnaps = await Promise.all(
+        friendObjs.map((f) =>
+          getDocs(
+            query(
+              collection(db, 'Posts'),
+              where('author', '==', f.uid),
+              orderBy('timestamp', 'desc'),
+              limit(50)
             )
           )
-        );
+        )
+      );
 
-        const collected: Post[] = [];
-        postSnaps.forEach((snap, idx) => {
-          const friend = friendObjs[idx];
-          snap.docs.forEach((docSnap) => {
-            const data = docSnap.data() as any;
-            const rawTs = data.timestamp ?? data.createdAt;
-            const createdAt: Date =
-              rawTs && typeof rawTs.toDate === 'function'
-                ? rawTs.toDate()
-                : rawTs instanceof Date
-                ? rawTs
-                : typeof rawTs === 'number'
-                ? new Date(rawTs)
-                : new Date();
+      const collected: Post[] = [];
+      postSnaps.forEach((snap, idx) => {
+        const friend = friendObjs[idx];
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          const rawTs = data.timestamp ?? data.createdAt;
+          const createdAt: Date =
+            rawTs && typeof rawTs.toDate === 'function'
+              ? rawTs.toDate()
+              : rawTs instanceof Date
+              ? rawTs
+              : typeof rawTs === 'number'
+              ? new Date(rawTs)
+              : new Date();
 
-            collected.push({
-              id: docSnap.id,
-              authorUid: friend.uid,
-              authorUsername: friend.username,
-              content: data.content ?? '',
-              createdAt,
-              url: data.url ?? data.link ?? data.href ?? undefined, // <-- added
-            });
+          collected.push({
+            id: docSnap.id,
+            authorUid: friend.uid,
+            authorUsername: friend.username,
+            content: data.content ?? '',
+            createdAt,
+            url: data.url ?? data.link ?? data.href ?? undefined,
           });
         });
+      });
 
-        // === 3. Deduplicate ===
-        const seen = new Map<string, Post>();
-        collected.forEach((p) => {
-          // Keep the newest version of a post id (if duplicates slipped through)
-          const existing = seen.get(p.id);
-          if (!existing || existing.createdAt < p.createdAt) seen.set(p.id, p);
-        });
-        const uniquePosts = Array.from(seen.values());
+      // --- 3. Deduplicate (by id, keep newest) ---
+      const seen = new Map<string, Post>();
+      collected.forEach((p) => {
+        const existing = seen.get(p.id);
+        if (!existing || existing.createdAt < p.createdAt) seen.set(p.id, p);
+      });
+      const uniquePosts = Array.from(seen.values());
 
-        // === 4. Sort ===
-        uniquePosts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-        setPosts(uniquePosts);
-      } catch (err) {
-        console.error('Error loading posts:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadFeed();
+      // --- 4. Sort desc by createdAt ---
+      uniquePosts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      setPosts(uniquePosts);
+    } catch (err) {
+      console.error('Error loading posts:', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  // Initial load
+  useEffect(() => {
+    setLoading(true);
+    loadFeed();
+  }, [loadFeed]);
+
+  // Live refresh on friend accept / friend accepted (change as little as possible)
+  useEffect(() => {
+    const me = auth.currentUser?.uid;
+    if (!me) return;
+
+    // When my subcollection changes (common in your flows)
+    const unsubA = onSnapshot(
+      collection(db, 'users', me, 'friends'),
+      () => loadFeed(),
+      () => {} // ignore errors
+    );
+
+    // When canonical edges change (accepted new friend)
+    const unsubB = onSnapshot(
+      query(
+        collection(db, 'FriendEdges'),
+        where('uids', 'array-contains', me),
+        where('state', '==', 'accepted')
+      ),
+      () => loadFeed(),
+      () => {}
+    );
+
+    return () => {
+      unsubA();
+      unsubB();
+    };
+  }, [loadFeed]);
 
   // === RENDER STATES ===
   if (loading) {
@@ -173,14 +266,12 @@ export default function Feed() {
   return (
     <FlatList
       data={posts}
-      // Combines Firestore id (guaranteed unique) with createdAt in case the same id appears twice in different timelines
       keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
       contentContainerStyle={styles.list}
       renderItem={({ item }) => (
         <View style={styles.postContainer}>
           <Text style={styles.postAuthor}>{item.authorUsername}</Text>
 
-          {/* URL (above text, below name). No validation; adds https:// if missing. */}
           {item.url ? (
             <Pressable
               onPress={() =>

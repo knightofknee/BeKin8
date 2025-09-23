@@ -58,3 +58,8 @@ carly  - test@tester
 
 
 2- answer the call of the beacon instead of making your own. intensify the flame, make it grow
+
+
+--- future
+add button for chat like smoke above the flame for the beaconer. a button
+chat for self posts are hard to read with the blue

@@ -1,48 +1,78 @@
-import { collection, doc, getDoc, getDocs, query, where, setDoc, updateDoc, arrayUnion, serverTimestamp } from "firebase/firestore";
-import { auth, db } from "../firebase.config";
+// helpers/ReconcileFriendEdges.ts
+import { auth, db } from '@/firebase.config';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+  writeBatch,
+  setDoc,
+} from 'firebase/firestore';
+
+const chunk = <T,>(arr: T[], n = 10) =>
+  Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 
 export async function reconcileFriendEdges() {
   const me = auth.currentUser;
   if (!me) return;
 
-  // 1) Load my current friends (uids set for quick contains)
-  const myFriendsRef = doc(db, "Friends", me.uid);
-  const myFriendsSnap = await getDoc(myFriendsRef);
-  const myFriends: Array<{uid?: string; username: string}> = (myFriendsSnap.data()?.friends ?? []);
-  const myFriendUids = new Set(myFriends.map(f => f.uid).filter(Boolean) as string[]);
+  const batch = writeBatch(db);
 
-  // 2) Find accepted requests involving me (either direction)
-  const FR = collection(db, "FriendRequests");
-  const qAcceptedToMe   = query(FR, where("receiverUid", "==", me.uid), where("status", "==", "accepted"));
-  const qAcceptedFromMe = query(FR, where("senderUid", "==", me.uid),   where("status", "==", "accepted"));
+  // 1) Read subcollection + legacy doc
+  const subSnap = await getDocs(collection(db, 'users', me.uid, 'friends'));
+  const topSnap = await getDoc(doc(db, 'Friends', me.uid));
 
-  const [snapA, snapB] = await Promise.all([getDocs(qAcceptedToMe), getDocs(qAcceptedFromMe)]);
-  const acceptedDocs = [...snapA.docs, ...snapB.docs];
+  // Collect missing-uid entries from subcollection
+  const missingFromSub: { key: string; username: string }[] = [];
+  subSnap.forEach((d) => {
+    const data = d.data() as any;
+    const uid = typeof data?.uid === 'string' ? data.uid : '';
+    const username = (data?.username || '').toString().trim();
+    if (!uid && username) missingFromSub.push({ key: d.id, username });
+  });
 
-  for (const d of acceptedDocs) {
-    const req = d.data() as any;
-    const otherUid = req.senderUid === me.uid ? req.receiverUid : req.senderUid;
-    const otherUsername = req.senderUid === me.uid ? req.receiverUsername : req.senderUsername;
+  // 2) Copy legacy Friends → subcollection (keep username if uid missing)
+  const legacyFriends = (topSnap.exists() ? ((topSnap.data() as any)?.friends || []) : []) as Array<any>;
+  for (const f of legacyFriends) {
+    const uid = typeof f?.uid === 'string' ? f.uid : '';
+    const username = (f?.username || '').toString().trim();
+    if (!username) continue;
+    const key = uid || username.toLowerCase();
+    batch.set(
+      doc(db, 'users', me.uid, 'friends', key),
+      { uid: uid || null, username },
+      { merge: true }
+    );
+    if (!uid) missingFromSub.push({ key, username });
+  }
 
-    // If my edge missing, add it
-    if (!myFriendUids.has(otherUid)) {
-      await setDoc(
-        myFriendsRef,
-        { friends: arrayUnion({ uid: otherUid, username: otherUsername || otherUid }) },
+  // 3) Resolve usernames → uids via Profiles.usernameLower
+  const toResolve = [...new Set(missingFromSub.map((m) => m.username.toLowerCase()))];
+  for (const names of chunk(toResolve, 10)) {
+    const snap = await getDocs(
+      query(collection(db, 'Profiles'), where('usernameLower', 'in', names))
+    );
+    const map = new Map<string, string>(); // lower -> uid
+    snap.forEach((p) => {
+      const pd = p.data() as any;
+      if (pd?.usernameLower) map.set(String(pd.usernameLower), p.id);
+    });
+
+    for (const lower of names) {
+      const uid = map.get(lower);
+      if (!uid) continue;
+      // Write fixed row keyed by uid; keep readable username too
+      const profile = await getDoc(doc(db, 'Profiles', uid));
+      const username = ((profile.data() as any)?.username || lower).toString();
+      batch.set(
+        doc(db, 'users', me.uid, 'friends', uid),
+        { uid, username },
         { merge: true }
       );
-      myFriendUids.add(otherUid);
-    }
-
-    // If BOTH sides have edges, mark completed
-    const otherFriendsSnap = await getDoc(doc(db, "Friends", otherUid));
-    const otherHasMe = (otherFriendsSnap.data()?.friends ?? []).some((f: any) => f?.uid === me.uid);
-
-    if (otherHasMe && myFriendUids.has(otherUid)) {
-      await updateDoc(doc(db, "FriendRequests", d.id), {
-        status: "completed",
-        updatedAt: serverTimestamp(),
-      });
     }
   }
+
+  await batch.commit();
 }
