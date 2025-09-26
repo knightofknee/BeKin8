@@ -63,47 +63,35 @@ async function resolveMyName(uid: string): Promise<string> {
 export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
   const me = auth.currentUser;
   const [loading, setLoading] = useState(true);
-  const [closed, setClosed] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
 
-  // cache beacon expiry for TTL stamping
+  // cache beacon expiry for TTL stamping (optional)
   const expiresAtRef = useRef<number | null>(null);
 
-  // Subscribe to the beacon for expiry info
+  // Subscribe to the beacon only to learn expiresAt (for TTL on messages)
   useEffect(() => {
     const ref = doc(db, 'Beacons', beaconId);
-    const unsub = onSnapshot(ref, (snap) => {
-      setLoading(false);
-      if (!snap.exists()) {
-        setClosed(true);
-        return;
-      }
-      const data: any = snap.data();
-      const startAtMs = getMillis(data?.startAt);
-      const expiresAtMs = getMillis(data?.expiresAt);
-      expiresAtRef.current = expiresAtMs || null;
-
-      const now = Date.now();
-      // Hard close if explicit expiresAt is in the past
-      const isExpired = !!expiresAtMs && now > expiresAtMs;
-      setClosed(isExpired);
-
-      // Soft close fallback: end of startAt day
-      if (!expiresAtMs && startAtMs) {
-        const eos = new Date(startAtMs);
-        eos.setHours(23, 59, 59, 999);
-        if (now > eos.getTime()) setClosed(true);
-      }
-    }, () => {
-      setLoading(false);
-    });
-
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        setLoading(false);
+        if (!snap.exists()) {
+          // If beacon doc is gone, keep chat usable; just no TTL
+          expiresAtRef.current = null;
+          return;
+        }
+        const data: any = snap.data();
+        const expiresAtMs = getMillis(data?.expiresAt);
+        expiresAtRef.current = expiresAtMs || null;
+      },
+      () => setLoading(false)
+    );
     return () => unsub();
   }, [beaconId]);
 
-  // Subscribe to messages (always; visibility is handled at the screen/rules level)
+  // Subscribe to messages (always)
   useEffect(() => {
     const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
     const q = query(col, orderBy('createdAt', 'asc'), limit(200));
@@ -127,8 +115,8 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
   }, [beaconId]);
 
   const canSend = useMemo(() => {
-    return !!me && !closed && text.trim().length > 0 && !sending;
-  }, [me, closed, text, sending]);
+    return !!me && text.trim().length > 0 && !sending;
+  }, [me, text, sending]);
 
   const handleSend = async () => {
     if (!canSend || !me) return;
@@ -137,10 +125,8 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       const authorName = await resolveMyName(me.uid);
       const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
 
-      // TTL: stamp each message with the beacon's expiresAt for automatic cleanup if TTL is enabled
-      const expiresAt = expiresAtRef.current
-        ? Timestamp.fromMillis(expiresAtRef.current)
-        : null;
+      // TTL: stamp each message with the beacon's expiresAt if present
+      const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
 
       await addDoc(col, {
         text: text.trim(),
@@ -190,13 +176,13 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
         }}
       />
 
-      <View style={[styles.inputRow, closed && { opacity: 0.5 }]}>
+      <View style={styles.inputRow}>
         <TextInput
           value={text}
           onChangeText={setText}
-          placeholder={closed ? 'Chat is closed' : 'Message'}
+          placeholder="Message"
           placeholderTextColor="#9CA3AF"
-          editable={!closed}
+          editable
           style={styles.input}
           multiline
         />
@@ -208,10 +194,6 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
           {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
         </Pressable>
       </View>
-
-      {closed && (
-        <Text style={styles.closedNote}>This beacon has ended — chat is closed.</Text>
-      )}
     </KeyboardAvoidingView>
   );
 }
@@ -266,9 +248,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendTxt: { color: '#fff', fontWeight: '800' },
-  closedNote: {
-    textAlign: 'center',
-    color: '#6B7280',
-    paddingBottom: 8,
-  },
 });

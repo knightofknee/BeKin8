@@ -86,7 +86,7 @@ function getMillisFromMaybeTimestamp(v: any): number {
   return 0;
 }
 
-const DEFAULT_BEACON_MESSAGE = 'Beacon lit — who’s in?';
+const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 
 // Fetch profile usernames for unknown UIDs, returns uid->name map
 async function fetchProfileNames(uids: string[]) {
@@ -122,14 +122,18 @@ async function resolveMyOwnerName(user: { uid: string; displayName?: string | nu
 export default function HomeScreen() {
   const router = useRouter();
 
-  // Your beacon state
+  // Your beacon state (active + next active date)
   const [isLit, setIsLit] = useState<boolean | null>(null);
   const [nextBeaconDate, setNextBeaconDate] = useState<Date | null>(null);
+  // Next planned (scheduled/draft) FUTURE date (never today)
+  const [nextPlannedDate, setNextPlannedDate] = useState<Date | null>(null);
 
-  // Friend beacons (most recent per friend, by created/updated time)
+  // Friend beacons list (we will append your own newest at the bottom)
   const [friendBeacons, setFriendBeacons] = useState<FriendBeacon[] | null>(null);
+  // NEW: track my newest beacon to open details/chat
+  const [myNewestBeacon, setMyNewestBeacon] = useState<FriendBeacon | null>(null);
 
-  // Modal state (options + friend details)
+  // Modal state (options + friend/own details)
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
@@ -162,6 +166,8 @@ export default function HomeScreen() {
     if (!user) {
       setIsLit(false);
       setNextBeaconDate(null);
+      setNextPlannedDate(null);
+      setMyNewestBeacon(null);
       return;
     }
     const qMine = query(
@@ -171,34 +177,83 @@ export default function HomeScreen() {
       where('startAt', '<=', Timestamp.fromDate(windowEnd))
     );
 
-    const unsub = onSnapshot(qMine, (snap) => {
-      let lit = false;
-      let soonest: Date | null = null;
+    const unsub = onSnapshot(
+      qMine,
+      (snap) => {
+        let activeSoonest: Date | null = null;
+        let plannedSoonest: Date | null = null;
+        let newestDoc: any = null;
+        let newestCreatedMs = -1;
 
-      snap.forEach((d) => {
-    const data: any = d.data();
-    const stMs = getMillisFromMaybeTimestamp(data?.startAt);
-    if (!stMs) return;
-    const st = new Date(stMs);
-    const active = !!data?.active;
+        const today = new Date();
 
-    // IMPORTANT: only count true scheduled flag, not "scheduled-like"
-    const scheduledFlag =
-      data?.scheduled === true || data?.scheduled === 'true';
+        snap.forEach((d) => {
+          const data: any = d.data();
+          const stMs = getMillisFromMaybeTimestamp(data?.startAt);
+          if (!stMs) return;
+          const st = new Date(stMs);
 
-    if ((active || scheduledFlag) && st) {
-      lit = true;
-      if (!soonest || st.getTime() < soonest.getTime()) soonest = st;
-    }
-  });
+          const active = !!data?.active;
+          const scheduledFlag = data?.scheduled === true || data?.scheduled === 'true';
 
-      setIsLit(lit);
-      setNextBeaconDate(soonest);
-    }, (e) => {
-      console.warn('mine onSnapshot error:', e);
-      setIsLit(false);
-      setNextBeaconDate(null);
-    });
+          // track active soonest
+          if (active) {
+            if (!activeSoonest || st.getTime() < activeSoonest.getTime()) activeSoonest = st;
+          }
+
+          // track planned soonest (future only)
+          if (!active && scheduledFlag && !sameDay(st, today)) {
+            if (!plannedSoonest || st.getTime() < plannedSoonest.getTime()) plannedSoonest = st;
+          }
+
+          // track newest by created/updated for "open my beacon details"
+          const createdMs =
+            getMillisFromMaybeTimestamp(data?.createdAt) ||
+            getMillisFromMaybeTimestamp(data?.updatedAt) ||
+            0;
+          if (createdMs > newestCreatedMs) {
+            newestCreatedMs = createdMs;
+            newestDoc = { id: d.id, data };
+          }
+        });
+
+        setIsLit(!!activeSoonest);
+        setNextBeaconDate(activeSoonest);
+        setNextPlannedDate(plannedSoonest);
+
+        // Build myNewestBeacon from the newest doc (if any)
+        if (newestDoc) {
+          const data = newestDoc.data as any;
+          const stMs = getMillisFromMaybeTimestamp(data?.startAt);
+          if (stMs) {
+            const mine: FriendBeacon = {
+              id: newestDoc.id,
+              ownerUid: user.uid,
+              displayName: 'You',
+              startAt: new Date(stMs),
+              active: !!data?.active,
+              scheduled: data?.scheduled === true || data?.scheduled === 'true',
+              message:
+                (typeof data.message === 'string' && data.message.trim()) ||
+                (typeof data.details === 'string' && data.details.trim()) ||
+                DEFAULT_BEACON_MESSAGE,
+            };
+            setMyNewestBeacon(mine);
+          } else {
+            setMyNewestBeacon(null);
+          }
+        } else {
+          setMyNewestBeacon(null);
+        }
+      },
+      (e) => {
+        console.warn('mine onSnapshot error:', e);
+        setIsLit(false);
+        setNextBeaconDate(null);
+        setNextPlannedDate(null);
+        setMyNewestBeacon(null);
+      }
+    );
 
     return () => unsub();
   }, [todayStart, windowEnd]);
@@ -213,7 +268,7 @@ export default function HomeScreen() {
 
     const unsubs: (() => void)[] = [];
 
-    // 1) Preferred subcollection (also gives names)
+    // Preferred subcollection (names too)
     unsubs.push(
       onSnapshot(collection(db, 'users', me.uid, 'friends'), (snap) => {
         const uids: Set<string> = new Set();
@@ -230,7 +285,7 @@ export default function HomeScreen() {
       })
     );
 
-    // 2) Canonical edges (accepted)
+    // Canonical FriendEdges (accepted)
     unsubs.push(
       onSnapshot(
         query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me.uid), where('state', '==', 'accepted')),
@@ -250,7 +305,7 @@ export default function HomeScreen() {
     return () => unsubs.forEach((fn) => fn());
   }, []);
 
-  // ---------- SUBSCRIBE: beacons for (A) friends owners, (B) audience includes me ----------
+  // ---------- SUBSCRIBE: beacons (friends + audience), list + append my newest ----------
   useEffect(() => {
     const me = auth.currentUser;
     if (!me) {
@@ -276,18 +331,18 @@ export default function HomeScreen() {
       const startMs = todayStart.getTime();
       const endMs = windowEnd.getTime();
 
-      // Build list of candidates (we will later keep only the NEWEST CREATED per owner)
       type Candidate = FriendBeacon & { _createdMs: number };
       const candidates: Candidate[] = [];
       const unknownUids = new Set<string>();
 
+      // gather friend/audience beacons (not my own)
       store.forEach((data: any, id: string) => {
         const stMillis = getMillisFromMaybeTimestamp(data?.startAt);
         if (!stMillis || stMillis < startMs || stMillis > endMs) return;
 
         const ownerUid = String(data.ownerUid ?? '');
         if (!ownerUid) return;
-        if (ownerUid === me.uid) return; // don't show my own beacons
+        if (ownerUid === me.uid) return; // my own handled via myNewestBeacon
 
         const active = !!data?.active;
         const scheduled = data?.scheduled === true || data?.scheduled === 'true';
@@ -317,13 +372,13 @@ export default function HomeScreen() {
           displayName: ownerName,
           startAt: new Date(stMillis),
           active,
-          scheduled: !!scheduled || scheduledLike,
+          scheduled: !!scheduledLike,
           message: msg,
           _createdMs: createdMs,
         });
       });
 
-      // *** CHANGE: collapse to MOST RECENTLY CREATED beacon per owner (newest _createdMs wins) ***
+      // keep newest created per friend owner
       const byOwner = new Map<string, Candidate>();
       candidates.forEach((b) => {
         const prev = byOwner.get(b.ownerUid);
@@ -333,16 +388,19 @@ export default function HomeScreen() {
       });
       const out = Array.from(byOwner.values());
 
-      // sort: date asc, then name (UI choice; not used for selection)
+      // sort friends by start date asc, then name
       out.sort((a, b) => {
         const diff = a.startAt.getTime() - b.startAt.getTime();
         if (diff !== 0) return diff;
         return a.displayName.localeCompare(b.displayName);
       });
 
+      // append my newest beacon (if any)
+      if (myNewestBeacon) out.push(myNewestBeacon);
+
       setFriendBeacons(out);
 
-      // If any unknowns remain (and none of those cards had ownerName on doc), resolve once
+      // resolve unknown names lazily
       if (unknownUids.size) {
         out.forEach((b) => {
           if (b.displayName !== 'Friend') unknownUids.delete(b.ownerUid);
@@ -351,55 +409,7 @@ export default function HomeScreen() {
           fetchProfileNames(Array.from(unknownUids)).then((map) => {
             if (!map || Object.keys(map).length === 0) return;
             Object.assign(nameCacheRef.current, map);
-
-            // Rebuild after names arrive (repeat collapse logic)
-            const refreshedCandidates: Candidate[] = [];
-            store.forEach((data: any, id: string) => {
-              const stMillis = getMillisFromMaybeTimestamp(data?.startAt);
-              if (!stMillis || stMillis < startMs || stMillis > endMs) return;
-              const ownerUid = String(data.ownerUid ?? '');
-              if (!ownerUid || ownerUid === me.uid) return;
-
-              const active = !!data?.active;
-              const scheduled = data?.scheduled === true || data?.scheduled === 'true';
-              const scheduledLike = scheduled || (!active && stMillis >= startMs);
-              if (!active && !scheduledLike) return;
-
-              const resolvedName: string =
-                (typeof data.ownerName === 'string' && data.ownerName.trim()) ||
-                nameCacheRef.current[ownerUid] ||
-                'Friend';
-
-              const msg: string =
-                (typeof data.message === 'string' && data.message.trim()) ||
-                (typeof data.details === 'string' && data.details.trim()) ||
-                DEFAULT_BEACON_MESSAGE;
-
-              const createdMs =
-                getMillisFromMaybeTimestamp(data?.createdAt) ||
-                getMillisFromMaybeTimestamp(data?.updatedAt) ||
-                0;
-
-              refreshedCandidates.push({
-                id,
-                ownerUid,
-                displayName: resolvedName,
-                startAt: new Date(stMillis),
-                active,
-                scheduled: !!scheduled || scheduledLike,
-                message: msg,
-                _createdMs: createdMs,
-              });
-            });
-
-            const byOwner2 = new Map<string, Candidate>();
-            refreshedCandidates.forEach((b) => {
-              const prev = byOwner2.get(b.ownerUid);
-              if (!prev || (b._createdMs || 0) > (prev._createdMs || 0)) byOwner2.set(b.ownerUid, b);
-            });
-            const refreshed = Array.from(byOwner2.values());
-            refreshed.sort((a, b) => (a.startAt.getTime() - b.startAt.getTime()) || a.displayName.localeCompare(b.displayName));
-            setFriendBeacons(refreshed);
+            setFriendBeacons((prev) => (prev ? [...prev] : prev));
           });
         }
       }
@@ -430,8 +440,8 @@ export default function HomeScreen() {
       unsubs.forEach((fn) => fn());
       beaconUnsubsRef.current = [];
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [friendUids, todayStart, windowEnd]);
+    // include myNewestBeacon so list re-renders when it changes
+  }, [friendUids, todayStart, windowEnd, myNewestBeacon]);
 
   // ---------- initial reconcile on mount ----------
   useEffect(() => {
@@ -444,7 +454,7 @@ export default function HomeScreen() {
     const action = isLit ? 'Extinguish' : 'Light';
     Alert.alert(
       `${action} Beacon`,
-      `Are you sure you want to ${action.toLowerCase()} your beacon${isLit ? ' (today and any upcoming within 7 days)' : ''}?`,
+      `Are you sure you want to ${action.toLowerCase()} your beacon${isLit ? ' for today' : ''}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -459,35 +469,26 @@ export default function HomeScreen() {
 
             try {
               const beaconsRef = collection(db, 'Beacons');
+              const sd = startOfDay(new Date());
+              const ed = endOfDay(new Date());
 
-              // Primary: by startAt window
-              const qWindow = query(
+              // Query only TODAY’s beacons
+              const qToday = query(
                 beaconsRef,
                 where('ownerUid', '==', user.uid),
-                where('startAt', '>=', Timestamp.fromDate(todayStart)),
-                where('startAt', '<=', Timestamp.fromDate(windowEnd))
+                where('startAt', '>=', Timestamp.fromDate(sd)),
+                where('startAt', '<=', Timestamp.fromDate(ed))
               );
-              let snap = await getDocs(qWindow);
-
-              // Fallback (legacy docs without startAt): by createdAt today+
-              if (isLit && snap.empty) {
-                const qLegacy = query(
-                  beaconsRef,
-                  where('ownerUid', '==', user.uid),
-                  where('createdAt', '>=', Timestamp.fromDate(todayStart))
-                );
-                snap = await getDocs(qLegacy);
-              }
+              const snap = await getDocs(qToday);
 
               if (isLit) {
-                // Extinguish: deactivate/cancel all candidate docs
+                // Extinguish: today’s; clear scheduled so it disappears
                 if (!snap.empty) {
                   const updates = snap.docs.map((b) =>
                     updateDoc(b.ref, {
                       active: false,
                       scheduled: false,
                       updatedAt: serverTimestamp(),
-                      expiresAt: Timestamp.fromDate(new Date(Date.now() - 1000)),
                     })
                   );
                   await Promise.all(updates);
@@ -495,25 +496,35 @@ export default function HomeScreen() {
                 setIsLit(false);
                 setNextBeaconDate(null);
               } else {
-                // Light for TODAY (quick action)
-                const sd = startOfDay(new Date());
-                const ed = endOfDay(new Date());
-                const ownerName = await resolveMyOwnerName(user);
-                await addDoc(beaconsRef, {
-                  ownerUid: user.uid,
-                  ownerName,
-                  message: DEFAULT_BEACON_MESSAGE,
-                  details: DEFAULT_BEACON_MESSAGE,
-                  active: true,
-                  scheduled: true,
-                  createdAt: Timestamp.now(),
-                  updatedAt: serverTimestamp(),
-                  startAt: Timestamp.fromDate(sd),
-                  expiresAt: Timestamp.fromDate(ed),
-                  audienceUids: [],
-                  audienceUsernames: [],
-                  friends: [],
-                });
+                // Light: update or create for today
+                if (!snap.empty) {
+                  await Promise.all(
+                    snap.docs.map((b) =>
+                      updateDoc(b.ref, {
+                        active: true,
+                        scheduled: true,
+                        updatedAt: serverTimestamp(),
+                      })
+                    )
+                  );
+                } else {
+                  const ownerName = await resolveMyOwnerName(user);
+                  await addDoc(beaconsRef, {
+                    ownerUid: user.uid,
+                    ownerName,
+                    message: DEFAULT_BEACON_MESSAGE,
+                    details: DEFAULT_BEACON_MESSAGE,
+                    active: true,
+                    scheduled: true,
+                    createdAt: Timestamp.now(),
+                    updatedAt: serverTimestamp(),
+                    startAt: Timestamp.fromDate(sd),
+                    expiresAt: Timestamp.fromDate(ed),
+                    audienceUids: [],
+                    audienceUsernames: [],
+                    friends: [],
+                  });
+                }
                 setIsLit(true);
                 setNextBeaconDate(sd);
               }
@@ -527,13 +538,37 @@ export default function HomeScreen() {
     );
   };
 
-  // ---------- Save from modal ----------
+  // Helper: clear other scheduled drafts in window (except chosen day)
+  const clearOtherScheduledDrafts = async (uid: string, keepStart: Date) => {
+    const beaconsRef = collection(db, 'Beacons');
+    const qWin = query(
+      beaconsRef,
+      where('ownerUid', '==', uid),
+      where('startAt', '>=', Timestamp.fromDate(todayStart)),
+      where('startAt', '<=', Timestamp.fromDate(windowEnd))
+    );
+    const snap = await getDocs(qWin);
+    const ops: Promise<any>[] = [];
+    snap.forEach((d) => {
+      const data: any = d.data();
+      const stMs = getMillisFromMaybeTimestamp(data?.startAt);
+      if (!stMs) return;
+      const st = new Date(stMs);
+      const isKeep = sameDay(st, keepStart);
+      const isScheduled = data?.scheduled === true || data?.scheduled === 'true';
+      const isActive = !!data?.active;
+      if (!isKeep && isScheduled && !isActive) {
+        ops.push(updateDoc(d.ref, { scheduled: false, updatedAt: serverTimestamp() }));
+      }
+    });
+    if (ops.length) await Promise.all(ops);
+  };
+
+  // ---------- Save from modal (NEVER activates) ----------
   const saveBeaconOptions = async () => {
     const user = auth.currentUser;
-    if (!user) {
-      Alert.alert('Not signed in', 'Please sign in to set a beacon.');
-      return;
-    }
+    if (!user) return;
+
     try {
       const base = startOfDay(new Date());
       base.setDate(base.getDate() + dayOffset);
@@ -543,62 +578,41 @@ export default function HomeScreen() {
       const beaconsRef = collection(db, 'Beacons');
       const ownerName = await resolveMyOwnerName(user);
 
-      if (dayOffset === 0) {
-        // TODAY: upsert by startAt range
-        const qToday = query(
-          beaconsRef,
-          where('ownerUid', '==', user.uid),
-          where('startAt', '>=', Timestamp.fromDate(startOfDay(new Date()))),
-          where('startAt', '<=', Timestamp.fromDate(endOfDay(new Date())))
-        );
-        const snap = await getDocs(qToday);
-        if (!snap.empty) {
-          await updateDoc(snap.docs[0].ref, {
-            ownerName,
-            message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            startAt: Timestamp.fromDate(sd),
-            expiresAt: Timestamp.fromDate(ed),
-            active: true,
-            scheduled: true,
-            updatedAt: serverTimestamp(),
-          });
-          setIsLit(true);
-          setNextBeaconDate(sd);
-          Alert.alert('Updated', 'Today’s beacon was updated.');
-        } else {
-          await addDoc(beaconsRef, {
-            ownerUid: user.uid,
-            ownerName,
-            message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            active: true,
-            scheduled: true,
-            createdAt: Timestamp.now(),
-            updatedAt: serverTimestamp(),
-            startAt: Timestamp.fromDate(sd),
-            expiresAt: Timestamp.fromDate(ed),
-          });
-          setIsLit(true);
-          setNextBeaconDate(sd);
-          Alert.alert('Beacon set', 'Your beacon is live for today.');
-        }
+      // Upsert a doc for the chosen date. DO NOT flip active here.
+      const qDay = query(
+        beaconsRef,
+        where('ownerUid', '==', user.uid),
+        where('startAt', '>=', Timestamp.fromDate(sd)),
+        where('startAt', '<=', Timestamp.fromDate(ed))
+      );
+      const snap = await getDocs(qDay);
+
+      if (!snap.empty) {
+        const docRef = snap.docs[0].ref;
+        await updateDoc(docRef, {
+          ownerName,
+          message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+          details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
+          startAt: Timestamp.fromDate(sd),
+          expiresAt: Timestamp.fromDate(ed),
+          scheduled: true, // draft only
+          updatedAt: serverTimestamp(),
+        });
       } else {
-        // FUTURE: deterministic doc id + scheduled
         const yyyy = sd.getFullYear();
         const mm = String(sd.getMonth() + 1).padStart(2, '0');
         const dd = String(sd.getDate()).padStart(2, '0');
-        const docId = `${user.uid}_${yyyy}${mm}${dd}`;
+        const deterministicId = `${user.uid}_${yyyy}${mm}${dd}`;
 
         await setDoc(
-          doc(db, 'Beacons', docId),
+          doc(db, 'Beacons', deterministicId),
           {
             ownerUid: user.uid,
             ownerName,
             message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
             details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            active: false,
-            scheduled: true,
+            active: false,   // not lit
+            scheduled: true, // draft
             startAt: Timestamp.fromDate(sd),
             expiresAt: Timestamp.fromDate(ed),
             createdAt: serverTimestamp(),
@@ -606,11 +620,19 @@ export default function HomeScreen() {
           },
           { merge: true }
         );
-
-        setIsLit(true);
-        setNextBeaconDate(sd);
-        Alert.alert('Scheduled', `Beacon scheduled for ${sd.toLocaleDateString()}.`);
       }
+
+      // Keep only the chosen draft in the 7-day window (so labels match)
+      await clearOtherScheduledDrafts(user.uid, sd);
+
+      // Update local labels so the status reflects scheduler immediately
+      if (dayOffset === 0) {
+        setNextPlannedDate(null);           // never show "scheduled for today"
+        if (isLit) setNextBeaconDate(sd);   // if lit, keep ACTIVE label correct
+      } else {
+        setNextPlannedDate(sd);             // show SCHEDULED label for future day
+      }
+
       setOptionsOpen(false);
     } catch (e: any) {
       console.error(e);
@@ -618,19 +640,41 @@ export default function HomeScreen() {
     }
   };
 
-  // Friendly label for your beacon
+  // Friendly labels
   const activeLabel = useMemo(() => {
-    if (!isLit || !nextBeaconDate) return null;
+    if (!nextBeaconDate) return null;
     return sameDay(nextBeaconDate, new Date())
       ? 'today'
       : nextBeaconDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
-  }, [isLit, nextBeaconDate]);
+  }, [nextBeaconDate]);
+
+  const plannedLabel = useMemo(() => {
+    if (!nextPlannedDate) return null;
+    if (sameDay(nextPlannedDate, new Date())) return null; // never show "scheduled for today"
+    return nextPlannedDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
+  }, [nextPlannedDate]);
 
   const activeTodayCount = useMemo(() => {
     if (!friendBeacons) return 0;
     const today = new Date();
     return friendBeacons.filter((b) => sameDay(b.startAt, today) && b.active).length;
   }, [friendBeacons]);
+
+  // NEW: counts that exclude my own appended beacon (for header display only)
+  const meUid = auth.currentUser?.uid || null;
+
+  const friendOnlyCount = useMemo(() => {
+    if (!friendBeacons) return 0;
+    return friendBeacons.filter((b) => b.ownerUid !== meUid).length;
+  }, [friendBeacons, meUid]);
+
+  const friendOnlyActiveTodayCount = useMemo(() => {
+    if (!friendBeacons) return 0;
+    const today = new Date();
+    return friendBeacons.filter(
+      (b) => b.ownerUid !== meUid && sameDay(b.startAt, today) && b.active
+    ).length;
+  }, [friendBeacons, meUid]);
 
   // Loading
   if (isLit === null || friendBeacons === null) {
@@ -646,15 +690,13 @@ export default function HomeScreen() {
     const isToday = sameDay(b.startAt, new Date());
     if (isToday && b.active) return [styles.beaconItem, styles.cardActiveToday];
     if (!isToday) return [styles.beaconItem, styles.cardFuture];
-    // today but not active (scheduled like)
     return [styles.beaconItem, styles.cardTodayScheduled];
   };
 
   // Small card item for friend beacon (CLICKABLE)
   const FriendBeaconItem = ({ beacon }: { beacon: FriendBeacon }) => {
     const isToday = sameDay(beacon.startAt, new Date());
-    const status =
-      isToday && beacon.active ? 'Active today' : beacon.active ? 'Active' : 'Scheduled';
+    const status = isToday && beacon.active ? 'Active today' : beacon.active ? 'Active' : 'Scheduled';
 
     return (
       <Pressable
@@ -681,13 +723,13 @@ export default function HomeScreen() {
 
   return (
     <>
-      {/* Friend beacons section */}
+      {/* Friend beacons section (appends your newest at the bottom) */}
       <View style={styles.friendsSection}>
         {friendBeacons.length > 0 ? (
           <>
             <Text style={styles.friendActiveHeader}>
-              {friendBeacons.length} beacon{friendBeacons.length > 1 ? 's' : ''} from friends
-              {activeTodayCount ? ` • ${activeTodayCount} active today` : ''}
+              {friendOnlyCount} beacon{friendOnlyCount !== 1 ? 's' : ''} from friends
+              {friendOnlyActiveTodayCount ? ` • ${friendOnlyActiveTodayCount} active today` : ''}
             </Text>
 
             <ScrollView
@@ -707,9 +749,22 @@ export default function HomeScreen() {
 
       {/* Bottom-hugging main area */}
       <View style={styles.container}>
-        <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
-          <Text style={styles.beaconIcon}>{isLit ? '🔥' : '🪵'}</Text>
-        </TouchableOpacity>
+        <View style={styles.myBeaconRow}>
+          <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
+            <Text style={styles.beaconIcon}>{isLit ? '🔥' : '🪵'}</Text>
+          </TouchableOpacity>
+
+          {/* Only show when beacon is ON and we have myNewestBeacon */}
+          {isLit && myNewestBeacon ? (
+            <TouchableOpacity
+              onPress={() => setSelectedBeacon(myNewestBeacon)}
+              activeOpacity={0.8}
+              style={styles.myChatBtn}
+            >
+              <Text style={styles.myChatBtnTxt}>Open my beacon details</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
 
         {/* Open options */}
         <TouchableOpacity onPress={() => setOptionsOpen(true)} activeOpacity={0.8}>
@@ -717,8 +772,10 @@ export default function HomeScreen() {
         </TouchableOpacity>
         <Text style={styles.subtitle}>Tap the {isLit ? 'fire to extinguish' : 'log to light'} your beacon</Text>
 
-        {isLit ? (
+        {isLit && activeLabel ? (
           <Text style={styles.statusActive}>Your beacon is ACTIVE for {activeLabel}</Text>
+        ) : plannedLabel ? (
+          <Text style={styles.status}>Your beacon is SCHEDULED for {plannedLabel}</Text>
         ) : (
           <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
         )}
@@ -781,12 +838,12 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* Friend beacon details modal (on card click) */}
+      {/* Friend/Own beacon details modal (on card click) */}
       <Modal visible={!!selectedBeacon} animationType="fade" transparent onRequestClose={() => setSelectedBeacon(null)}>
         <View style={styles.modalBackdropCenter}>
           <View style={styles.detailCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Friend Beacon</Text>
+              <Text style={styles.modalTitle}>Beacon</Text>
               <Pressable onPress={() => setSelectedBeacon(null)}>
                 <Text style={styles.close}>✕</Text>
               </Pressable>
@@ -808,7 +865,6 @@ export default function HomeScreen() {
                 <View style={styles.detailMsgBox}>
                   <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
                 </View>
-                {/* placeholder CTA for per-beacon chat */}
                 <View style={{ marginTop: 12 }}>
                   <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
                 </View>
@@ -831,12 +887,28 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingBottom: 50,
   },
+  myBeaconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 8,
+  },
   beaconContainer: {
-    marginBottom: 24,
+    marginBottom: 8,
   },
   beaconIcon: {
     fontSize: 64,
   },
+  myChatBtn: {
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  myChatBtnTxt: { fontWeight: '700', color: '#0B1426' },
+
   title: {
     fontSize: 24,
     fontWeight: 'bold',
@@ -898,9 +970,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 10,
   },
-  cardActiveToday: { backgroundColor: '#FFF4E5', borderColor: '#FFE0B2' }, // warm for active today
-  cardTodayScheduled: { backgroundColor: '#F3F4F6', borderColor: '#E5E7EB' }, // muted for today but not active
-  cardFuture: { backgroundColor: '#E7F0FF', borderColor: '#C7DAFF' }, // cool tint for future
+  cardActiveToday: { backgroundColor: '#FFF4E5', borderColor: '#FFE0B2' },
+  cardTodayScheduled: { backgroundColor: '#F3F4F6', borderColor: '#E5E7EB' },
+  cardFuture: { backgroundColor: '#E7F0FF', borderColor: '#C7DAFF' },
   beaconOwner: {
     fontSize: 15,
     fontWeight: '800',
