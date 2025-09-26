@@ -9,12 +9,14 @@ import {
   TextInput,
   View,
   FlatList,
+  Alert,
 } from "react-native";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import {
   arrayUnion,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -25,7 +27,6 @@ import {
   where,
   serverTimestamp,
 } from "firebase/firestore";
-import { reconcileFriendEdges } from "@/helpers/ReconcileFriendEdges";
 
 type Friend = { uid?: string; username: string };
 
@@ -51,6 +52,8 @@ const colors = {
   border: "#E5E7EB",
   error: "#B00020",
   success: "#0E7A0D",
+  danger: "#B00020",
+  dark: "#111827",
 };
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
@@ -159,10 +162,9 @@ export default function FriendsScreen() {
         return;
       }
 
-      reconcileFriendEdges().catch((e) => console.warn("reconcileFriendEdges failed (friends):", e));
       fetchCurrentUsername();
 
-      // Subscribe: incoming pending
+      // Subscribe: incoming pending (receiver==me)
       const qIn = query(
         collection(db, "FriendRequests"),
         where("receiverUid", "==", user.uid),
@@ -173,7 +175,7 @@ export default function FriendsScreen() {
       });
       cleanups.push(unsubIn);
 
-      // Subscribe: outgoing pending
+      // Subscribe: outgoing pending (sender==me)
       const qOut = query(
         collection(db, "FriendRequests"),
         where("senderUid", "==", user.uid),
@@ -184,7 +186,7 @@ export default function FriendsScreen() {
       });
       cleanups.push(unsubOut);
 
-      // Subscribe: preferred subcollection
+      // Subscribe: preferred subcollection (my denorm list)
       const unsubSub = onSnapshot(collection(db, "users", user.uid, "friends"), (snap) => {
         const arr = snap.docs.map((d) => d.data() as any);
         const cleaned = cleanAndDedupeFriends(arr);
@@ -334,19 +336,12 @@ export default function FriendsScreen() {
 
       if (targetUid === me.uid) return showMessage("You can’t add yourself.", "error");
 
-      // Prevent re-sending: check edges already accepted
-      const qEdges = query(
-        collection(db, "FriendEdges"),
-        where("uids", "array-contains", me.uid),
-        where("state", "==", "accepted")
-      );
-      const edgesSnap = await getDocs(qEdges);
-      const alreadyFriends = edgesSnap.docs.some((d) => {
-        const ed = d.data() as any;
-        const uids: string[] = Array.isArray(ed?.uids) ? ed.uids : [];
-        return uids.includes(targetUid);
-      });
-      if (alreadyFriends) return showMessage("Already friends.", "success");
+      // Check if already friends (edge exists and accepted)
+      const eid = edgeId(me.uid, targetUid);
+      const existingEdge = await getDoc(doc(db, "FriendEdges", eid));
+      if (existingEdge.exists() && (existingEdge.data() as any)?.state === "accepted") {
+        return showMessage("Already friends.", "success");
+      }
 
       // Prevent duplicates in requests
       const outId = requestIdFor(me.uid, targetUid);
@@ -359,12 +354,6 @@ export default function FriendsScreen() {
       }
       if (existingIn.exists() && (existingIn.data() as any).status === "pending") {
         return showMessage("They already requested you — check requests above.", "success");
-      }
-      if (
-        (existingOut.exists() && (existingOut.data() as any).status === "accepted") ||
-        (existingIn.exists() && (existingIn.data() as any).status === "accepted")
-      ) {
-        return showMessage("Already friends.", "success");
       }
 
       // Create outgoing request
@@ -395,7 +384,7 @@ export default function FriendsScreen() {
     }
   };
 
-  // Accept request — no cross-user writes
+  // Accept request — receiver only
   const acceptRequest = async (req: FriendRequest) => {
     const me = auth.currentUser;
     if (!me || req.receiverUid !== me.uid) return;
@@ -411,7 +400,7 @@ export default function FriendsScreen() {
         updatedAt: serverTimestamp(),
       });
 
-      // 2) Canonical edge
+      // 2) Create/Upsert canonical edge (both sides will see via their listeners)
       const eid = edgeId(me.uid, otherUid);
       await setDoc(
         doc(db, "FriendEdges", eid),
@@ -424,7 +413,7 @@ export default function FriendsScreen() {
         { merge: true }
       );
 
-      // 3) Denormalize under *my* user only
+      // 3) (Optional) Denormalize under *my* user for fast lists
       const otherProfile = await getDoc(doc(db, "Profiles", otherUid));
       const otherUsername =
         (otherProfile.exists() && (otherProfile.data() as any)?.username) || req.senderUsername || otherUid;
@@ -440,6 +429,9 @@ export default function FriendsScreen() {
         { friends: arrayUnion({ uid: otherUid, username: otherUsername }) },
         { merge: true }
       );
+
+      // 4) Clean up request doc (no longer needed)
+      await deleteDoc(doc(db, "FriendRequests", req.id));
 
       nameCacheRef.current[otherUid] = otherUsername;
 
@@ -490,6 +482,56 @@ export default function FriendsScreen() {
     }
   };
 
+  // ---- Remove friend (UNFRIEND) ----
+  const removeFriend = async (friend: Friend) => {
+    const me = auth.currentUser;
+    if (!me) return showMessage("Please log in first.", "error");
+    if (!friend.uid) return showMessage("Can’t remove this entry (missing UID).", "error");
+
+    const otherUid = friend.uid;
+    const eid = edgeId(me.uid, otherUid);
+
+    try {
+      setBusy(true);
+
+      // 1) Delete the canonical edge doc (true unfriend, enables re-request)
+      await deleteDoc(doc(db, "FriendEdges", eid));
+
+      // 2) Remove my denorm subcollection doc
+      await deleteDoc(doc(db, "users", me.uid, "friends", otherUid));
+
+      // 3) Remove from Friends/{me} array (rewrite safely)
+      const fDoc = await getDoc(doc(db, "Friends", me.uid));
+      if (fDoc.exists()) {
+        const arr: any[] = Array.isArray((fDoc.data() as any).friends) ? (fDoc.data() as any).friends : [];
+        const filtered = arr.filter((x) => String(x?.uid) !== otherUid);
+        await setDoc(doc(db, "Friends", me.uid), { friends: filtered }, { merge: true });
+      }
+
+      showMessage(`Removed ${friend.username}.`, "success");
+    } catch (e) {
+      console.error("removeFriend error", e);
+      showMessage("Failed to remove friend.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmRemove = (friend: Friend) => {
+    Alert.alert(
+      "Remove friend",
+      `Are you sure you want to remove ${friend.username}?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => removeFriend(friend),
+        },
+      ]
+    );
+  };
+
   // Row components
   const RequestRowIncoming = ({ item }: { item: FriendRequest }) => (
     <View style={styles.row}>
@@ -512,7 +554,7 @@ export default function FriendsScreen() {
       <Pressable
         onPress={() => rejectRequest(item)}
         disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: "#b00020", opacity: busy ? 0.5 : 1 }]}
+        style={[styles.smallBtn, { backgroundColor: colors.danger, opacity: busy ? 0.5 : 1 }]}
       >
         <Text style={styles.smallBtnText}>Reject</Text>
       </Pressable>
@@ -550,6 +592,21 @@ export default function FriendsScreen() {
       <View style={{ flex: 1 }}>
         <Text style={styles.rowTitle}>{item.username}</Text>
       </View>
+      <Pressable
+        disabled={busy || !item.uid}
+        onPress={() => confirmRemove(item)}
+        style={[
+          styles.smallBtn,
+          {
+            backgroundColor: "#fff",
+            borderWidth: 1,
+            borderColor: colors.border,
+            opacity: busy || !item.uid ? 0.5 : 1,
+          },
+        ]}
+      >
+        <Text style={{ fontSize: 18 }}>⛔️</Text>
+      </Pressable>
     </View>
   );
 
@@ -655,7 +712,7 @@ export default function FriendsScreen() {
                         keyExtractor={(i) => `in_${i.id}`}
                         renderItem={RequestRowIncoming}
                         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-                        scrollEnabled={false} // <— IMPORTANT: don't steal scroll
+                        scrollEnabled={false}
                       />
                     </>
                   )}
@@ -667,7 +724,7 @@ export default function FriendsScreen() {
                         keyExtractor={(i) => `out_${i.id}`}
                         renderItem={RequestRowOutgoing}
                         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-                        scrollEnabled={false} // <— IMPORTANT
+                        scrollEnabled={false}
                       />
                     </>
                   )}

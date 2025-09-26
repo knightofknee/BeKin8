@@ -63,3 +63,15 @@ carly  - test@tester
 --- future
 add button for chat like smoke above the flame for the beaconer. a button
 chat for self posts are hard to read with the blue
+
+
+ also for the chat room, it shouldnt show the time
+
+                  {item.authorName || (mine ? 'You' : 'Friend')} • {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+how do we remove the time from that?
+\
+
+
+sexy bottom buttons for friends create post go to feed stuff
+
+beacon info time removal

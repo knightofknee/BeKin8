@@ -211,16 +211,29 @@ const styles = StyleSheet.create({
   },
   msgRowMine: { justifyContent: 'flex-end' },
   msgRowTheirs: { justifyContent: 'flex-start' },
+
+  // Bubbles: high readability, gentle difference
   bubble: {
     maxWidth: '82%',
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderRadius: 14,
+    borderWidth: 1,
   },
-  bubbleMine: { backgroundColor: '#2F6FED' },
-  bubbleTheirs: { backgroundColor: '#F3F4F6' },
-  msgText: { color: '#111827' },
-  msgMeta: { fontSize: 11, marginBottom: 2, color: '#6B7280' },
+  // Very light blue for my messages, dark text
+  bubbleMine: {
+    backgroundColor: '#EEF2FF', // soft indigo-50
+    borderColor: '#C7DAFF',     // soft indigo-200
+  },
+  // Subtle light gray/white for others
+  bubbleTheirs: {
+    backgroundColor: '#F8FAFC', // slate-50
+    borderColor: '#E5E7EB',     // gray-200
+  },
+
+  msgText: { color: '#0B1426', fontSize: 15, lineHeight: 20 },
+  msgMeta: { fontSize: 11, marginBottom: 2, color: '#64748B' },
+
   inputRow: {
     flexDirection: 'row',
     gap: 8,
@@ -238,6 +251,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     textAlignVertical: 'top',
+    color: '#0B1426',
   },
   sendBtn: {
     backgroundColor: '#2F6FED',
