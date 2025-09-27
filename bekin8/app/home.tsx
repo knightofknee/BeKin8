@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
-  Button,
   Modal,
   Pressable,
   TextInput,
@@ -29,6 +28,7 @@ import {
 } from 'firebase/firestore';
 import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
+import FooterNav from '../components/FooterNav';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -286,7 +286,7 @@ export default function HomeScreen() {
                 // Inactivate current active
                 await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
                   active: false,
-                  scheduled: false,
+                  scheduled: true,
                   updatedAt: serverTimestamp(),
                 });
 
@@ -483,28 +483,22 @@ export default function HomeScreen() {
         </Text>
 
         {isLit && myActiveBeacon ? (
-          <Text style={styles.statusActive}>Your beacon is ACTIVE for {activeLabel}</Text>
-        ) : nextPlannedDate ? (
-          <Text style={styles.status}>
-            Your beacon is SCHEDULED for{' '}
-            {nextPlannedDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase()}
-          </Text>
-        ) : (
-          <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
-        )}
+  <Text style={styles.statusActive}>Your beacon is ACTIVE for {activeLabel}</Text>
+) : nextPlannedDate ? (
+  <Text style={styles.status}>
+    Your beacon is set for{' '}
+    {sameDay(nextPlannedDate, new Date())
+      ? 'today'
+      : nextPlannedDate.toLocaleDateString(undefined, { weekday: 'long' })}
+  </Text>
+) : (
+  <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
+)}
 
-        <View style={styles.feedButton}>
-          <Button title="Go to Feed" onPress={() => router.push('/feed')} />
-        </View>
-        <View style={styles.feedButton}>
-          <Button title="Friends" onPress={() => router.push('/friends')} />
-        </View>
-        <View style={styles.feedButton}>
-          <Button title="Create Post" onPress={() => router.push('/create-post')} />
-        </View>
+        <FooterNav />
       </View>
 
-      {/* Options Modal (RESTORED) */}
+      {/* Options Modal */}
       <Modal visible={optionsOpen} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -624,9 +618,7 @@ const styles = StyleSheet.create({
   statusActive: { fontSize: 18, fontWeight: '600', color: 'green', marginBottom: 12 },
   statusInactive: { fontSize: 18, fontWeight: '600', color: 'red', marginBottom: 12 },
 
-  feedButton: { marginTop: 24, width: '60%' },
-
-  // --- Options modal styles (restored) ---
+  // --- Options modal styles ---
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.18)',

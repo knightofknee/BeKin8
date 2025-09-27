@@ -1,16 +1,8 @@
 // components/FriendsBeaconsList.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { auth, db } from '../firebase.config';
-import {
-  collection,
-  doc,
-  getDoc,
-  onSnapshot,
-  query,
-  Timestamp,
-  where,
-} from 'firebase/firestore';
+import { collection, doc, getDoc, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
 
 export type FriendBeacon = {
   id: string;
@@ -28,36 +20,23 @@ type Props = {
 
 // --- helpers ---
 function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+  const x = new Date(d); x.setHours(0, 0, 0, 0); return x;
 }
 function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
+  const x = new Date(d); x.setHours(23, 59, 59, 999); return x;
 }
 function endOfNextSixDays(from: Date) {
-  const end = endOfDay(new Date(from));
-  end.setDate(end.getDate() + 6);
-  return end;
+  const end = endOfDay(new Date(from)); end.setDate(end.getDate() + 6); return end;
 }
 function sameDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 function dayLabel(d: Date) {
-  const today = new Date();
-  if (sameDay(d, today)) return 'Today';
+  const today = new Date(); if (sameDay(d, today)) return 'Today';
   return d.toLocaleDateString(undefined, { weekday: 'long' });
 }
-function monthDay(d: Date) {
-  // Ensure leading capital for some locales that return lowercase month names
-  const s = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  return s.charAt(0).toUpperCase() + s.slice(1);
+function shortDate(d: Date) {
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 function getMillis(v: any): number {
   if (!v) return 0;
@@ -65,8 +44,7 @@ function getMillis(v: any): number {
   if (v instanceof Date) return v.getTime();
   if (typeof v.toMillis === 'function') return v.toMillis();
   if (typeof v.toDate === 'function') return v.toDate().getTime();
-  if (typeof v.seconds === 'number')
-    return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
+  if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
   return 0;
 }
 
@@ -79,14 +57,10 @@ async function fetchProfileNames(uids: string[]) {
       const snap = await getDoc(doc(db, 'Profiles', uid));
       if (snap.exists()) {
         const data: any = snap.data();
-        const uname = (data?.username || data?.displayName || '')
-          .toString()
-          .trim();
+        const uname = (data?.username || data?.displayName || '').toString().trim();
         if (uname) results[uid] = uname;
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
   return results;
 }
@@ -105,12 +79,32 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const todayStart = useMemo(() => startOfDay(new Date()), []);
   const windowEnd = useMemo(() => endOfNextSixDays(todayStart), [todayStart]);
 
+  // --- “peek 4th card” measurement & overlay state ---
+  const [firstCardH, setFirstCardH] = useState<number | null>(null);
+  const [showMoreHint, setShowMoreHint] = useState(false);
+
+  const listMaxHeight = useMemo(() => {
+    if (!firstCardH) return undefined;
+    // 3 cards + gaps between them (2 gaps at 10px) + a ~35% peek of the 4th card
+    const gaps = 2 * 10;
+    return Math.round(firstCardH * 3 + gaps + firstCardH * 0.35);
+  }, [firstCardH]);
+
+  useEffect(() => {
+    setShowMoreHint(beacons.length > 3); // enable hint when there’s more than 3
+  }, [beacons.length]);
+
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!showMoreHint) return;
+    const y = e.nativeEvent.contentOffset.y;
+    if (y > 6) setShowMoreHint(false); // hide once the user scrolls a tad
+  };
+
   // subscribe: friend lists (subcollection + FriendEdges)
   useEffect(() => {
     const me = auth.currentUser;
     if (!me) {
-      setFriendUids([]);
-      return;
+      setFriendUids([]); return;
     }
 
     const unsubs: (() => void)[] = [];
@@ -127,19 +121,13 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
             }
           }
         });
-        setFriendUids((prev) =>
-          Array.from(new Set([...prev, ...Array.from(uids)]))
-        );
+        setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
       })
     );
 
     unsubs.push(
       onSnapshot(
-        query(
-          collection(db, 'FriendEdges'),
-          where('uids', 'array-contains', me.uid),
-          where('state', '==', 'accepted')
-        ),
+        query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me.uid), where('state', '==', 'accepted')),
         (snap) => {
           const uids = new Set<string>();
           snap.forEach((d) => {
@@ -148,9 +136,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
             const other = arr.find((u) => u !== me.uid);
             if (other) uids.add(other);
           });
-          setFriendUids((prev) =>
-            Array.from(new Set([...prev, ...Array.from(uids)]))
-          );
+          setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
         }
       )
     );
@@ -207,8 +193,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
           (typeof data.details === 'string' && data.details.trim()) ||
           DEFAULT_BEACON_MESSAGE;
 
-        const createdMs =
-          getMillis(data?.createdAt) || getMillis(data?.updatedAt) || 0;
+        const createdMs = getMillis(data?.createdAt) || getMillis(data?.updatedAt) || 0;
 
         candidates.push({
           id,
@@ -226,9 +211,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       const byOwner = new Map<string, Candidate>();
       candidates.forEach((b) => {
         const prev = byOwner.get(b.ownerUid);
-        if (!prev || (b._createdMs || 0) > (prev._createdMs || 0)) {
-          byOwner.set(b.ownerUid, b);
-        }
+        if (!prev || (b._createdMs || 0) > (prev._createdMs || 0)) byOwner.set(b.ownerUid, b);
       });
 
       const out = Array.from(byOwner.values());
@@ -240,7 +223,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
       setBeacons(out);
 
-      // resolve unknown names in the background
+      // resolve unknown names
       if (unknownUids.size) {
         out.forEach((b) => {
           if (b.displayName !== 'Friend') unknownUids.delete(b.ownerUid);
@@ -255,26 +238,17 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       }
     };
 
-    // cleanup old listeners
+    // cleanup
     beaconUnsubsRef.current.forEach((fn) => fn());
     beaconUnsubsRef.current = [];
     docStoreRef.current.clear();
 
     const unsubs: (() => void)[] = [];
     const uids = Array.from(new Set(friendUids)).filter(Boolean);
-
-    // chunk ownerUid IN by ≤10
     for (let i = 0; i < uids.length; i += 10) {
       const batch = uids.slice(i, i + 10);
-      const qOwners = query(
-        collection(db, 'Beacons'),
-        where('ownerUid', 'in', batch)
-      );
-      unsubs.push(
-        onSnapshot(qOwners, applySnapshot, (e) =>
-          console.warn('owners onSnapshot error:', e)
-        )
-      );
+      const qOwners = query(collection(db, 'Beacons'), where('ownerUid', 'in', batch));
+      unsubs.push(onSnapshot(qOwners, applySnapshot, (e) => console.warn('owners onSnapshot error:', e)));
     }
     beaconUnsubsRef.current = unsubs;
 
@@ -285,26 +259,36 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   }, [friendUids, todayStart, windowEnd]);
 
   // UI bits
-  const FriendBeaconItem = ({ beacon }: { beacon: FriendBeacon }) => {
+  const FriendBeaconItem = ({ beacon, index }: { beacon: FriendBeacon; index: number }) => {
+    const isToday = sameDay(beacon.startAt, new Date());
+
     return (
       <Pressable
+        onLayout={(e) => {
+          if (index === 0 && !firstCardH) {
+            setFirstCardH(Math.max(1, e.nativeEvent.layout.height));
+          }
+        }}
         onPress={() => onSelect(beacon)}
         style={({ pressed }) => [
           styles.beaconItem,
+          isToday && beacon.active
+            ? styles.cardActiveToday
+            : !isToday
+            ? styles.cardFuture
+            : styles.cardTodayScheduled,
           pressed && { opacity: 0.85 },
         ]}
       >
         <View style={styles.avatar}>
-          <Text style={styles.avatarTxt}>
-            {beacon.displayName?.[0]?.toUpperCase() || 'F'}
-          </Text>
+          <Text style={styles.avatarTxt}>{beacon.displayName?.[0]?.toUpperCase() || 'F'}</Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.beaconOwner} numberOfLines={1}>
             {beacon.displayName}
           </Text>
           <Text style={styles.beaconWhen} numberOfLines={1}>
-            {dayLabel(beacon.startAt)} - {monthDay(beacon.startAt)}
+            {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
           </Text>
           <Text style={styles.beaconMsg} numberOfLines={2}>
             {beacon.message}
@@ -314,6 +298,8 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
     );
   };
 
+  const listHasOverflow = beacons.length > 3;
+
   return (
     <View style={styles.friendsSection}>
       {beacons.length > 0 ? (
@@ -321,15 +307,40 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
           <Text style={styles.friendActiveHeader}>
             {beacons.length} beacon{beacons.length !== 1 ? 's' : ''} from friends
           </Text>
-          <ScrollView
-            style={{ maxHeight: 280 }}
-            contentContainerStyle={styles.cardsWrap}
-            showsVerticalScrollIndicator={false}
+
+          {/* Wrapper that enforces a max height to “peek” the 4th card */}
+          <View
+            style={[
+              styles.peekWrapper,
+              listMaxHeight ? { maxHeight: listMaxHeight } : undefined,
+              listHasOverflow ? { overflow: 'hidden' } : null,
+            ]}
           >
-            {beacons.map((b) => (
-              <FriendBeaconItem key={b.id} beacon={b} />
-            ))}
-          </ScrollView>
+            <ScrollView
+              onScroll={handleScroll}
+              scrollEventThrottle={16}
+              showsVerticalScrollIndicator
+              contentContainerStyle={styles.cardsWrap}
+            >
+              {beacons.map((b, i) => (
+                <FriendBeaconItem key={b.id} beacon={b} index={i} />
+              ))}
+              {/* bottom padding so the last item isn't flush */}
+              <View style={{ height: 8 }} />
+            </ScrollView>
+
+            {/* “Scroll for more” overlay */}
+            {listHasOverflow && showMoreHint && (
+              <Pressable
+                // tapping the hint nudges the scroll a bit (handled by natural scroll; here just a visual overlay)
+                style={styles.moreOverlay}
+              >
+                <View style={styles.morePill}>
+                  <Text style={styles.morePillTxt}>▼  Scroll for more</Text>
+                </View>
+              </Pressable>
+            )}
+          </View>
         </>
       ) : (
         <Text style={styles.friendInactive}>No friend beacons today or upcoming</Text>
@@ -349,12 +360,13 @@ const styles = StyleSheet.create({
     color: '#0B1426',
     marginBottom: 10,
   },
-  friendInactive: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#f00',
-    marginTop: 16,
+
+  // wrapper that allows peeking the 4th card
+  peekWrapper: {
+    position: 'relative',
+    borderRadius: 12,
   },
+
   cardsWrap: {
     gap: 10,
     paddingBottom: 6,
@@ -369,21 +381,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 10,
   },
-  beaconOwner: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#0B1426',
-  },
-  beaconWhen: {
-    fontSize: 13,
-    color: '#334155',
-    marginTop: 2,
-  },
-  beaconMsg: {
-    fontSize: 14,
-    color: '#111827',
-    marginTop: 4,
-  },
+  cardActiveToday: { backgroundColor: '#FFF4E5', borderColor: '#FFE0B2' },
+  cardTodayScheduled: { backgroundColor: '#F3F4F6', borderColor: '#E5E7EB' },
+  cardFuture: { backgroundColor: '#E7F0FF', borderColor: '#C7DAFF' },
+  beaconOwner: { fontSize: 15, fontWeight: '800', color: '#0B1426' },
+  beaconWhen: { fontSize: 13, color: '#334155', marginTop: 2 },
+  beaconMsg: { fontSize: 14, color: '#111827', marginTop: 4 },
   avatar: {
     width: 28,
     height: 28,
@@ -394,4 +397,34 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   avatarTxt: { color: '#fff', fontWeight: '900' },
+
+  friendInactive: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#f00',
+    marginTop: 16,
+  },
+
+  // Bottom overlay to hint overflow
+  moreOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    // Faux fade: solid background with slight transparency to imply content below
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    paddingBottom: 6,
+  },
+  morePill: {
+    backgroundColor: '#0B1426',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  morePillTxt: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
 });

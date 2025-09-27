@@ -14,13 +14,13 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { Link, useRouter } from "expo-router";
+import { Link, useRouter, Stack } from "expo-router";
 import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 
 const colors = {
-  primary: "#2F6FED",   // matches your blue W
-  bg: "#F5F8FF",        // soft blue background
+  primary: "#2F6FED",
+  bg: "#F5F8FF",
   card: "#FFFFFF",
   text: "#111827",
   subtle: "#6B7280",
@@ -63,7 +63,8 @@ export default function Index() {
     } catch (e: any) {
       const code = e?.code || "";
       let msg = "Login failed. Please try again.";
-      if (code.includes("auth/invalid-credential") || code.includes("auth/wrong-password")) msg = "Invalid email or password.";
+      if (code.includes("auth/invalid-credential") || code.includes("auth/wrong-password"))
+        msg = "Invalid email or password.";
       if (code.includes("auth/user-not-found")) msg = "No account found for that email.";
       if (code.includes("auth/too-many-requests")) msg = "Too many attempts. Try again later.";
       setError(msg);
@@ -83,105 +84,127 @@ export default function Index() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: colors.bg }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <StatusBar barStyle="dark-content" />
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <View style={styles.container}>
-          {/* decorative soft circles */}
-          <View style={styles.blobA} />
-          <View style={styles.blobB} />
+    <>
+      {/* Hide back button + gestures so you can't "back into" the app */}
+      <Stack.Screen
+        options={{
+          headerBackVisible: false,
+          gestureEnabled: false,
+        }}
+      />
 
-          {/* header / logo */}
-          <View style={styles.header}>
-            <Image
-              source={require("../assets/images/adaptive-icon.png")}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-            <Text style={styles.title}>Welcome back</Text>
-            <Text style={styles.subtitle}>Sign in to BeKin</Text>
-          </View>
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: colors.bg }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <StatusBar barStyle="dark-content" />
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={styles.container}>
+            {/* decorative soft circles */}
+            <View style={styles.blobA} />
+            <View style={styles.blobB} />
 
-          {/* card */}
-          <View style={styles.card}>
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  { borderColor: emailFocused ? colors.primary : colors.border },
-                ]}
-                placeholder="you@example.com"
-                placeholderTextColor={colors.subtle}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                value={email}
-                onChangeText={setEmail}
-                onFocus={() => setEmailFocused(true)}
-                onBlur={() => setEmailFocused(false)}
-                returnKeyType="next"
-                onSubmitEditing={() => Keyboard.dismiss()}
+            {/* header / logo */}
+            <View style={styles.header}>
+              <Image
+                source={require("../assets/images/adaptive-icon.png")}
+                style={styles.logo}
+                resizeMode="contain"
               />
+              <Text style={styles.title}>Welcome back</Text>
+              <Text style={styles.subtitle}>Sign in to BeKin</Text>
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <View
-                style={[
-                  styles.input,
-                  styles.inputRow,
-                  { borderColor: pwFocused ? colors.primary : colors.border },
-                ]}
-              >
+            {/* card */}
+            <View style={styles.card}>
+              {error ? <Text style={styles.error}>{error}</Text> : null}
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Email</Text>
                 <TextInput
-                  style={{ flex: 1 }}
-                  placeholder="••••••••"
+                  style={[
+                    styles.input,
+                    { borderColor: emailFocused ? colors.primary : colors.border },
+                  ]}
+                  placeholder="you@example.com"
                   placeholderTextColor={colors.subtle}
-                  secureTextEntry={!showPassword}
-                  value={password}
-                  onChangeText={setPassword}
-                  onFocus={() => setPwFocused(true)}
-                  onBlur={() => setPwFocused(false)}
-                  returnKeyType="go"
-                  onSubmitEditing={handleLogin}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  // Use standard autofill without iOS "strong password" UI
+                  textContentType="emailAddress"
+                  autoComplete="email"
+                  value={email}
+                  editable={!submitting}
+                  onChangeText={setEmail}
+                  onFocus={() => setEmailFocused(true)}
+                  onBlur={() => setEmailFocused(false)}
+                  returnKeyType="next"
+                  blurOnSubmit
+                  onSubmitEditing={() => Keyboard.dismiss()}
                 />
-                <Pressable onPress={() => setShowPassword((s) => !s)} hitSlop={10}>
-                  <Text style={styles.togglePw}>{showPassword ? "Hide" : "Show"}</Text>
-                </Pressable>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Password</Text>
+                <View
+                  style={[
+                    styles.input,
+                    styles.inputRow,
+                    { borderColor: pwFocused ? colors.primary : colors.border },
+                  ]}
+                >
+                  <TextInput
+                    style={{ flex: 1 }}
+                    placeholder="••••••••"
+                    placeholderTextColor={colors.subtle}
+                    secureTextEntry={!showPassword}
+                    value={password}
+                    editable={!submitting}
+                    onChangeText={setPassword}
+                    onFocus={() => setPwFocused(true)}
+                    onBlur={() => setPwFocused(false)}
+                    // Use "password" (not "newPassword") so iOS doesn't force the overlay
+                    textContentType="password"
+                    autoComplete="password"
+                    returnKeyType="go"
+                    onSubmitEditing={handleLogin}
+                  />
+                  <Pressable onPress={() => setShowPassword((s) => !s)} hitSlop={10}>
+                    <Text style={styles.togglePw}>{showPassword ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              <Pressable
+                onPress={handleLogin}
+                disabled={submitting}
+                style={({ pressed }) => [
+                  styles.primaryBtn,
+                  pressed && { opacity: 0.9 },
+                  submitting && { opacity: 0.7 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Sign in"
+              >
+                {submitting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.primaryBtnText}>Enter</Text>
+                )}
+              </Pressable>
+
+              <View style={styles.bottomRow}>
+                <Text style={{ color: colors.subtle }}>New here?</Text>
+                <Link href="/signup" style={styles.link}>
+                  Create an account
+                </Link>
               </View>
             </View>
-
-            <Pressable
-              onPress={handleLogin}
-              disabled={submitting}
-              style={({ pressed }) => [
-                styles.primaryBtn,
-                pressed && { opacity: 0.9 },
-                submitting && { opacity: 0.7 },
-              ]}
-            >
-              {submitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.primaryBtnText}>Enter</Text>
-              )}
-            </Pressable>
-
-            <View style={styles.bottomRow}>
-              <Text style={{ color: colors.subtle }}>New here?</Text>
-              <Link href="/signup" style={styles.link}>
-                Create an account
-              </Link>
-            </View>
           </View>
-        </View>
-      </TouchableWithoutFeedback>
-    </KeyboardAvoidingView>
+        </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
+    </>
   );
 }
 
@@ -198,12 +221,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderRadius: 16,
     padding: 18,
-    // shadow (iOS)
     shadowColor: "#000",
     shadowOpacity: 0.08,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
-    // elevation (Android)
     elevation: 2,
   },
 

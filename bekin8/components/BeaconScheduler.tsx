@@ -18,7 +18,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 
-const DEFAULT_BEACON_MESSAGE = 'Beacon lit — who’s in?';
+const DEFAULT_BEACON_MESSAGE = 'Anyone want to chill?';
 
 function startOfDay(d: Date) {
   const x = new Date(d);

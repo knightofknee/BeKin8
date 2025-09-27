@@ -1,5 +1,4 @@
 // app/signup.tsx
-
 import React, { useRef, useState } from 'react';
 import {
   View,
@@ -8,6 +7,7 @@ import {
   Text,
   StyleSheet,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
@@ -26,6 +26,10 @@ export default function SignUp() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Small, sensible validation (client-side)
+  const isValidEmail = (v: string) =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
   const friendlyError = (code?: string, fallback?: string) => {
     switch (code) {
@@ -52,6 +56,10 @@ export default function SignUp() {
       setError('Please enter an email.');
       return;
     }
+    if (!isValidEmail(trimmedEmail)) {
+      setError('That email address looks invalid.');
+      return;
+    }
     if (password.length < 6) {
       setError('Password must be at least 6 characters.');
       return;
@@ -65,7 +73,7 @@ export default function SignUp() {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
 
-      // Minimal: create user doc with username unset so other screens can gate on it
+      // Minimal profile bootstrap
       await setDoc(doc(db, 'users', cred.user.uid), {
         uid: cred.user.uid,
         email: trimmedEmail,
@@ -74,7 +82,7 @@ export default function SignUp() {
         createdAt: serverTimestamp(),
       });
 
-      router.replace('/home'); // keep your normal post-auth route
+      router.replace('/home');
     } catch (e: any) {
       setError(friendlyError(e?.code, e?.message));
     } finally {
@@ -82,25 +90,44 @@ export default function SignUp() {
     }
   };
 
-  const goToSignIn = () => {
-    router.replace('/'); // adjust if your sign-in route differs
+  const goToSignIn = () => router.replace('/');
+
+  // ===== iOS autofill/overlay suppression =====
+  // On iOS we set textContentType="oneTimeCode" and autoComplete="off"
+  // to prevent the "Automatic Strong Password" sheet from hijacking input.
+  const iosNoAutofill = {
+    textContentType: 'oneTimeCode' as const,
+    autoComplete: 'off' as const,
+  };
+  // Android can keep sane autofill hints
+  const androidEmailHints = {
+    textContentType: 'emailAddress' as const,
+    autoComplete: 'email' as const,
+    importantForAutofill: 'no' as const, // set 'yes' if you want autofill; 'no' keeps it quiet
+  };
+  const androidPasswordHints = {
+    textContentType: 'password' as const,
+    autoComplete: 'password' as const,
+    importantForAutofill: 'no' as const,
   };
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Create Account</Text>
 
+      {/* Email */}
       <View style={styles.inputGroup}>
         <Text style={styles.label}>Email</Text>
         <TextInput
+          key={Platform.OS === 'ios' ? 'ios-email' : 'email'} // force iOS to re-evaluate field heuristics
           ref={emailRef}
           style={styles.input}
           placeholder="you@example.com"
+          keyboardType="email-address"
+          inputMode="email"
           autoCapitalize="none"
           autoCorrect={false}
-          keyboardType="email-address"
-          textContentType="emailAddress"
-          autoComplete="email"
+          {...(Platform.OS === 'ios' ? iosNoAutofill : androidEmailHints)}
           value={email}
           onChangeText={setEmail}
           returnKeyType="next"
@@ -108,17 +135,18 @@ export default function SignUp() {
         />
       </View>
 
+      {/* Password */}
       <View style={styles.inputGroup}>
         <Text style={styles.label}>Password</Text>
         <TextInput
+          key={Platform.OS === 'ios' ? 'ios-pass' : 'pass'}
           ref={passwordRef}
           style={styles.input}
           placeholder="••••••••"
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
-          autoComplete="off"      // disables iOS strong password overlay
-          textContentType="none"  // prevents “Automatic Strong Password”
+          {...(Platform.OS === 'ios' ? iosNoAutofill : androidPasswordHints)}
           value={password}
           onChangeText={setPassword}
           returnKeyType="next"
@@ -126,23 +154,35 @@ export default function SignUp() {
         />
       </View>
 
+      {/* Confirm Password */}
       <View style={styles.inputGroup}>
         <Text style={styles.label}>Confirm Password</Text>
         <TextInput
+          key={Platform.OS === 'ios' ? 'ios-confirm' : 'confirm'}
           ref={confirmRef}
           style={styles.input}
           placeholder="••••••••"
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
-          autoComplete="off"
-          textContentType="none"
+          {...(Platform.OS === 'ios' ? iosNoAutofill : androidPasswordHints)}
           value={confirmPassword}
           onChangeText={setConfirmPassword}
           returnKeyType="done"
           onSubmitEditing={handleSignUp}
         />
       </View>
+
+      {/* Inline validation hints (optional) */}
+      {!isValidEmail(email) && email.length > 0 && (
+        <Text style={styles.hint}>Use a valid email like name@domain.com</Text>
+      )}
+      {password.length > 0 && password.length < 6 && (
+        <Text style={styles.hint}>Password must be at least 6 characters.</Text>
+      )}
+      {confirmPassword.length > 0 && confirmPassword !== password && (
+        <Text style={styles.hint}>Passwords don’t match.</Text>
+      )}
 
       {error !== '' && <Text style={styles.error}>{error}</Text>}
 
@@ -153,11 +193,7 @@ export default function SignUp() {
           <Button title="Sign Up" onPress={handleSignUp} disabled={loading} />
         )}
         <View style={styles.switchButton}>
-          <Button
-            title="Have an account? Sign In"
-            onPress={goToSignIn}
-            disabled={loading}
-          />
+          <Button title="Have an account? Sign In" onPress={goToSignIn} disabled={loading} />
         </View>
       </View>
     </View>
@@ -179,7 +215,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   inputGroup: {
-    marginBottom: 24,
+    marginBottom: 18,
   },
   label: {
     fontSize: 16,
@@ -188,18 +224,27 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 4,
+    borderColor: '#D1D5DB',
+    borderRadius: 10,
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
+    backgroundColor: '#fff',
+  },
+  hint: {
+    color: '#6B7280',
+    fontSize: 12,
+    marginTop: -8,
+    marginBottom: 8,
   },
   error: {
-    color: 'red',
-    marginBottom: 16,
+    color: '#B00020',
+    marginTop: 4,
+    marginBottom: 12,
     textAlign: 'center',
+    fontWeight: '600',
   },
   buttonContainer: {
-    marginTop: 16,
+    marginTop: 8,
   },
   switchButton: {
     marginTop: 12,

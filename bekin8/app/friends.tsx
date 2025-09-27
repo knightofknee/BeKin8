@@ -3,15 +3,15 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
   FlatList,
   Alert,
+  Pressable,
 } from "react-native";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import {
   arrayUnion,
@@ -27,38 +27,17 @@ import {
   where,
   serverTimestamp,
 } from "firebase/firestore";
-
-type Friend = { uid?: string; username: string };
-
-type FriendRequest = {
-  id: string;
-  senderUid: string;
-  receiverUid: string;
-  status: "pending" | "accepted" | "rejected" | "cancelled";
-  createdAt?: any;
-  updatedAt?: any;
-  senderUsername?: string;
-  receiverUsername?: string;
-};
-
-type Edge = { id: string; uids: string[]; state: "accepted" | "blocked" | "pending" };
-
-const colors = {
-  primary: "#2F6FED",
-  bg: "#F5F8FF",
-  card: "#FFFFFF",
-  text: "#111827",
-  subtle: "#6B7280",
-  border: "#E5E7EB",
-  error: "#B00020",
-  success: "#0E7A0D",
-  danger: "#B00020",
-  dark: "#111827",
-};
+import { colors } from "@/components/ui/colors";
+import { Friend, FriendRequest, Edge, MessageState } from "@/components/types";
+import FriendsProfileAndInvite from "@/components/FriendsProfileAndInvite";
+import FriendRequestsSection from "@/components/FriendRequestsSection";
+import FriendsList from "@/components/FriendsList";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 
 export default function FriendsScreen() {
+  const router = useRouter();
+
   // Username state
   const [usernameInput, setUsernameInput] = useState("");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
@@ -71,10 +50,7 @@ export default function FriendsScreen() {
   // Friends (derived from multiple sources)
   const [friends, setFriends] = useState<Friend[]>([]);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ text: string; type: "error" | "success" | null }>({
-    text: "",
-    type: null,
-  });
+  const [message, setMessage] = useState<MessageState>({ text: "", type: null });
 
   // Search input (send request)
   const [name, setName] = useState("");
@@ -86,6 +62,9 @@ export default function FriendsScreen() {
 
   // Username cache for UIDs from edges
   const nameCacheRef = useRef<Record<string, string>>({});
+
+  // Logout state
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const showMessage = (text: string, type: "error" | "success") => {
     setMessage({ text, type });
@@ -152,6 +131,7 @@ export default function FriendsScreen() {
       cleanups = [];
 
       if (!user) {
+        // Clear local state
         setFriends([]);
         setIncoming([]);
         setOutgoing([]);
@@ -159,12 +139,15 @@ export default function FriendsScreen() {
         setSubFriends([]);
         setLegacyFriends([]);
         setEdges([]);
+        // 🚪 Hard-guard: if unauthenticated, push to login and clear history
+        router.replace("/");
+        // No more subscriptions
         return;
       }
 
       fetchCurrentUsername();
 
-      // Subscribe: incoming pending (receiver==me)
+      // Subscribe: incoming pending
       const qIn = query(
         collection(db, "FriendRequests"),
         where("receiverUid", "==", user.uid),
@@ -175,7 +158,7 @@ export default function FriendsScreen() {
       });
       cleanups.push(unsubIn);
 
-      // Subscribe: outgoing pending (sender==me)
+      // Subscribe: outgoing pending
       const qOut = query(
         collection(db, "FriendRequests"),
         where("senderUid", "==", user.uid),
@@ -186,15 +169,18 @@ export default function FriendsScreen() {
       });
       cleanups.push(unsubOut);
 
-      // Subscribe: preferred subcollection (my denorm list)
-      const unsubSub = onSnapshot(collection(db, "users", user.uid, "friends"), (snap) => {
-        const arr = snap.docs.map((d) => d.data() as any);
-        const cleaned = cleanAndDedupeFriends(arr);
-        cleaned.forEach((f) => {
-          if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
-        });
-        setSubFriends(cleaned);
-      });
+      // Subscribe: preferred subcollection
+      const unsubSub = onSnapshot(
+        collection(db, "users", user.uid, "friends"),
+        (snap) => {
+          const arr = snap.docs.map((d) => d.data() as any);
+          const cleaned = cleanAndDedupeFriends(arr);
+          cleaned.forEach((f) => {
+            if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
+          });
+          setSubFriends(cleaned);
+        }
+      );
       cleanups.push(unsubSub);
 
       // Subscribe: legacy top-level Friends/{me}
@@ -227,7 +213,7 @@ export default function FriendsScreen() {
       unsubAuth();
       cleanups.forEach((fn) => fn());
     };
-  }, []);
+  }, [router]);
 
   // Merge sources into friends
   useEffect(() => {
@@ -298,7 +284,11 @@ export default function FriendsScreen() {
         return showMessage("That username is already taken.", "error");
       }
 
-      await setDoc(doc(db, "Profiles", user.uid), { username: desired, usernameLower: desiredLower }, { merge: true });
+      await setDoc(
+        doc(db, "Profiles", user.uid),
+        { username: desired, usernameLower: desiredLower },
+        { merge: true }
+      );
 
       setCurrentUsername(desired);
       nameCacheRef.current[user.uid] = desired;
@@ -336,12 +326,19 @@ export default function FriendsScreen() {
 
       if (targetUid === me.uid) return showMessage("You can’t add yourself.", "error");
 
-      // Check if already friends (edge exists and accepted)
-      const eid = edgeId(me.uid, targetUid);
-      const existingEdge = await getDoc(doc(db, "FriendEdges", eid));
-      if (existingEdge.exists() && (existingEdge.data() as any)?.state === "accepted") {
-        return showMessage("Already friends.", "success");
-      }
+      // Prevent re-sending: check edges already accepted
+      const qEdges = query(
+        collection(db, "FriendEdges"),
+        where("uids", "array-contains", me.uid),
+        where("state", "==", "accepted")
+      );
+      const edgesSnap = await getDocs(qEdges);
+      const alreadyFriends = edgesSnap.docs.some((d) => {
+        const ed = d.data() as any;
+        const uids: string[] = Array.isArray(ed?.uids) ? ed.uids : [];
+        return uids.includes(targetUid);
+      });
+      if (alreadyFriends) return showMessage("Already friends.", "success");
 
       // Prevent duplicates in requests
       const outId = requestIdFor(me.uid, targetUid);
@@ -354,6 +351,12 @@ export default function FriendsScreen() {
       }
       if (existingIn.exists() && (existingIn.data() as any).status === "pending") {
         return showMessage("They already requested you — check requests above.", "success");
+      }
+      if (
+        (existingOut.exists() && (existingOut.data() as any).status === "accepted") ||
+        (existingIn.exists() && (existingIn.data() as any).status === "accepted")
+      ) {
+        return showMessage("Already friends.", "success");
       }
 
       // Create outgoing request
@@ -384,7 +387,7 @@ export default function FriendsScreen() {
     }
   };
 
-  // Accept request — receiver only
+  // Accept / reject / cancel requests
   const acceptRequest = async (req: FriendRequest) => {
     const me = auth.currentUser;
     if (!me || req.receiverUid !== me.uid) return;
@@ -394,13 +397,11 @@ export default function FriendsScreen() {
 
       const otherUid = req.senderUid;
 
-      // 1) Flip request to accepted
       await updateDoc(doc(db, "FriendRequests", req.id), {
         status: "accepted",
         updatedAt: serverTimestamp(),
       });
 
-      // 2) Create/Upsert canonical edge (both sides will see via their listeners)
       const eid = edgeId(me.uid, otherUid);
       await setDoc(
         doc(db, "FriendEdges", eid),
@@ -413,10 +414,11 @@ export default function FriendsScreen() {
         { merge: true }
       );
 
-      // 3) (Optional) Denormalize under *my* user for fast lists
       const otherProfile = await getDoc(doc(db, "Profiles", otherUid));
       const otherUsername =
-        (otherProfile.exists() && (otherProfile.data() as any)?.username) || req.senderUsername || otherUid;
+        (otherProfile.exists() && (otherProfile.data() as any)?.username) ||
+        req.senderUsername ||
+        otherUid;
 
       await setDoc(
         doc(db, "users", me.uid, "friends", otherUid),
@@ -429,9 +431,6 @@ export default function FriendsScreen() {
         { friends: arrayUnion({ uid: otherUid, username: otherUsername }) },
         { merge: true }
       );
-
-      // 4) Clean up request doc (no longer needed)
-      await deleteDoc(doc(db, "FriendRequests", req.id));
 
       nameCacheRef.current[otherUid] = otherUsername;
 
@@ -482,7 +481,6 @@ export default function FriendsScreen() {
     }
   };
 
-  // ---- Remove friend (UNFRIEND) ----
   const removeFriend = async (friend: Friend) => {
     const me = auth.currentUser;
     if (!me) return showMessage("Please log in first.", "error");
@@ -494,7 +492,7 @@ export default function FriendsScreen() {
     try {
       setBusy(true);
 
-      // 1) Delete the canonical edge doc (true unfriend, enables re-request)
+      // 1) Delete canonical FriendEdge
       await deleteDoc(doc(db, "FriendEdges", eid));
 
       // 2) Remove my denorm subcollection doc
@@ -518,97 +516,26 @@ export default function FriendsScreen() {
   };
 
   const confirmRemove = (friend: Friend) => {
-    Alert.alert(
-      "Remove friend",
-      `Are you sure you want to remove ${friend.username}?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: () => removeFriend(friend),
-        },
-      ]
-    );
+    Alert.alert("Remove friend", `Are you sure you want to remove ${friend.username}?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => removeFriend(friend) },
+    ]);
   };
 
-  // Row components
-  const RequestRowIncoming = ({ item }: { item: FriendRequest }) => (
-    <View style={styles.row}>
-      <View style={styles.avatar}>
-        <Text style={{ color: "#fff", fontWeight: "800" }}>
-          {(item.senderUsername?.[0] || "?").toUpperCase()}
-        </Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.rowTitle}>{item.senderUsername || item.senderUid}</Text>
-        <Text style={styles.subtle}>wants to be friends</Text>
-      </View>
-      <Pressable
-        onPress={() => acceptRequest(item)}
-        disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: colors.primary, opacity: busy ? 0.5 : 1 }]}
-      >
-        <Text style={styles.smallBtnText}>Accept</Text>
-      </Pressable>
-      <Pressable
-        onPress={() => rejectRequest(item)}
-        disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: colors.danger, opacity: busy ? 0.5 : 1 }]}
-      >
-        <Text style={styles.smallBtnText}>Reject</Text>
-      </Pressable>
-    </View>
-  );
-
-  const RequestRowOutgoing = ({ item }: { item: FriendRequest }) => (
-    <View style={styles.row}>
-      <View style={styles.avatar}>
-        <Text style={{ color: "#fff", fontWeight: "800" }}>
-          {(item.receiverUsername?.[0] || "?").toUpperCase()}
-        </Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.rowTitle}>{item.receiverUsername || item.receiverUid}</Text>
-        <Text style={styles.subtle}>pending…</Text>
-      </View>
-      <Pressable
-        onPress={() => cancelRequest(item)}
-        disabled={busy}
-        style={[styles.smallBtn, { backgroundColor: "#444", opacity: busy ? 0.5 : 1 }]}
-      >
-        <Text style={styles.smallBtnText}>Cancel</Text>
-      </Pressable>
-    </View>
-  );
-
-  const FriendRow = ({ item }: { item: Friend }) => (
-    <View style={styles.row}>
-      <View style={styles.avatar}>
-        <Text style={{ color: "#fff", fontWeight: "800" }}>
-          {item.username?.[0]?.toUpperCase() || "?"}
-        </Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.rowTitle}>{item.username}</Text>
-      </View>
-      <Pressable
-        disabled={busy || !item.uid}
-        onPress={() => confirmRemove(item)}
-        style={[
-          styles.smallBtn,
-          {
-            backgroundColor: "#fff",
-            borderWidth: 1,
-            borderColor: colors.border,
-            opacity: busy || !item.uid ? 0.5 : 1,
-          },
-        ]}
-      >
-        <Text style={{ fontSize: 18 }}>⛔️</Text>
-      </Pressable>
-    </View>
-  );
+  // --- Logout handler (footer button) ---
+  const handleLogout = async () => {
+    if (loggingOut) return;
+    try {
+      setLoggingOut(true);
+      await signOut(auth);
+      // Replace to login + clear any stacked routes/modals
+      router.dismissAll?.();
+      router.replace("/");
+    } catch {
+      setLoggingOut(false);
+      Alert.alert("Error", "Failed to log out. Please try again.");
+    }
+  };
 
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
   return (
@@ -618,128 +545,63 @@ export default function FriendsScreen() {
         keyExtractor={(item, index) =>
           item.uid ? `uid:${item.uid}` : `name:${item.username.toLowerCase()}:${index}`
         }
-        renderItem={FriendRow}
+        renderItem={({ item }) => (
+          <FriendsList.Row item={item} busy={busy} onRemove={() => confirmRemove(item)} />
+        )}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
             <Text style={styles.header}>Friends</Text>
 
-            {/* Username card */}
-            <View style={styles.card}>
-              {currentUsername ? (
-                <>
-                  <Text style={styles.label}>Your username</Text>
-                  <Text style={styles.rowTitle}>{currentUsername}</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.label}>Set your username</Text>
-                  <View style={styles.inputRow}>
-                    <TextInput
-                      value={usernameInput}
-                      onChangeText={setUsernameInput}
-                      placeholder="choose_a_username"
-                      placeholderTextColor={colors.subtle}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      style={styles.input}
-                      returnKeyType="done"
-                      onSubmitEditing={handleSetUsername}
-                    />
-                    <Pressable
-                      disabled={busyUsername}
-                      onPress={handleSetUsername}
-                      style={[styles.btn, { paddingHorizontal: 16, opacity: busyUsername ? 0.6 : 1 }]}
-                    >
-                      {busyUsername ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
-                    </Pressable>
-                  </View>
-                </>
-              )}
-            </View>
-
-            {/* Add Friend */}
-            <View style={styles.card}>
-              <Text style={styles.label}>Send a Friend Request (by username)</Text>
-              {!hasProfileUsername && (
-                <Text style={[styles.subtle, { marginBottom: 8 }]}>You need a username first.</Text>
-              )}
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={name}
-                  onChangeText={setName}
-                  placeholder="friend_username"
-                  placeholderTextColor={colors.subtle}
-                  autoCapitalize="none"
-                  style={[styles.input, !hasProfileUsername && styles.inputDisabled]}
-                  editable={hasProfileUsername}
-                  returnKeyType="done"
-                  onSubmitEditing={hasProfileUsername ? handleAddFriend : undefined}
-                />
-                <Pressable
-                  disabled={busy || !hasProfileUsername}
-                  onPress={handleAddFriend}
-                  style={[styles.btn, { paddingHorizontal: 16, opacity: busy || !hasProfileUsername ? 0.5 : 1 }]}
-                >
-                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Send</Text>}
-                </Pressable>
-              </View>
-
-              {message.type && (
-                <Text
-                  style={[
-                    styles.message,
-                    message.type === "error" ? { color: colors.error } : { color: colors.success },
-                  ]}
-                >
-                  {message.text}
-                </Text>
-              )}
-            </View>
+            {/* Username + Invite */}
+            <FriendsProfileAndInvite
+              currentUsername={currentUsername}
+              usernameInput={usernameInput}
+              onChangeUsername={setUsernameInput}
+              onSaveUsername={handleSetUsername}
+              busyUsername={busyUsername}
+              nameInput={name}
+              onChangeName={setName}
+              hasProfileUsername={!!currentUsername?.trim()}
+              onSendRequest={handleAddFriend}
+              busySend={busy}
+              message={message}
+            />
 
             {/* Requests */}
-            <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Requests</Text>
-              {incoming.length === 0 && outgoing.length === 0 ? (
-                <Text style={styles.subtle}>No active requests.</Text>
-              ) : (
-                <>
-                  {incoming.length > 0 && (
-                    <>
-                      <Text style={[styles.subtle, { marginBottom: 8 }]}>Incoming</Text>
-                      <FlatList
-                        data={incoming}
-                        keyExtractor={(i) => `in_${i.id}`}
-                        renderItem={RequestRowIncoming}
-                        ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-                        scrollEnabled={false}
-                      />
-                    </>
-                  )}
-                  {outgoing.length > 0 && (
-                    <>
-                      <Text style={[styles.subtle, { marginTop: 12, marginBottom: 8 }]}>Outgoing</Text>
-                      <FlatList
-                        data={outgoing}
-                        keyExtractor={(i) => `out_${i.id}`}
-                        renderItem={RequestRowOutgoing}
-                        ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-                        scrollEnabled={false}
-                      />
-                    </>
-                  )}
-                </>
-              )}
-            </View>
+            <FriendRequestsSection
+              incoming={incoming}
+              outgoing={outgoing}
+              busy={busy}
+              onAccept={acceptRequest}
+              onReject={rejectRequest}
+              onCancel={cancelRequest}
+            />
 
             {/* Friends section title */}
             <View style={[styles.card, { marginBottom: 0 }]}>
               <Text style={styles.sectionTitle}>My Friends</Text>
-              {friends.length === 0 && <Text style={styles.subtle}>No friends yet — send a request above.</Text>}
+              {friends.length === 0 && (
+                <Text style={styles.subtle}>No friends yet — send a request above.</Text>
+              )}
             </View>
           </View>
         }
-        ListFooterComponent={<View style={{ height: 48 }} />}
+        ListFooterComponent={
+          <View style={{ paddingTop: 16, paddingBottom: 32, alignItems: "center" }}>
+            <Pressable
+              onPress={handleLogout}
+              disabled={loggingOut}
+              style={[styles.logoutBtn, loggingOut && { opacity: 0.6 }]}
+            >
+              {loggingOut ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.logoutBtnText}>Log out</Text>
+              )}
+            </Pressable>
+          </View>
+        }
         contentContainerStyle={{
           padding: 20,
           paddingTop: 70,
@@ -770,56 +632,17 @@ const styles = StyleSheet.create({
     elevation: 2,
     marginBottom: 14,
   },
-  label: { fontWeight: "700", marginBottom: 10, color: colors.text },
-  inputRow: { flexDirection: "row", gap: 10, alignItems: "center" },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#fff",
-  },
-  inputDisabled: {
-    backgroundColor: "#F3F4F6",
-  },
-  btn: {
-    backgroundColor: colors.primary,
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-  btnText: { color: "#fff", fontWeight: "800" },
-  smallBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 6,
-  },
-  smallBtnText: { color: "#fff", fontWeight: "800" },
-  message: { marginTop: 10, fontWeight: "600" },
   sectionTitle: { fontSize: 18, fontWeight: "800", marginBottom: 8, color: colors.text },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    padding: 12,
-    backgroundColor: colors.card,
-  },
-  rowTitle: { fontWeight: "700", color: colors.text },
   subtle: { color: colors.subtle },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.primary,
+
+  // Logout button
+  logoutBtn: {
+    backgroundColor: "#B00020",
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    minWidth: 160,
     alignItems: "center",
-    justifyContent: "center",
   },
+  logoutBtnText: { color: "#fff", fontWeight: "800" },
 });
