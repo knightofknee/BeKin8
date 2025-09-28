@@ -2,7 +2,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { auth, db } from '../firebase.config';
-import { collection, doc, getDoc, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  Timestamp,
+  where,
+} from 'firebase/firestore';
 
 export type FriendBeacon = {
   id: string;
@@ -47,6 +55,7 @@ function getMillis(v: any): number {
   if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
   return 0;
 }
+const asStringArray = (v: any): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 
@@ -74,6 +83,10 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const nameCacheRef = useRef<Record<string, string>>({});
   const beaconUnsubsRef = useRef<(() => void)[]>([]);
   const docStoreRef = useRef<Map<string, any>>(new Map());
+
+  // visibility group cache: groupId -> Set(memberUids)
+  const groupMembersCacheRef = useRef<Record<string, Set<string> | null | undefined>>({});
+  const groupFetchInFlightRef = useRef<Set<string>>(new Set());
 
   // window
   const todayStart = useMemo(() => startOfDay(new Date()), []);
@@ -144,6 +157,136 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
     return () => unsubs.forEach((fn) => fn());
   }, []);
 
+  // --- compute and set visible beacons from docStore + caches ---
+  const computeAndSet = () => {
+    const store = docStoreRef.current;
+    const startMs = todayStart.getTime();
+    const endMs = windowEnd.getTime();
+
+    type Candidate = FriendBeacon & { _createdMs: number };
+    const candidates: Candidate[] = [];
+    const unknownUids = new Set<string>();
+    const groupsToFetch = new Set<string>();
+
+    store.forEach((data: any, id: string) => {
+      const stMillis = getMillis(data?.startAt);
+      if (!stMillis || stMillis < startMs || stMillis > endMs) return;
+
+      const ownerUid = String(data.ownerUid ?? '');
+      if (!ownerUid || (meUid && ownerUid === meUid)) return; // never show my own
+
+      const active = !!data?.active;
+      const scheduled = data?.scheduled === true || data?.scheduled === 'true';
+      if (!active && !scheduled) return; // extinguished
+
+      // --- visibility (default: visible to all friends if no groups set) ---
+      const groupIds = asStringArray(data?.visibilityGroups);
+      let canSee = true; // default allow when not set/empty
+      if (groupIds.length > 0) {
+        canSee = false; // tighten: must be in at least one group
+        for (const gid of groupIds) {
+          const cache = groupMembersCacheRef.current[gid];
+          if (cache instanceof Set) {
+            if (meUid && cache.has(meUid)) {
+              canSee = true;
+              break;
+            }
+          } else if (cache === undefined) {
+            // unknown membership, request fetch; we'll recompute after fetch
+            groupsToFetch.add(gid);
+          }
+        }
+      }
+      if (!canSee) return;
+
+      if (!nameCacheRef.current[ownerUid]) unknownUids.add(ownerUid);
+
+      const ownerName: string =
+        (typeof data.ownerName === 'string' && data.ownerName.trim()) ||
+        nameCacheRef.current[ownerUid] ||
+        'Friend';
+
+      const msg: string =
+        (typeof data.message === 'string' && data.message.trim()) ||
+        (typeof data.details === 'string' && data.details.trim()) ||
+        DEFAULT_BEACON_MESSAGE;
+
+      const createdMs = getMillis(data?.createdAt) || getMillis(data?.updatedAt) || 0;
+
+      candidates.push({
+        id,
+        ownerUid,
+        displayName: ownerName,
+        startAt: new Date(stMillis),
+        active,
+        scheduled,
+        message: msg,
+        _createdMs: createdMs,
+      });
+    });
+
+    // newest per owner
+    const byOwner = new Map<string, Candidate>();
+    candidates.forEach((b) => {
+      const prev = byOwner.get(b.ownerUid);
+      if (prev == null || (b._createdMs || 0) > (prev._createdMs || 0)) byOwner.set(b.ownerUid, b);
+    });
+
+    const out = Array.from(byOwner.values());
+    out.sort((a, b) => {
+      const diff = a.startAt.getTime() - b.startAt.getTime();
+      if (diff !== 0) return diff;
+      return a.displayName.localeCompare(b.displayName);
+    });
+
+    setBeacons(out);
+
+    // resolve unknown names
+    if (unknownUids.size) {
+      out.forEach((b) => {
+        if (b.displayName !== 'Friend') unknownUids.delete(b.ownerUid);
+      });
+      if (unknownUids.size) {
+        fetchProfileNames(Array.from(unknownUids)).then((map) => {
+          if (!map || Object.keys(map).length === 0) return;
+          Object.assign(nameCacheRef.current, map);
+          setBeacons((prev) => (prev ? [...prev] : prev));
+        });
+      }
+    }
+
+    // fetch any unknown groups (lazy, cached)
+    if (groupsToFetch.size) {
+      const toFetch = Array.from(groupsToFetch).filter((gid) => !groupFetchInFlightRef.current.has(gid));
+      if (toFetch.length) {
+        toFetch.forEach((gid) => groupFetchInFlightRef.current.add(gid));
+        Promise.all(
+          toFetch.map(async (gid) => {
+            try {
+              const snap = await getDoc(doc(db, 'FriendGroups', gid));
+              if (snap.exists()) {
+                const data: any = snap.data();
+                const members = Array.isArray(data?.memberUids) ? data.memberUids.filter((x: any) => typeof x === 'string') : [];
+                groupMembersCacheRef.current[gid] = new Set(members);
+              } else {
+                // not found / not allowed — mark as empty (no one sees)
+                groupMembersCacheRef.current[gid] = new Set<string>();
+              }
+            } catch {
+              // on error, mark as empty so we don't refetch immediately
+              groupMembersCacheRef.current[gid] = new Set<string>();
+            } finally {
+              groupFetchInFlightRef.current.delete(gid);
+            }
+          })
+        ).then(() => {
+          // recompute once memberships are known
+          computeAndSet();
+        });
+      }
+    }
+  };
+
   // subscribe: friends' beacons (ownerUid IN chunks)
   useEffect(() => {
     const me = auth.currentUser;
@@ -155,100 +298,6 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       return;
     }
 
-    const applySnapshot = (snap: any) => {
-      const store = docStoreRef.current;
-      snap.docChanges().forEach((chg: any) => {
-        const id = chg.doc.id;
-        if (chg.type === 'removed') store.delete(id);
-        else store.set(id, chg.doc.data());
-      });
-
-      const startMs = todayStart.getTime();
-      const endMs = windowEnd.getTime();
-
-      type Candidate = FriendBeacon & { _createdMs: number };
-      const candidates: Candidate[] = [];
-      const unknownUids = new Set<string>();
-
-      store.forEach((data: any, id: string) => {
-        const stMillis = getMillis(data?.startAt);
-        if (!stMillis || stMillis < startMs || stMillis > endMs) return;
-
-        const ownerUid = String(data.ownerUid ?? '');
-        if (!ownerUid || ownerUid === me.uid) return; // never show my own
-
-        const active = !!data?.active;
-        const scheduled = data?.scheduled === true || data?.scheduled === 'true';
-        if (!active && !scheduled) return; // extinguished
-
-        // ======== MINIMAL VISIBILITY FILTER (group exclusivity) ========
-        // If beacon is group-scoped (has groupIds or allowedUids), only show if I'm allowed.
-        const groupIds: any[] = Array.isArray(data?.groupIds) ? data.groupIds : [];
-        const allowedUids: string[] = Array.isArray(data?.allowedUids) ? data.allowedUids : [];
-
-        // If either field indicates scoping, require membership.
-        if ((groupIds.length > 0 || allowedUids.length > 0) && meUid) {
-          if (!allowedUids.includes(meUid)) return; // not allowed to see this beacon
-        }
-        // ===============================================================
-
-        if (!nameCacheRef.current[ownerUid]) unknownUids.add(ownerUid);
-
-        const ownerName: string =
-          (typeof data.ownerName === 'string' && data.ownerName.trim()) ||
-          nameCacheRef.current[ownerUid] ||
-          'Friend';
-
-        const msg: string =
-          (typeof data.message === 'string' && data.message.trim()) ||
-          (typeof data.details === 'string' && data.details.trim()) ||
-          DEFAULT_BEACON_MESSAGE;
-
-        const createdMs = getMillis(data?.createdAt) || getMillis(data?.updatedAt) || 0;
-
-        candidates.push({
-          id,
-          ownerUid,
-          displayName: ownerName,
-          startAt: new Date(stMillis),
-          active,
-          scheduled,
-          message: msg,
-          _createdMs: createdMs,
-        });
-      });
-
-      // newest per owner
-      const byOwner = new Map<string, Candidate>();
-      candidates.forEach((b) => {
-        const prev = byOwner.get(b.ownerUid);
-        if (!prev || (b._createdMs || 0) > (prev._createdMs || 0)) byOwner.set(b.ownerUid, b);
-      });
-
-      const out = Array.from(byOwner.values());
-      out.sort((a, b) => {
-        const diff = a.startAt.getTime() - b.startAt.getTime();
-        if (diff !== 0) return diff;
-        return a.displayName.localeCompare(b.displayName);
-      });
-
-      setBeacons(out);
-
-      // resolve unknown names
-      if (unknownUids.size) {
-        out.forEach((b) => {
-          if (b.displayName !== 'Friend') unknownUids.delete(b.ownerUid);
-        });
-        if (unknownUids.size) {
-          fetchProfileNames(Array.from(unknownUids)).then((map) => {
-            if (!map || Object.keys(map).length === 0) return;
-            Object.assign(nameCacheRef.current, map);
-            setBeacons((prev) => (prev ? [...prev] : prev));
-          });
-        }
-      }
-    };
-
     // cleanup
     beaconUnsubsRef.current.forEach((fn) => fn());
     beaconUnsubsRef.current = [];
@@ -256,6 +305,16 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
     const unsubs: (() => void)[] = [];
     const uids = Array.from(new Set(friendUids)).filter(Boolean);
+    const applySnapshot = (snap: any) => {
+      const store = docStoreRef.current;
+      snap.docChanges().forEach((chg: any) => {
+        const id = chg.doc.id;
+        if (chg.type === 'removed') store.delete(id);
+        else store.set(id, chg.doc.data());
+      });
+      computeAndSet();
+    };
+
     for (let i = 0; i < uids.length; i += 10) {
       const batch = uids.slice(i, i + 10);
       const qOwners = query(collection(db, 'Beacons'), where('ownerUid', 'in', batch));
@@ -342,9 +401,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
             {/* “Scroll for more” overlay */}
             {listHasOverflow && showMoreHint && (
-              <Pressable
-                style={styles.moreOverlay}
-              >
+              <Pressable style={styles.moreOverlay}>
                 <View style={styles.morePill}>
                   <Text style={styles.morePillTxt}>▼  Scroll for more</Text>
                 </View>

@@ -1,5 +1,5 @@
 // components/FriendGroupEditor.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -11,38 +11,81 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { auth, db } from "../firebase.config";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth, db } from "@/firebase.config";
 import {
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
+  orderBy,
   query,
-  serverTimestamp,
   setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
-import type { Friend } from "@/components/types";
 
 export type FriendGroup = {
   id?: string;
   ownerUid: string;
   name: string;
-  memberUids: string[]; // only UIDs stored; names are derived for display
+  memberUids: string[];
   createdAt?: any;
   updatedAt?: any;
 };
 
 type Props = {
   visible: boolean;
-  group?: FriendGroup | null; // if provided, editing; else creating
+  group: FriendGroup | null; // null = create new
   onClose: () => void;
   onSaved?: (g: FriendGroup) => void;
   onDeleted?: (groupId: string) => void;
 };
+
+type Friend = { uid: string; username: string };
+
+const edgeId = (a: string, b: string) => [a, b].sort().join("_");
+
+// --- utils ---
+const cleanAndDedupeFriends = (arr: any[]): Friend[] => {
+  const out: Friend[] = [];
+  const seen = new Set<string>();
+  for (const f of arr || []) {
+    const uid = typeof f?.uid === "string" ? f.uid : undefined;
+    const username = (f?.username ?? "").toString().trim();
+    if (!uid || !username) continue;
+    const key = `uid:${uid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ uid, username });
+  }
+  out.sort((a, b) => a.username.localeCompare(b.username));
+  return out;
+};
+
+async function resolveUsernames(uids: string[]) {
+  const out: Record<string, string> = {};
+  await Promise.all(
+    uids.map(async (uid) => {
+      try {
+        const p = await getDoc(doc(db, "Profiles", uid));
+        if (p.exists()) {
+          const data: any = p.data();
+          const uname =
+            (data?.username || data?.displayName || "").toString().trim();
+          if (uname) out[uid] = uname;
+        }
+      } catch {
+        // ignore
+      }
+    })
+  );
+  return out;
+}
 
 export default function FriendGroupEditor({
   visible,
@@ -51,102 +94,169 @@ export default function FriendGroupEditor({
   onSaved,
   onDeleted,
 }: Props) {
-  const user = auth.currentUser;
-  const [name, setName] = useState(group?.name ?? "");
-  const [selected, setSelected] = useState<string[]>(group?.memberUids ?? []);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [meUid, setMeUid] = useState<string | null>(null);
 
-  // Pull your friends for selection
+  // Editor state
+  const [name, setName] = useState(group?.name || "");
+  const [selected, setSelected] = useState<Set<string>>(new Set(group?.memberUids || []));
+  const [saving, setSaving] = useState(false);
+  const [loadingFriends, setLoadingFriends] = useState(true);
   const [friends, setFriends] = useState<Friend[]>([]);
 
+  // live caches
+  const cacheRef = useRef<Record<string, string>>({}); // uid -> username
+
+  // keep local state in sync when opening with a different group
   useEffect(() => {
-    if (!user) return;
-    const unsub = onSnapshot(collection(db, "users", user.uid, "friends"), (snap) => {
-      const arr = snap.docs
-        .map((d) => d.data() as any)
-        .filter((f) => typeof f?.uid === "string" && typeof f?.username === "string")
-        .map((f) => ({ uid: f.uid, username: f.username } as Friend))
-        .sort((a, b) => a.username.localeCompare(b.username));
-      setFriends(arr);
+    if (!visible) return;
+    setName(group?.name || "");
+    setSelected(new Set(group?.memberUids || []));
+  }, [visible, group?.id]);
+
+  // subscribe auth (only while visible)
+  useEffect(() => {
+    if (!visible) return;
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setMeUid(u?.uid || null);
     });
-    return () => unsub();
-  }, [user?.uid]);
+    return unsub;
+  }, [visible]);
 
-  // Reset local state when opening for a different group
+  // --- Load & subscribe to ALL friends (subcollection, legacy, and edges) ---
   useEffect(() => {
-    setName(group?.name ?? "");
-    setSelected(group?.memberUids ?? []);
-  }, [group?.id, visible]);
+    if (!visible || !meUid) return;
 
-  const isEditing = !!group?.id;
+    setLoadingFriends(true);
+    const cleanups: Array<() => void> = [];
 
-  const toggleSelect = (uid: string) => {
-    setSelected((prev) =>
-      prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]
+    // A) Preferred subcollection
+    const unsubSub = onSnapshot(
+      collection(db, "users", meUid, "friends"),
+      (snap) => {
+        const arr = snap.docs.map((d) => d.data() as any);
+        const cleaned = cleanAndDedupeFriends(arr);
+        cleaned.forEach((f) => (cacheRef.current[f.uid] = f.username));
+        mergeAndSet();
+      }
     );
-  };
+    cleanups.push(unsubSub);
 
+    // B) Legacy Friends/{me}
+    const unsubLegacy = onSnapshot(doc(db, "Friends", meUid), (snap) => {
+      const arr: any[] = (snap.exists() && (snap.data() as any)?.friends) || [];
+      const cleaned = cleanAndDedupeFriends(arr);
+      cleaned.forEach((f) => (cacheRef.current[f.uid] = f.username));
+      mergeAndSet();
+    });
+    cleanups.push(unsubLegacy);
+
+    // C) Canonical edges -> ensure any friend not denormalized still appears
+    const unsubEdges = onSnapshot(
+      query(
+        collection(db, "FriendEdges"),
+        where("uids", "array-contains", meUid),
+        where("state", "==", "accepted")
+      ),
+      async (snap) => {
+        const others = new Set<string>();
+        snap.forEach((d) => {
+          const ed = d.data() as any;
+          const arr: string[] = Array.isArray(ed?.uids) ? ed.uids : [];
+          const other = arr.find((u) => u !== meUid);
+          if (other) others.add(other);
+        });
+
+        const missingNames = Array.from(others).filter((uid) => !cacheRef.current[uid]);
+        if (missingNames.length) {
+          const map = await resolveUsernames(missingNames);
+          Object.assign(cacheRef.current, map);
+        }
+        mergeAndSet();
+      }
+    );
+    cleanups.push(unsubEdges);
+
+    function mergeAndSet() {
+      // Build Friend[] from cacheRef
+      const all = Object.entries(cacheRef.current).map(([uid, username]) => ({
+        uid,
+        username,
+      }));
+      all.sort((a, b) => a.username.localeCompare(b.username));
+      setFriends(all);
+      setLoadingFriends(false);
+    }
+
+    return () => {
+      cleanups.forEach((fn) => fn());
+    };
+  }, [visible, meUid]);
+
+  // toggle selection
+  const toggleUid = useCallback((uid: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  }, []);
+
+  const canSave = useMemo(() => {
+    const nm = name.trim();
+    return !!meUid && !!nm && selected.size > 0 && !saving;
+  }, [meUid, name, selected.size, saving]);
+
+  // Save (create or update)
   const handleSave = async () => {
-    if (!user) return;
-    const trimmed = name.trim();
-    if (!trimmed) {
-      Alert.alert("Name required", "Please give your group a name.");
-      return;
-    }
-    if (selected.length === 0) {
-      Alert.alert("No members", "Add at least one friend to the group.");
-      return;
-    }
+    if (!meUid) return;
+    const nm = name.trim();
+    if (!nm) return;
 
     try {
       setSaving(true);
+      const base = {
+        ownerUid: meUid,
+        name: nm,
+        memberUids: Array.from(selected),
+        updatedAt: new Date(),
+      };
 
-      if (isEditing && group?.id) {
-        await updateDoc(doc(db, "FriendGroups", group.id), {
-          name: trimmed,
-          memberUids: selected,
-          updatedAt: serverTimestamp(),
-          // ownerUid immutable by rules
-        });
-        onSaved?.({
-          id: group.id,
-          ownerUid: user.uid,
-          name: trimmed,
-          memberUids: selected,
-        });
+      let id = group?.id;
+      if (id) {
+        await updateDoc(doc(db, "FriendGroups", id), base);
       } else {
-        // Create with a deterministic-ish id: owner + timestamp
-        const id = `${user.uid}_${Date.now()}`;
-        await setDoc(doc(db, "FriendGroups", id), {
-          ownerUid: user.uid,
-          name: trimmed,
-          memberUids: selected,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        onSaved?.({
-          id,
-          ownerUid: user.uid,
-          name: trimmed,
-          memberUids: selected,
-        });
+        // deterministic by name+owner to avoid dup spam; otherwise use addDoc
+        // Here we use a deterministic id for UX; if you want multiple same-name groups, switch to addDoc.
+        id = `${meUid}_${nm.toLowerCase().replace(/\s+/g, "-")}`;
+        await setDoc(
+          doc(db, "FriendGroups", id),
+          { ...base, createdAt: new Date() },
+          { merge: true }
+        );
       }
 
+      onSaved?.({
+        id,
+        ownerUid: meUid,
+        name: nm,
+        memberUids: Array.from(selected),
+      });
       onClose();
-    } catch (e: any) {
-      console.error("FriendGroupEditor save error", e);
-      Alert.alert("Error", e?.message || "Failed to save group.");
+    } catch (e) {
+      console.error("Save group error", e);
+      Alert.alert("Error", "Failed to save group.");
     } finally {
       setSaving(false);
     }
   };
 
+  // Delete with confirmation
   const confirmDelete = () => {
-    if (!isEditing || !group?.id) return;
+    if (!group?.id) return;
     Alert.alert(
       "Delete group",
-      `Are you sure you want to delete “${group.name}”? This cannot be undone.`,
+      `Delete “${group.name}”? This can’t be undone.`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -154,116 +264,111 @@ export default function FriendGroupEditor({
           style: "destructive",
           onPress: handleDelete,
         },
-      ],
+      ]
     );
   };
 
   const handleDelete = async () => {
-    if (!isEditing || !group?.id) return;
+    if (!group?.id) return;
     try {
-      setDeleting(true);
       await deleteDoc(doc(db, "FriendGroups", group.id));
       onDeleted?.(group.id);
       onClose();
-    } catch (e: any) {
-      console.error("FriendGroupEditor delete error", e);
-      Alert.alert("Error", e?.message || "Failed to delete group.");
-    } finally {
-      setDeleting(false);
+    } catch (e) {
+      console.error("Delete group error", e);
+      Alert.alert("Error", "Failed to delete group.");
     }
   };
 
+  // render friend row (checkbox-like)
+  const renderItem = ({ item }: { item: Friend }) => {
+    const checked = selected.has(item.uid);
+    return (
+      <Pressable
+        onPress={() => toggleUid(item.uid)}
+        style={({ pressed }) => [
+          styles.row,
+          checked ? styles.rowChecked : null,
+          pressed && { opacity: 0.9 },
+        ]}
+      >
+        <View style={[styles.checkbox, checked && styles.checkboxOn]}>
+          {checked ? <Text style={styles.checkboxTick}>✓</Text> : null}
+        </View>
+        <Text style={styles.rowText} numberOfLines={1}>
+          {item.username}
+        </Text>
+      </Pressable>
+    );
+  };
+
   return (
-    <Modal visible={visible} animationType="slide" transparent>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
           {/* Header */}
           <View style={styles.headerRow}>
-            <Text style={styles.title}>{isEditing ? "Edit Friend Group" : "New Friend Group"}</Text>
+            <Text style={styles.title}>{group ? "Edit Group" : "New Group"}</Text>
             <Pressable onPress={onClose} hitSlop={10}>
               <Text style={styles.close}>✕</Text>
             </Pressable>
           </View>
 
-          {/* Name */}
+          {/* Group name */}
           <Text style={styles.label}>Group name</Text>
           <TextInput
             style={styles.input}
-            placeholder="Weekend Crew"
+            placeholder="e.g., Housemates, Basketball Crew"
             value={name}
             onChangeText={setName}
+            maxLength={48}
           />
 
           {/* Members */}
-          <Text style={[styles.label, { marginTop: 12 }]}>Members</Text>
-          {friends.length === 0 ? (
-            <Text style={{ color: colors.subtle, marginBottom: 8 }}>
-              You don’t have any friends yet. Add friends first, then create a group.
-            </Text>
-          ) : null}
-          <FlatList
-            data={friends}
-            keyExtractor={(f) => f.uid || f.username}
-            ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-            style={{ maxHeight: 260, marginBottom: 8 }}
-            renderItem={({ item }) => {
-              const checked = !!item.uid && selected.includes(item.uid);
-              return (
-                <Pressable
-                  onPress={() => item.uid && toggleSelect(item.uid)}
-                  style={[
-                    styles.friendRow,
-                    checked && { borderColor: colors.primary, backgroundColor: "#F3F6FF" },
-                  ]}
-                >
-                  <View style={styles.avatar}>
-                    <Text style={{ color: "#fff", fontWeight: "800" }}>
-                      {item.username?.[0]?.toUpperCase() || "?"}
-                    </Text>
-                  </View>
-                  <Text style={styles.friendName}>{item.username}</Text>
-                  <View style={{ flex: 1 }} />
-                  <Text style={[styles.check, checked && { color: colors.primary }]}>
-                    {checked ? "Added" : "Add"}
-                  </Text>
-                </Pressable>
-              );
-            }}
-          />
-
-          {/* Buttons */}
-          <View style={styles.btnRow}>
-            {isEditing ? (
-              <Pressable
-                onPress={confirmDelete}
-                disabled={deleting || saving}
-                style={[styles.btn, styles.btnDanger, (deleting || saving) && { opacity: 0.6 }]}
-              >
-                {deleting ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.btnDangerText}>Delete</Text>
-                )}
+          <View style={styles.membersHeaderRow}>
+            <Text style={styles.label}>Members</Text>
+            {group?.id ? (
+              <Pressable onPress={confirmDelete} hitSlop={10} style={styles.deleteBtn}>
+                <Text style={styles.deleteText}>Delete</Text>
               </Pressable>
+            ) : null}
+          </View>
+
+          <View style={styles.listWrap}>
+            {loadingFriends ? (
+              <View style={{ paddingVertical: 18, alignItems: "center" }}>
+                <ActivityIndicator />
+                <Text style={{ marginTop: 8, color: colors.subtle }}>Loading friends…</Text>
+              </View>
+            ) : friends.length === 0 ? (
+              <Text style={{ color: colors.subtle, paddingVertical: 8 }}>
+                You don’t have any friends yet. Add some first.
+              </Text>
             ) : (
-              <View style={{ width: 1 }} />
+              <FlatList
+                data={friends}
+                keyExtractor={(i) => i.uid}
+                renderItem={renderItem}
+                ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+                keyboardShouldPersistTaps="handled"
+              />
             )}
+          </View>
 
-            <View style={{ flex: 1 }} />
-
+          {/* Actions */}
+          <View style={styles.btnRow}>
             <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost]}>
               <Text style={styles.btnGhostText}>Cancel</Text>
             </Pressable>
-
             <Pressable
               onPress={handleSave}
-              disabled={saving || deleting}
-              style={[styles.btn, styles.btnPrimary, (saving || deleting) && { opacity: 0.7 }]}
+              disabled={!canSave}
+              style={[styles.btn, styles.btnPrimary, !canSave && { opacity: 0.6 }]}
             >
               {saving ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.btnPrimaryText}>{isEditing ? "Save" : "Create"}</Text>
+                <Text style={styles.btnPrimaryText}>{group ? "Save" : "Create"}</Text>
               )}
             </Pressable>
           </View>
@@ -276,20 +381,21 @@ export default function FriendGroupEditor({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.18)",
-    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    justifyContent: "center",
+    padding: 22,
   },
   card: {
-    backgroundColor: "#fff",
+    backgroundColor: colors.card,
+    borderRadius: 14,
     padding: 16,
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
   },
   headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   title: { fontSize: 18, fontWeight: "800", color: colors.text },
   close: { fontSize: 22, paddingHorizontal: 8 },
 
-  label: { fontSize: 14, fontWeight: "600", color: colors.text, marginTop: 8, marginBottom: 6 },
+  label: { fontSize: 14, fontWeight: "700", marginTop: 12, marginBottom: 6, color: colors.text },
+
   input: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -298,42 +404,72 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
 
-  friendRow: {
+  membersHeaderRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  listWrap: {
+    marginTop: 6,
+    maxHeight: 320,
+  },
+
+  row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    padding: 12,
     borderWidth: 1,
     borderColor: colors.border,
+    backgroundColor: "#fff",
     borderRadius: 12,
-    padding: 12,
-    backgroundColor: colors.card,
   },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.primary,
+  rowChecked: {
+    backgroundColor: "#E8F0FF",
+    borderColor: "#C7DAFF",
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.border,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#fff",
   },
-  friendName: { fontWeight: "700", color: colors.text },
-  check: { fontWeight: "700", color: colors.subtle },
+  checkboxOn: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  checkboxTick: { color: "#fff", fontWeight: "900", fontSize: 14 },
+  rowText: { flex: 1, fontWeight: "700", color: colors.text },
 
-  btnRow: { flexDirection: "row", alignItems: "center", marginTop: 12, gap: 10 },
+  btnRow: { flexDirection: "row", gap: 10, marginTop: 14 },
   btn: {
-    paddingVertical: 10,
     paddingHorizontal: 14,
+    paddingVertical: 10,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: "center",
     justifyContent: "center",
-    minWidth: 100,
+    flex: 1,
   },
-  btnGhost: { backgroundColor: "#fff" },
-  btnGhostText: { color: colors.text, fontWeight: "700" },
   btnPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
   btnPrimaryText: { color: "#fff", fontWeight: "800" },
-  btnDanger: { backgroundColor: "#B00020", borderColor: "#B00020" },
-  btnDangerText: { color: "#fff", fontWeight: "800" },
+  btnGhost: { backgroundColor: "#fff" },
+  btnGhostText: { color: colors.text, fontWeight: "700" },
+
+  deleteBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FEF2F2",
+  },
+  deleteText: { color: "#B91C1C", fontWeight: "800", fontSize: 12 },
 });

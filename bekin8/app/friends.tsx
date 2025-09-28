@@ -37,6 +37,7 @@ import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEdi
 import BottomBar from "@/components/BottomBar";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
+const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBar
 
 export default function FriendsScreen() {
   const router = useRouter();
@@ -687,6 +688,7 @@ export default function FriendsScreen() {
         contentContainerStyle={{
           padding: 20,
           paddingTop: 70,
+          paddingBottom: BOTTOM_BAR_SPACE, // ✅ ensures logout clears BottomBar
           rowGap: 14,
         }}
         style={{ flex: 1 }}

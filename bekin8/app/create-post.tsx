@@ -25,9 +25,14 @@ import {
   doc,
 } from 'firebase/firestore';
 import BottomBar from '@/components/BottomBar';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Approximate BottomBar height + cushion
+const BOTTOM_BAR_HEIGHT = 56;
 
 export default function CreatePostScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [username, setUsername] = useState<string>('');
   const [loadingUser, setLoadingUser] = useState(true);
@@ -43,16 +48,10 @@ export default function CreatePostScreen() {
   );
   const isCharLimitExceeded = content.length > 10000;
 
-  const [contentHeight, setContentHeight] = useState(160);
-  const onContentSizeChange = (e: any) => {
-    const h = Math.min(Math.max(e.nativeEvent.contentSize.height, 160), 600);
-    setContentHeight(h);
-  };
-
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) {
-      router.replace('/'); // kick to login/home if not signed in
+      router.replace('/'); // kick to login if not signed in
       return;
     }
     const fetchProfile = async () => {
@@ -82,7 +81,6 @@ export default function CreatePostScreen() {
       return;
     }
 
-    // only title + content required
     if (!title.trim() || !content.trim()) {
       Alert.alert('Missing fields', 'Title and content are required.');
       return;
@@ -121,7 +119,7 @@ export default function CreatePostScreen() {
       const tags = (content.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
       const newPost = {
         title: title.trim(),
-        link: link.trim() || null, // optional now
+        link: link.trim() || null,
         content,
         author: user.uid,
         authorName: username || null,
@@ -150,77 +148,91 @@ export default function CreatePostScreen() {
     );
   }
 
-  return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.select({ ios: 'padding', android: undefined })}
-    >
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.h1}>Create Post</Text>
-        <Text style={styles.subtleCenter}>
-          You are limited to 2 posts in the past week.
-        </Text>
+  // Keep this a touch bigger than the bar + safe inset so the button never gets overlapped
+  const bottomPadding = BOTTOM_BAR_HEIGHT + insets.bottom + 16;
 
-        <View style={styles.form}>
-          <TextInput
-            value={title}
-            onChangeText={setTitle}
-            placeholder="Title"
-            style={styles.input}
-          />
-          <TextInput
-            value={link}
-            onChangeText={setLink}
-            placeholder="Link (optional)"
-            style={styles.input}
-            autoCapitalize="none"
-          />
-          <TextInput
-            value={content}
-            onChangeText={setContent}
-            placeholder="Content"
-            style={[styles.textarea, { height: contentHeight }]}
-            multiline
-            textAlignVertical="top"
-            onContentSizeChange={onContentSizeChange}
-          />
-          <View style={styles.counterRow}>
-            <Text style={styles.counterText}>{wordCount}/1000 words</Text>
-            {isCharLimitExceeded && (
-              <Text style={styles.counterExceeded}>Character limit exceeded!</Text>
-            )}
-          </View>
-          <View style={styles.submitButton}>
-            <Button
-              title={submitting ? 'Submitting…' : 'Submit'}
-              onPress={handleSubmit}
-              disabled={submitting}
+  return (
+    <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.select({ ios: 'padding', android: undefined })}
+      >
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
+        >
+          <Text style={styles.h1}>Create Post</Text>
+          <Text style={styles.subtleCenter}>
+            You are limited to 2 posts in the past week.
+          </Text>
+
+          {/* Form fills the vertical space; textarea expands; submit is always visible */}
+          <View style={[styles.form, { flex: 1 }]}>
+            <TextInput
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Title"
+              style={styles.input}
+              returnKeyType="next"
             />
+
+            <TextInput
+              value={link}
+              onChangeText={setLink}
+              placeholder="Link (optional)"
+              style={styles.input}
+              autoCapitalize="none"
+              keyboardType="url"
+              returnKeyType="next"
+            />
+
+            {/* Expanding textarea */}
+            <TextInput
+              value={content}
+              onChangeText={setContent}
+              placeholder="Content"
+              style={styles.textarea}
+              multiline
+              textAlignVertical="top"
+              autoCorrect
+              autoCapitalize="sentences"
+            />
+
+            <View style={styles.counterRow}>
+              <Text style={styles.counterText}>{wordCount}/1000 words</Text>
+              {isCharLimitExceeded && (
+                <Text style={styles.counterExceeded}>Character limit exceeded!</Text>
+              )}
+            </View>
+
+            <View style={[styles.submitButton, { marginBottom: 12 }]}>
+              <Button
+                title={submitting ? 'Submitting…' : 'Submit'}
+                onPress={handleSubmit}
+                disabled={submitting}
+              />
+            </View>
           </View>
-        </View>
-       
-            
-        {/* Only your 2 nav links */}
-        {/* <View style={styles.linksRow}>
-          <View style={styles.feedButton}>
-            <Button title="Go to Feed" onPress={() => router.push('/feed')} />
-          </View>
-          <View style={styles.feedButton}>
-            <Button title="Friends" onPress={() => router.push('/friends')} />
-          </View>
-        </View> */}
-      </ScrollView> 
-      <BottomBar />
-    </KeyboardAvoidingView>
+        </ScrollView>
+
+        <BottomBar />
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { padding: 16 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+
   h1: { fontSize: 28, fontWeight: '700', textAlign: 'center', marginVertical: 8 },
-  subtleCenter: { textAlign: 'center', opacity: 0.8, marginBottom: 16 },
-  form: { gap: 12, marginBottom: 24 },
+  subtleCenter: { textAlign: 'center', opacity: 0.8, marginBottom: 12 },
+
+  form: {
+    gap: 12,
+    marginBottom: 0,
+  },
+
   input: {
     borderWidth: 1,
     borderColor: '#ccc',
@@ -229,7 +241,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: 'white',
   },
+
+  // Stretches to absorb extra vertical space, but never hides the submit button
   textarea: {
+    flex: 1,
+    minHeight: 320,
     borderWidth: 1,
     borderColor: '#ccc',
     borderRadius: 10,
@@ -237,10 +253,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: 'white',
   },
+
   counterRow: { flexDirection: 'row', justifyContent: 'space-between' },
   counterText: { fontSize: 12, opacity: 0.7 },
   counterExceeded: { fontSize: 12, color: 'red' },
+
   submitButton: { marginTop: 8 },
-  linksRow: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
-  feedButton: { minWidth: 140 },
 });

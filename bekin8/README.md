@@ -70,3 +70,8 @@ chat for self posts are hard to read with the blue
 * sexy bottom buttons for friends create post go to feed stuff
 
 * friend group invites
+
+2- make top of home take up more space lower
+center friends at top
+
+center stuff in general?

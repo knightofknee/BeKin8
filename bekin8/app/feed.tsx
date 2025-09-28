@@ -24,6 +24,7 @@ import {
 } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 interface Post {
   id: string;
@@ -257,7 +258,7 @@ export default function Feed() {
   }
 
   return (
-    <>
+    <><SafeAreaView style={{ flex: 1 }} edges={["top", "left", "right"]}>
       {/* Tiny header with a toggle */}
       <View style={styles.headerRow}>
         <Text style={styles.headerTitle}>Feed</Text>
@@ -298,6 +299,7 @@ export default function Feed() {
         )}
       />
 
+      </SafeAreaView>
       <BottomBar />
     </>
   );

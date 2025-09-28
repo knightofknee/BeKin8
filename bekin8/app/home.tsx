@@ -31,6 +31,7 @@ import {
 import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -589,6 +590,7 @@ export default function HomeScreen() {
 
   return (
     <>
+    <SafeAreaView style={{ flex: 1 }} edges={["top", "left", "right"]}>
       {/* Friends Beacons */}
       <FriendsBeaconsList onSelect={setSelectedBeacon} />
 
@@ -690,7 +692,7 @@ export default function HomeScreen() {
 
             {/* Friend Groups */}
             <Text style={[styles.modalLabel, { marginTop: 12 }]}>
-              Friend Groups (who can see this)
+              Friend Groups (if none selected, all friends can see)
             </Text>
             {loadingGroups ? (
               <View style={{ paddingVertical: 6 }}>
@@ -799,6 +801,7 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
+      </SafeAreaView>
     </>
   );
 }
