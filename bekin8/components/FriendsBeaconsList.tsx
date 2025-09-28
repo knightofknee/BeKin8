@@ -181,6 +181,17 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         const scheduled = data?.scheduled === true || data?.scheduled === 'true';
         if (!active && !scheduled) return; // extinguished
 
+        // ======== MINIMAL VISIBILITY FILTER (group exclusivity) ========
+        // If beacon is group-scoped (has groupIds or allowedUids), only show if I'm allowed.
+        const groupIds: any[] = Array.isArray(data?.groupIds) ? data.groupIds : [];
+        const allowedUids: string[] = Array.isArray(data?.allowedUids) ? data.allowedUids : [];
+
+        // If either field indicates scoping, require membership.
+        if ((groupIds.length > 0 || allowedUids.length > 0) && meUid) {
+          if (!allowedUids.includes(meUid)) return; // not allowed to see this beacon
+        }
+        // ===============================================================
+
         if (!nameCacheRef.current[ownerUid]) unknownUids.add(ownerUid);
 
         const ownerName: string =
@@ -332,7 +343,6 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
             {/* “Scroll for more” overlay */}
             {listHasOverflow && showMoreHint && (
               <Pressable
-                // tapping the hint nudges the scroll a bit (handled by natural scroll; here just a visual overlay)
                 style={styles.moreOverlay}
               >
                 <View style={styles.morePill}>
@@ -414,7 +424,6 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: 'center',
     justifyContent: 'flex-end',
-    // Faux fade: solid background with slight transparency to imply content below
     backgroundColor: 'rgba(255,255,255,0.85)',
     borderBottomLeftRadius: 12,
     borderBottomRightRadius: 12,

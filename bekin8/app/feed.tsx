@@ -1,5 +1,5 @@
 // app/feed.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -23,6 +23,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
+import BottomBar from '../components/BottomBar';
 
 interface Post {
   id: string;
@@ -55,8 +56,10 @@ async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
 export default function Feed() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [showMine, setShowMine] = useState<boolean>(true); // toggle to include/exclude my posts
   const router = useRouter();
 
+  // --- Load feed (friends + me) ---
   const loadFeed = useCallback(async () => {
     const user = auth.currentUser;
     if (!user) {
@@ -65,11 +68,12 @@ export default function Feed() {
       return;
     }
 
-    const friendMap = new Map<string, string>();
+    const meUid = user.uid;
+    const friendMap = new Map<string, string>(); // uid -> username (may be empty for now)
 
     // A) Friends doc
     try {
-      const friendsRef = doc(db, 'Friends', user.uid);
+      const friendsRef = doc(db, 'Friends', meUid);
       const friendsSnap = await getDoc(friendsRef);
       if (friendsSnap.exists()) {
         const rawFriends = (friendsSnap.data().friends ?? []) as any[];
@@ -85,16 +89,15 @@ export default function Feed() {
 
     // B) FriendEdges (accepted)
     try {
-      const me = user.uid;
       const qEdges = query(
         collection(db, 'FriendEdges'),
-        where('uids', 'array-contains', me),
+        where('uids', 'array-contains', meUid),
         where('state', '==', 'accepted')
       );
       const edgeSnap = await getDocs(qEdges);
       edgeSnap.forEach((d) => {
         const arr = (d.data() as any)?.uids || [];
-        const other = arr.find((u: string) => u !== me);
+        const other = arr.find((u: string) => u !== meUid);
         if (other) {
           if (!friendMap.has(other)) friendMap.set(other, '');
         }
@@ -105,7 +108,7 @@ export default function Feed() {
 
     // C) users/{uid}/friends subcollection
     try {
-      const subSnap = await getDocs(collection(db, 'users', user.uid, 'friends'));
+      const subSnap = await getDocs(collection(db, 'users', meUid, 'friends'));
       subSnap.forEach((d) => {
         const f: any = d.data();
         if (typeof f?.uid === 'string') {
@@ -119,34 +122,33 @@ export default function Feed() {
       /* ignore */
     }
 
-    const friendUids = Array.from(friendMap.keys());
-    if (!friendUids.length) {
-      setPosts([]);
-      setLoading(false);
-      return;
-    }
+    // Always include ME in the author set (so I see my own posts)
+    const authorUids = Array.from(new Set<string>([meUid, ...Array.from(friendMap.keys())]));
 
-    const missingUids = friendUids.filter((u) => !friendMap.get(u));
-    if (missingUids.length) {
-      const fetched = await fetchUsernames(missingUids);
-      Object.entries(fetched).forEach(([uid, uname]) => {
-        friendMap.set(uid, uname);
-      });
-    }
+    // Fill in missing friend usernames from Profiles (and also grab mine)
+    const missingUids = authorUids.filter((u) => (u === meUid ? false : !friendMap.get(u)));
+    const fetched = await fetchUsernames([meUid, ...missingUids]);
+    const myUsername = fetched[meUid] || 'You';
 
-    // Fetch posts per friend
+    Object.entries(fetched).forEach(([uid, uname]) => {
+      if (uid !== meUid) {
+        friendMap.set(uid, uname || friendMap.get(uid) || '');
+      }
+    });
+
+    // --- Fetch posts per author (friends + me) ---
     try {
-      const friendObjs = friendUids.map((uid) => ({
+      const authorObjs = authorUids.map((uid) => ({
         uid,
-        username: friendMap.get(uid) || 'Friend',
+        username: uid === meUid ? myUsername : friendMap.get(uid) || 'Friend',
       }));
 
       const postSnaps = await Promise.all(
-        friendObjs.map((f) =>
+        authorObjs.map((a) =>
           getDocs(
             query(
               collection(db, 'Posts'),
-              where('author', '==', f.uid),
+              where('author', '==', a.uid),
               orderBy('timestamp', 'desc'),
               limit(50)
             )
@@ -156,7 +158,7 @@ export default function Feed() {
 
       const collected: Post[] = [];
       postSnaps.forEach((snap, idx) => {
-        const friend = friendObjs[idx];
+        const au = authorObjs[idx];
         snap.docs.forEach((docSnap) => {
           const data = docSnap.data() as any;
           const rawTs = data.timestamp ?? data.createdAt;
@@ -171,8 +173,8 @@ export default function Feed() {
 
           collected.push({
             id: docSnap.id,
-            authorUid: friend.uid,
-            authorUsername: friend.username,
+            authorUid: au.uid,
+            authorUsername: au.username,
             content: data.content ?? '',
             createdAt,
             url: data.url ?? data.link ?? data.href ?? undefined,
@@ -180,7 +182,7 @@ export default function Feed() {
         });
       });
 
-      // Dedup + sort
+      // Dedup by id (keep newest), then sort desc
       const seen = new Map<string, Post>();
       collected.forEach((p) => {
         const existing = seen.get(p.id);
@@ -198,11 +200,13 @@ export default function Feed() {
     }
   }, []);
 
+  // Initial load
   useEffect(() => {
     setLoading(true);
     loadFeed();
   }, [loadFeed]);
 
+  // Live refresh when friends change
   useEffect(() => {
     const me = auth.currentUser?.uid;
     if (!me) return;
@@ -220,68 +224,119 @@ export default function Feed() {
     };
   }, [loadFeed]);
 
+  // Apply my-posts filter at render-time (cheaper than refetching)
+  const displayedPosts = useMemo(() => {
+    const me = auth.currentUser?.uid;
+    if (!me) return posts;
+    return showMine ? posts : posts.filter((p) => p.authorUid !== me);
+  }, [posts, showMine]);
+
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" />
-      </View>
+      <>
+        <View style={styles.center}>
+          <ActivityIndicator size="large" />
+        </View>
+        <BottomBar />
+      </>
     );
   }
 
-  if (!posts.length) {
+  if (!displayedPosts.length) {
     return (
-      <View style={styles.center}>
-        <Text>No posts from your friends yet.</Text>
-        <View style={{ marginTop: 12, width: '60%' }}>
-          <Button title="Add Friends" onPress={() => router.push('/friends')} />
+      <>
+        <View style={styles.center}>
+          <Text>No posts from your friends yet.</Text>
+          <View style={{ marginTop: 12, width: '60%' }}>
+            <Button title="Add Friends" onPress={() => router.push('/friends')} />
+          </View>
         </View>
-      </View>
+        <BottomBar />
+      </>
     );
   }
 
   return (
-    <FlatList
-      data={posts}
-      keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
-      contentContainerStyle={styles.list}
-      renderItem={({ item }) => (
-        <View style={styles.postContainer}>
-          <Text style={styles.postAuthor}>{item.authorUsername}</Text>
+    <>
+      {/* Tiny header with a toggle */}
+      <View style={styles.headerRow}>
+        <Text style={styles.headerTitle}>Feed</Text>
+        <Pressable
+          onPress={() => setShowMine((s) => !s)}
+          style={({ pressed }) => [styles.toggleBtn, pressed && { opacity: 0.85 }]}
+        >
+          <Text style={styles.toggleBtnText}>{showMine ? 'Hide my posts' : 'Show my posts'}</Text>
+        </Pressable>
+      </View>
 
-          {item.url ? (
-            <Pressable
-              onPress={() =>
-                Linking.openURL(
-                  /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
-                )
-              }
-              style={{ marginBottom: 6 }}
-            >
-              <Text style={styles.postLink} numberOfLines={1}>
-                {String(item.url).replace(/^https?:\/\//i, '')}
-              </Text>
-            </Pressable>
-          ) : null}
+      <FlatList
+        data={displayedPosts}
+        keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
+        contentContainerStyle={[styles.list, { paddingBottom: 100 }]} // space for BottomBar
+        renderItem={({ item }) => (
+          <View style={styles.postContainer}>
+            <Text style={styles.postAuthor}>{item.authorUsername}</Text>
 
-          <Text style={styles.postContent}>{item.content}</Text>
-          <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
-        </View>
-      )}
-    />
+            {item.url ? (
+              <Pressable
+                onPress={() =>
+                  Linking.openURL(
+                    /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
+                  )
+                }
+                style={{ marginBottom: 6 }}
+              >
+                <Text style={styles.postLink} numberOfLines={1}>
+                  {String(item.url).replace(/^https?:\/\//i, '')}
+                </Text>
+              </Pressable>
+            ) : null}
+
+            <Text style={styles.postContent}>{item.content}</Text>
+            <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
+          </View>
+        )}
+      />
+
+      <BottomBar />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16 },
-  list: { padding: 16 },
+
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    backgroundColor: '#fff',
+  },
+  headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827' },
+  toggleBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#2F6FED',
+  },
+  toggleBtnText: { color: '#fff', fontWeight: '800' },
+
+  list: { padding: 16, backgroundColor: '#fff' },
   postContainer: {
     marginBottom: 16,
     padding: 16,
     backgroundColor: '#f9f9f9',
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#eee',
   },
-  postAuthor: { fontWeight: 'bold', marginBottom: 4 },
+  postAuthor: { fontWeight: 'bold', marginBottom: 4, color: '#111827' },
   postLink: { color: '#2F6FED', textDecorationLine: 'underline', fontWeight: '600' },
-  postContent: { marginBottom: 8 },
+  postContent: { marginBottom: 8, color: '#111827' },
   postDate: { fontSize: 12, color: '#555', textAlign: 'right' },
 });

@@ -1,224 +1,354 @@
 // components/BeaconScheduler.tsx
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
-  TextInput,
-  TouchableOpacity,
+  Pressable,
   StyleSheet,
-  Alert,
-  Platform,
-} from 'react-native';
-import { auth, db } from '../firebase.config';
+  ActivityIndicator,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { auth, db } from "../firebase.config";
 import {
-  Timestamp,
-  serverTimestamp,
-  setDoc,
+  collection,
+  collectionGroup,
   doc,
   onSnapshot,
-} from 'firebase/firestore';
+  query,
+  where,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { colors } from "@/components/ui/colors";
 
-const DEFAULT_BEACON_MESSAGE = 'Anyone want to chill?';
+type FriendGroup = {
+  id: string;          // document id
+  name: string;
+  memberUids: string[]; // normalized list of UIDs
+  source: "top" | "sub"; // where it came from (top-level vs users/{uid}/friendGroups)
+};
 
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-function yyyymmdd(d: Date) {
-  const y = d.getFullYear();
-  const m = `${d.getMonth() + 1}`.padStart(2, '0');
-  const dd = `${d.getDate()}`.padStart(2, '0');
-  return `${y}${m}${dd}`;
-}
+type Props = {
+  beaconId?: string; // optional edit mode (we merge into existing)
+  onSaved?: () => void;
+  // Optional initial selections when editing:
+  initialDays?: string[];
+  initialGroupIds?: string[]; // we’ll match by id only, regardless of source
+};
 
-export default function BeaconScheduler() {
-  const [dayOffset, setDayOffset] = useState<number>(0);
-  const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
-  const [saving, setSaving] = useState<boolean>(false);
-  const [meDisplayName, setMeDisplayName] = useState<string>('Me');
+const daysOfWeek = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
-  // Next 7 days
-  const next7Days = useMemo(() => {
-    const today = startOfDay(new Date());
-    return Array.from({ length: 7 }).map((_, i) => {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
-      const label =
-        i === 0
-          ? 'Today'
-          : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-      return { date: d, label, offset: i };
-    });
-  }, []);
+export default function BeaconScheduler({
+  beaconId,
+  onSaved,
+  initialDays,
+  initialGroupIds,
+}: Props) {
+  const router = useRouter();
+  const [selectedDays, setSelectedDays] = useState<string[]>(initialDays || []);
+  const [friendGroups, setFriendGroups] = useState<FriendGroup[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(
+    initialGroupIds || []
+  );
+  const [saving, setSaving] = useState(false);
+  const me = auth.currentUser;
 
-  // Get my display name
+  // --- Load friend groups from BOTH places (robust to schema drift) ---
   useEffect(() => {
+    if (!me) return;
+
+    // A) Top-level FriendGroups (ownerUid === me.uid OR ownerId === me.uid)
+    const qTop = query(
+      collection(db, "FriendGroups"),
+      where("ownerUid", "==", me.uid)
+    );
+
+    const unsubA = onSnapshot(
+      qTop,
+      (snap) => {
+        const arr: FriendGroup[] = snap.docs
+          .map((d) => {
+            const data: any = d.data();
+            const ownerUid = data?.ownerUid || data?.ownerId;
+            if (ownerUid !== me.uid) return null;
+
+            const rawMembers: any =
+              data?.memberUids || data?.members || data?.memberIds || [];
+            const memberUids: string[] = Array.isArray(rawMembers)
+              ? rawMembers
+                  .map((m) =>
+                    typeof m === "string" ? m : typeof m?.uid === "string" ? m.uid : null
+                  )
+                  .filter(Boolean) as string[]
+              : [];
+
+            const name: string =
+              (data?.name || data?.title || "Untitled Group").toString();
+
+            return {
+              id: d.id,
+              name,
+              memberUids,
+              source: "top" as const,
+            };
+          })
+          .filter(Boolean) as FriendGroup[];
+
+        setFriendGroups((prev) => {
+          // merge with possible subcollection results without duplicates
+          const subOnly = prev.filter((g) => g.source === "sub");
+          const map = new Map<string, FriendGroup>();
+          [...subOnly, ...arr].forEach((g) => map.set(`${g.source}:${g.id}`, g));
+          return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+        });
+      },
+      () => {
+        // ignore read errors (rules). We'll still try subcollection below.
+      }
+    );
+
+    // B) users/{uid}/friendGroups (alternate location)
+    const qSub = collection(db, "users", me.uid, "friendGroups");
+    const unsubB = onSnapshot(
+      qSub,
+      (snap) => {
+        const arr: FriendGroup[] = snap.docs.map((d) => {
+          const data: any = d.data();
+
+          const rawMembers: any =
+            data?.memberUids || data?.members || data?.memberIds || [];
+          const memberUids: string[] = Array.isArray(rawMembers)
+            ? rawMembers
+                .map((m) =>
+                  typeof m === "string" ? m : typeof m?.uid === "string" ? m.uid : null
+                )
+                .filter(Boolean) as string[]
+            : [];
+
+        const name: string =
+            (data?.name || data?.title || "Untitled Group").toString();
+
+          return {
+            id: d.id,
+            name,
+            memberUids,
+            source: "sub" as const,
+          };
+        });
+
+        setFriendGroups((prev) => {
+          const topOnly = prev.filter((g) => g.source === "top");
+          const map = new Map<string, FriendGroup>();
+          [...topOnly, ...arr].forEach((g) => map.set(`${g.source}:${g.id}`, g));
+          return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+        });
+      },
+      () => {
+        // ignore if subcollection doesn't exist
+      }
+    );
+
+    return () => {
+      unsubA();
+      unsubB();
+    };
+  }, [me?.uid]);
+
+  // Initialize selections if props arrive late (rare)
+  useEffect(() => {
+    if (initialDays && !selectedDays.length) {
+      setSelectedDays(initialDays);
+    }
+  }, [initialDays]);
+
+  useEffect(() => {
+    if (initialGroupIds && !selectedGroupIds.length) {
+      setSelectedGroupIds(initialGroupIds);
+    }
+  }, [initialGroupIds]);
+
+  const toggleDay = (day: string) => {
+    setSelectedDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
+    );
+  };
+
+  const toggleGroup = (id: string) => {
+    setSelectedGroupIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const groupsSelected = useMemo(
+    () => friendGroups.filter((g) => selectedGroupIds.includes(g.id)),
+    [friendGroups, selectedGroupIds]
+  );
+
+  const saveBeacon = async () => {
     const user = auth.currentUser;
     if (!user) return;
-    const userDocRef = doc(db, 'users', user.uid);
-    const unsub = onSnapshot(userDocRef, (snap) => {
-      const data = snap.data() as any;
-      setMeDisplayName(data?.username || data?.displayName || user.email || 'Me');
-    });
-    return unsub;
-  }, []);
 
-  const upsertBeacon = useCallback(async () => {
-    const user = auth.currentUser;
-    if (!user) {
-      Alert.alert('Not signed in', 'Please sign in to set a beacon.');
-      return;
-    }
-    setSaving(true);
     try {
-      const targetDate = startOfDay(new Date());
-      targetDate.setDate(targetDate.getDate() + dayOffset);
-      const sd = startOfDay(targetDate);
-      const ed = endOfDay(targetDate);
-      const id = `${user.uid}_${yyyymmdd(targetDate)}`;
+      setSaving(true);
 
-      await setDoc(
-        doc(db, 'beacons', id),
-        {
-          userId: user.uid,
-          displayName: meDisplayName || user.email || 'Unknown',
-          message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-          startAt: Timestamp.fromDate(sd),
-          expiresAt: Timestamp.fromDate(ed),
-          updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      // Flatten allowed UIDs (selected groups only)
+      let allowedUids: string[] = [];
+      groupsSelected.forEach((g) => {
+        allowedUids.push(...(g.memberUids || []));
+      });
 
-      Alert.alert(
-        'Beacon set',
-        dayOffset === 0
-          ? 'Your beacon is live for today.'
-          : `Your beacon is scheduled for ${targetDate.toLocaleDateString()}`
-      );
-    } catch (e: any) {
-      console.error(e);
-      Alert.alert('Error', e?.message || 'Failed to set beacon.');
+      // Ensure uniqueness + include me (owner can always see)
+      allowedUids = Array.from(new Set([...allowedUids, user.uid]));
+
+      const data = {
+        ownerUid: user.uid,
+        // what the scheduler controls:
+        days: selectedDays,
+        groupIds: selectedGroupIds, // just the ids (source-agnostic); you’re free to store source if you want
+        allowedUids,
+        updatedAt: serverTimestamp(),
+        ...(beaconId
+          ? {}
+          : { createdAt: serverTimestamp(), isActive: true }), // creating a new one
+      };
+
+      const ref = beaconId
+        ? doc(db, "Beacons", beaconId)
+        : doc(collection(db, "Beacons"));
+
+      await setDoc(ref, data, { merge: true });
+
+      onSaved?.();
+    } catch (e) {
+      console.error("Failed to save beacon:", e);
     } finally {
       setSaving(false);
     }
-  }, [dayOffset, message, meDisplayName]);
+  };
 
-  const cancelBeacon = useCallback(async () => {
-    const user = auth.currentUser;
-    if (!user) return;
-    try {
-      const targetDate = startOfDay(new Date());
-      targetDate.setDate(targetDate.getDate() + dayOffset);
-      const id = `${user.uid}_${yyyymmdd(targetDate)}`;
-      // Mark expired
-      await setDoc(
-        doc(db, 'beacons', id),
-        {
-          expiresAt: Timestamp.fromDate(new Date(Date.now() - 1000)),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-      Alert.alert('Beacon cancelled', 'It will no longer appear as active/upcoming.');
-    } catch (e: any) {
-      console.error(e);
-      Alert.alert('Error', e?.message || 'Failed to cancel beacon.');
-    }
-  }, [dayOffset]);
+  const showEmptyHint = !friendGroups.length;
 
   return (
-    <View>
-      <Text style={styles.title}>Beacon options</Text>
+    <View style={styles.container}>
+      {/* Day selector */}
+      <Text style={styles.label}>Day</Text>
+      <View style={styles.rowWrap}>
+        {daysOfWeek.map((day) => {
+          const selected = selectedDays.includes(day);
+          return (
+            <Pressable
+              key={day}
+              onPress={() => toggleDay(day)}
+              style={[styles.chip, selected && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, selected && styles.chipTextActive]}>
+                {day}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
 
-      {/* Day chips */}
-      <View style={styles.dayRow}>
-        {next7Days.map((d) => (
-          <TouchableOpacity
-            key={d.offset}
-            onPress={() => setDayOffset(d.offset)}
-            style={[styles.dayChip, d.offset === dayOffset && styles.dayChipActive]}
+      {/* Friend groups selector */}
+      <Text style={[styles.label, { marginTop: 16 }]}>Friend Groups</Text>
+
+      {showEmptyHint ? (
+        <View style={styles.emptyHintBox}>
+          <Text style={styles.emptyHintText}>
+            You don’t have any friend groups yet.
+          </Text>
+          <Text style={[styles.emptyHintText, { marginTop: 2 }]}>
+            Create groups from the Friends screen.
+          </Text>
+          <Pressable
+            onPress={() => router.push("/friends")}
+            style={styles.hintBtn}
           >
-            <Text style={[styles.dayChipText, d.offset === dayOffset && styles.dayChipTextActive]}>
-              {d.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+            <Text style={styles.hintBtnText}>Open Friends</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.rowWrap}>
+          {friendGroups.map((g) => {
+            const selected = selectedGroupIds.includes(g.id);
+            return (
+              <Pressable
+                key={`${g.source}:${g.id}`}
+                onPress={() => toggleGroup(g.id)}
+                style={[styles.chip, selected && styles.chipActive]}
+              >
+                <Text
+                  style={[styles.chipText, selected && styles.chipTextActive]}
+                >
+                  {g.name}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
 
-      {/* Message */}
-      <View style={styles.msgWrap}>
-        <Text style={styles.msgLabel}>Message</Text>
-        <TextInput
-          style={styles.msgInput}
-          placeholder={DEFAULT_BEACON_MESSAGE}
-          value={message}
-          onChangeText={setMessage}
-          maxLength={140}
-          multiline
-          returnKeyType="done"
-          blurOnSubmit={Platform.OS !== 'ios'}
-        />
-        <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
-      </View>
-
-      {/* Actions */}
-      <View style={styles.btnRow}>
-        <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={upsertBeacon} disabled={saving}>
-          <Text style={styles.btnPrimaryText}>{saving ? 'Saving…' : 'Set beacon'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={cancelBeacon} disabled={saving}>
-          <Text style={styles.btnGhostText}>Cancel for this day</Text>
-        </TouchableOpacity>
-      </View>
+      <Pressable
+        onPress={saveBeacon}
+        disabled={saving}
+        style={[styles.saveBtn, saving && { opacity: 0.6 }]}
+      >
+        {saving ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.saveBtnText}>Save Beacon</Text>
+        )}
+      </Pressable>
     </View>
   );
 }
 
-const colors = {
-  primary: '#2F6FED',
-  ink: '#0B1426',
-  dim: '#667085',
-  border: '#E5E7EB',
-};
-
 const styles = StyleSheet.create({
-  title: { fontSize: 20, fontWeight: '700', color: colors.ink, marginBottom: 12 },
-  dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
-  dayChip: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  dayChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  dayChipText: { color: colors.ink, fontSize: 14 },
-  dayChipTextActive: { color: '#fff', fontWeight: '700' },
+  container: { padding: 16 },
+  label: { fontSize: 16, fontWeight: "700", marginBottom: 8, color: colors.text },
+  rowWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
 
-  msgWrap: { marginBottom: 8 },
-  msgLabel: { fontSize: 14, color: colors.dim, marginBottom: 6 },
-  msgInput: {
+  chip: {
     borderWidth: 1,
     borderColor: colors.border,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: "#fff",
+  },
+  chipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  chipText: { color: colors.text },
+  chipTextActive: { color: "#fff", fontWeight: "700" },
+
+  emptyHintBox: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: "#fff",
+    marginBottom: 4,
+  },
+  emptyHintText: { color: colors.subtle },
+
+  hintBtn: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: colors.primary,
     borderRadius: 10,
-    padding: 10,
-    minHeight: 60,
-    textAlignVertical: 'top',
   },
-  msgHint: { color: colors.dim, fontSize: 12, marginTop: 4 },
+  hintBtnText: { color: "#fff", fontWeight: "700" },
 
-  btnRow: { flexDirection: 'row', gap: 10, marginTop: 8, marginBottom: 8 },
-  btn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
-  btnPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
-  btnPrimaryText: { color: '#fff', fontWeight: '700' },
-  btnGhost: { backgroundColor: '#fff' },
-  btnGhostText: { color: colors.ink, fontWeight: '600' },
+  saveBtn: {
+    marginTop: 24,
+    backgroundColor: colors.primary,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  saveBtnText: { color: "#fff", fontWeight: "700" },
 });
