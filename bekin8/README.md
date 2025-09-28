@@ -68,3 +68,5 @@ chat for self posts are hard to read with the blue
 
 
 * sexy bottom buttons for friends create post go to feed stuff
+
+* friend group invites

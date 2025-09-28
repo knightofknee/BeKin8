@@ -26,12 +26,14 @@ import {
   updateDoc,
   where,
   serverTimestamp,
+  orderBy,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
 import { Friend, FriendRequest, Edge, MessageState } from "@/components/types";
 import FriendsProfileAndInvite from "@/components/FriendsProfileAndInvite";
 import FriendRequestsSection from "@/components/FriendRequestsSection";
 import FriendsList from "@/components/FriendsList";
+import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEditor";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 
@@ -59,6 +61,11 @@ export default function FriendsScreen() {
   const [subFriends, setSubFriends] = useState<Friend[]>([]);
   const [legacyFriends, setLegacyFriends] = useState<Friend[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+
+  // Friend Groups
+  const [groups, setGroups] = useState<FriendGroup[]>([]);
+  const [groupEditorOpen, setGroupEditorOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<FriendGroup | null>(null);
 
   // Username cache for UIDs from edges
   const nameCacheRef = useRef<Record<string, string>>({});
@@ -139,9 +146,12 @@ export default function FriendsScreen() {
         setSubFriends([]);
         setLegacyFriends([]);
         setEdges([]);
+        setGroups([]);
+        setEditingGroup(null);
+        setGroupEditorOpen(false);
+
         // 🚪 Hard-guard: if unauthenticated, push to login and clear history
         router.replace("/");
-        // No more subscriptions
         return;
       }
 
@@ -207,6 +217,21 @@ export default function FriendsScreen() {
         setEdges(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
       });
       cleanups.push(unsubEdges);
+
+      // Subscribe: Friend Groups for this user
+      const qGroups = query(
+        collection(db, "FriendGroups"),
+        where("ownerUid", "==", user.uid),
+        orderBy("name")
+      );
+      const unsubGroups = onSnapshot(qGroups, (snap) => {
+        const arr: FriendGroup[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        }));
+        setGroups(arr);
+      });
+      cleanups.push(unsubGroups);
     });
 
     return () => {
@@ -528,13 +553,32 @@ export default function FriendsScreen() {
     try {
       setLoggingOut(true);
       await signOut(auth);
-      // Replace to login + clear any stacked routes/modals
       router.dismissAll?.();
       router.replace("/");
     } catch {
       setLoggingOut(false);
       Alert.alert("Error", "Failed to log out. Please try again.");
     }
+  };
+
+  // Handlers: Friend Groups
+  const openCreateGroup = () => {
+    setEditingGroup(null);
+    setGroupEditorOpen(true);
+  };
+
+  const openEditGroup = (g: FriendGroup) => {
+    setEditingGroup(g);
+    setGroupEditorOpen(true);
+  };
+
+  const onSavedGroup = (g: FriendGroup) => {
+    // No-op; realtime subscription updates the list. This keeps state simple.
+    showMessage(editingGroup ? "Group updated!" : "Group created!", "success");
+  };
+
+  const onDeletedGroup = (groupId: string) => {
+    showMessage("Group deleted.", "success");
   };
 
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
@@ -567,6 +611,43 @@ export default function FriendsScreen() {
               busySend={busy}
               message={message}
             />
+
+            {/* My Friend Groups */}
+            <View style={styles.card}>
+              <View style={styles.groupsHeaderRow}>
+                <Text style={styles.sectionTitle}>My Friend Groups</Text>
+                <Pressable onPress={openCreateGroup} hitSlop={10} style={styles.plusBtn}>
+                  <Text style={styles.plusBtnText}>＋</Text>
+                </Pressable>
+              </View>
+
+              {groups.length === 0 ? (
+                <Text style={styles.subtle}>No groups yet — tap + to create one.</Text>
+              ) : (
+                <View style={{ rowGap: 8 }}>
+                  {groups.map((g) => (
+                    <Pressable
+                      key={g.id}
+                      onPress={() => openEditGroup(g)}
+                      style={styles.groupRow}
+                    >
+                      <View style={styles.groupAvatar}>
+                        <Text style={{ color: "#fff", fontWeight: "800" }}>
+                          {g.name?.[0]?.toUpperCase() || "G"}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.groupName}>{g.name}</Text>
+                        <Text style={styles.groupMeta}>
+                          {(g.memberUids?.length ?? 0)} member{(g.memberUids?.length ?? 0) === 1 ? "" : "s"}
+                        </Text>
+                      </View>
+                      <Text style={styles.groupEditHint}>Edit</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </View>
 
             {/* Requests */}
             <FriendRequestsSection
@@ -614,6 +695,15 @@ export default function FriendsScreen() {
         initialNumToRender={20}
         windowSize={10}
       />
+
+      {/* Friend Group Editor Modal */}
+      <FriendGroupEditor
+        visible={groupEditorOpen}
+        group={editingGroup}
+        onClose={() => setGroupEditorOpen(false)}
+        onSaved={onSavedGroup}
+        onDeleted={onDeletedGroup}
+      />
     </View>
   );
 }
@@ -634,6 +724,40 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 18, fontWeight: "800", marginBottom: 8, color: colors.text },
   subtle: { color: colors.subtle },
+
+  // Groups section
+  groupsHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
+  plusBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  plusBtnText: { color: "#fff", fontWeight: "900", fontSize: 20 },
+
+  groupRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: colors.card,
+  },
+  groupAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  groupName: { fontWeight: "800", color: colors.text },
+  groupMeta: { color: colors.subtle, marginTop: 2, fontSize: 12 },
+  groupEditHint: { color: colors.primary, fontWeight: "700" },
 
   // Logout button
   logoutBtn: {

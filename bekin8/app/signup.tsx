@@ -1,18 +1,32 @@
 // app/signup.tsx
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState } from "react";
 import {
-  View,
-  TextInput,
-  Button,
-  Text,
-  StyleSheet,
   ActivityIndicator,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
   Platform,
-} from 'react-native';
-import { useRouter } from 'expo-router';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { auth, db } from '../firebase.config';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableWithoutFeedback,
+  View,
+} from "react-native";
+import { useRouter, Link } from "expo-router";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { auth, db } from "../firebase.config";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+
+const colors = {
+  primary: "#2F6FED",
+  bg: "#F5F8FF",
+  card: "#FFFFFF",
+  text: "#111827",
+  subtle: "#6B7280",
+  border: "#E5E7EB",
+  error: "#B00020",
+};
 
 export default function SignUp() {
   const router = useRouter();
@@ -21,60 +35,51 @@ export default function SignUp() {
   const passwordRef = useRef<TextInput>(null);
   const confirmRef = useRef<TextInput>(null);
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
-  // Small, sensible validation (client-side)
-  const isValidEmail = (v: string) =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+  const [showPw, setShowPw] = useState(false);
+  const [showPw2, setShowPw2] = useState(false);
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [emailFocused, setEmailFocused] = useState(false);
+  const [pwFocused, setPwFocused] = useState(false);
+  const [pw2Focused, setPw2Focused] = useState(false);
 
   const friendlyError = (code?: string, fallback?: string) => {
     switch (code) {
-      case 'auth/invalid-email':
-        return 'That email address looks invalid.';
-      case 'auth/email-already-in-use':
-        return 'There’s already an account with that email.';
-      case 'auth/weak-password':
-        return 'Password must be at least 6 characters.';
-      case 'auth/operation-not-allowed':
-        return 'Email/password sign-in is not enabled for this project.';
-      case 'auth/network-request-failed':
-        return 'Network error. Check your connection and try again.';
+      case "auth/invalid-email":
+        return "That email address looks invalid.";
+      case "auth/email-already-in-use":
+        return "There’s already an account with that email.";
+      case "auth/weak-password":
+        return "Password must be at least 6 characters.";
+      case "auth/operation-not-allowed":
+        return "Email/password sign-in isn’t enabled for this project.";
+      case "auth/network-request-failed":
+        return "Network error. Check your connection and try again.";
       default:
-        return fallback || 'Something went wrong. Please try again.';
+        return fallback || "Something went wrong. Please try again.";
     }
   };
 
   const handleSignUp = async () => {
-    setError('');
+    setError(null);
 
     const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      setError('Please enter an email.');
-      return;
-    }
-    if (!isValidEmail(trimmedEmail)) {
-      setError('That email address looks invalid.');
-      return;
-    }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters.');
-      return;
-    }
-    if (password !== confirmPassword) {
-      setError("Passwords don't match.");
-      return;
-    }
+    if (!trimmedEmail) return setError("Please enter an email.");
+    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    if (password !== confirmPassword) return setError("Passwords don’t match.");
 
     try {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
 
-      // Minimal profile bootstrap
-      await setDoc(doc(db, 'users', cred.user.uid), {
+      // Minimal user doc so other screens can gate on username later
+      await setDoc(doc(db, "users", cred.user.uid), {
         uid: cred.user.uid,
         email: trimmedEmail,
         username: null,
@@ -82,7 +87,7 @@ export default function SignUp() {
         createdAt: serverTimestamp(),
       });
 
-      router.replace('/home');
+      router.replace("/home");
     } catch (e: any) {
       setError(friendlyError(e?.code, e?.message));
     } finally {
@@ -90,163 +95,217 @@ export default function SignUp() {
     }
   };
 
-  const goToSignIn = () => router.replace('/');
-
-  // ===== iOS autofill/overlay suppression =====
-  // On iOS we set textContentType="oneTimeCode" and autoComplete="off"
-  // to prevent the "Automatic Strong Password" sheet from hijacking input.
-  const iosNoAutofill = {
-    textContentType: 'oneTimeCode' as const,
-    autoComplete: 'off' as const,
-  };
-  // Android can keep sane autofill hints
-  const androidEmailHints = {
-    textContentType: 'emailAddress' as const,
-    autoComplete: 'email' as const,
-    importantForAutofill: 'no' as const, // set 'yes' if you want autofill; 'no' keeps it quiet
-  };
-  const androidPasswordHints = {
-    textContentType: 'password' as const,
-    autoComplete: 'password' as const,
-    importantForAutofill: 'no' as const,
-  };
-
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Create Account</Text>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.bg }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View style={styles.container}>
+          {/* decorative soft circles (match login) */}
+          <View style={styles.blobA} />
+          <View style={styles.blobB} />
 
-      {/* Email */}
-      <View style={styles.inputGroup}>
-        <Text style={styles.label}>Email</Text>
-        <TextInput
-          key={Platform.OS === 'ios' ? 'ios-email' : 'email'} // force iOS to re-evaluate field heuristics
-          ref={emailRef}
-          style={styles.input}
-          placeholder="you@example.com"
-          keyboardType="email-address"
-          inputMode="email"
-          autoCapitalize="none"
-          autoCorrect={false}
-          {...(Platform.OS === 'ios' ? iosNoAutofill : androidEmailHints)}
-          value={email}
-          onChangeText={setEmail}
-          returnKeyType="next"
-          onSubmitEditing={() => passwordRef.current?.focus()}
-        />
-      </View>
+          {/* header / logo */}
+          <View style={styles.header}>
+            <Image
+              source={require("../assets/images/adaptive-icon.png")}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.title}>Create Account</Text>
+            <Text style={styles.subtitle}>Join BeKin</Text>
+          </View>
 
-      {/* Password */}
-      <View style={styles.inputGroup}>
-        <Text style={styles.label}>Password</Text>
-        <TextInput
-          key={Platform.OS === 'ios' ? 'ios-pass' : 'pass'}
-          ref={passwordRef}
-          style={styles.input}
-          placeholder="••••••••"
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          {...(Platform.OS === 'ios' ? iosNoAutofill : androidPasswordHints)}
-          value={password}
-          onChangeText={setPassword}
-          returnKeyType="next"
-          onSubmitEditing={() => confirmRef.current?.focus()}
-        />
-      </View>
+          {/* card */}
+          <View style={styles.card}>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {/* Confirm Password */}
-      <View style={styles.inputGroup}>
-        <Text style={styles.label}>Confirm Password</Text>
-        <TextInput
-          key={Platform.OS === 'ios' ? 'ios-confirm' : 'confirm'}
-          ref={confirmRef}
-          style={styles.input}
-          placeholder="••••••••"
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          {...(Platform.OS === 'ios' ? iosNoAutofill : androidPasswordHints)}
-          value={confirmPassword}
-          onChangeText={setConfirmPassword}
-          returnKeyType="done"
-          onSubmitEditing={handleSignUp}
-        />
-      </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Email</Text>
+              <TextInput
+                ref={emailRef}
+                style={[
+                  styles.input,
+                  { borderColor: emailFocused ? colors.primary : colors.border },
+                ]}
+                placeholder="you@example.com"
+                placeholderTextColor={colors.subtle}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                textContentType="emailAddress"
+                autoComplete="email"
+                value={email}
+                onChangeText={setEmail}
+                onFocus={() => setEmailFocused(true)}
+                onBlur={() => setEmailFocused(false)}
+                returnKeyType="next"
+                onSubmitEditing={() => passwordRef.current?.focus()}
+              />
+            </View>
 
-      {/* Inline validation hints (optional) */}
-      {!isValidEmail(email) && email.length > 0 && (
-        <Text style={styles.hint}>Use a valid email like name@domain.com</Text>
-      )}
-      {password.length > 0 && password.length < 6 && (
-        <Text style={styles.hint}>Password must be at least 6 characters.</Text>
-      )}
-      {confirmPassword.length > 0 && confirmPassword !== password && (
-        <Text style={styles.hint}>Passwords don’t match.</Text>
-      )}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Password</Text>
+              <View
+                style={[
+                  styles.input,
+                  styles.inputRow,
+                  { borderColor: pwFocused ? colors.primary : colors.border },
+                ]}
+              >
+                <TextInput
+                  ref={passwordRef}
+                  style={{ flex: 1 }}
+                  placeholder="••••••••"
+                  placeholderTextColor={colors.subtle}
+                  secureTextEntry={!showPw}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  textContentType="newPassword"
+                  autoComplete="password-new"
+                  value={password}
+                  onChangeText={setPassword}
+                  onFocus={() => setPwFocused(true)}
+                  onBlur={() => setPwFocused(false)}
+                  returnKeyType="next"
+                  onSubmitEditing={() => confirmRef.current?.focus()}
+                />
+                <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
+                  <Text style={styles.togglePw}>{showPw ? "Hide" : "Show"}</Text>
+                </Pressable>
+              </View>
+            </View>
 
-      {error !== '' && <Text style={styles.error}>{error}</Text>}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Confirm Password</Text>
+              <View
+                style={[
+                  styles.input,
+                  styles.inputRow,
+                  { borderColor: pw2Focused ? colors.primary : colors.border },
+                ]}
+              >
+                <TextInput
+                  ref={confirmRef}
+                  style={{ flex: 1 }}
+                  placeholder="••••••••"
+                  placeholderTextColor={colors.subtle}
+                  secureTextEntry={!showPw2}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  textContentType="newPassword"
+                  autoComplete="password-new"
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  onFocus={() => setPw2Focused(true)}
+                  onBlur={() => setPw2Focused(false)}
+                  returnKeyType="go"
+                  onSubmitEditing={handleSignUp}
+                />
+                <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
+                  <Text style={styles.togglePw}>{showPw2 ? "Hide" : "Show"}</Text>
+                </Pressable>
+              </View>
+            </View>
 
-      <View style={styles.buttonContainer}>
-        {loading ? (
-          <ActivityIndicator />
-        ) : (
-          <Button title="Sign Up" onPress={handleSignUp} disabled={loading} />
-        )}
-        <View style={styles.switchButton}>
-          <Button title="Have an account? Sign In" onPress={goToSignIn} disabled={loading} />
+            <Pressable
+              onPress={handleSignUp}
+              disabled={loading}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                pressed && { opacity: 0.9 },
+                loading && { opacity: 0.7 },
+              ]}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.primaryBtnText}>Sign Up</Text>
+              )}
+            </Pressable>
+
+            <View style={styles.bottomRow}>
+              <Text style={{ color: colors.subtle }}>Already have an account?</Text>
+              <Link href="/" style={styles.link}>
+                Sign in
+              </Link>
+            </View>
+          </View>
         </View>
-      </View>
-    </View>
+      </TouchableWithoutFeedback>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'stretch',
-    padding: 24,
-    backgroundColor: '#fff',
+  container: { flex: 1, paddingHorizontal: 20, paddingTop: 60, backgroundColor: colors.bg },
+  header: { alignItems: "center", marginBottom: 18 },
+  logo: { width: 84, height: 84, marginBottom: 12 },
+  title: { fontSize: 28, fontWeight: "800", color: colors.text },
+  subtitle: { marginTop: 6, fontSize: 16, color: colors.subtle },
+
+  card: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    padding: 18,
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
   },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 32,
-    textAlign: 'center',
-  },
-  inputGroup: {
-    marginBottom: 18,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
+
+  inputGroup: { marginBottom: 14 },
+  label: { fontWeight: "600", marginBottom: 8, color: colors.text },
   input: {
     borderWidth: 1,
-    borderColor: '#D1D5DB',
-    borderRadius: 10,
+    borderColor: colors.border,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    backgroundColor: '#fff',
+    borderRadius: 12,
+    backgroundColor: "#FFF",
   },
-  hint: {
-    color: '#6B7280',
-    fontSize: 12,
-    marginTop: -8,
-    marginBottom: 8,
-  },
-  error: {
-    color: '#B00020',
+  inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+
+  togglePw: { fontWeight: "700", color: colors.primary },
+
+  primaryBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
     marginTop: 4,
+  },
+  primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+
+  bottomRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 },
+  link: { color: colors.primary, fontWeight: "700" },
+
+  error: {
+    color: colors.error,
+    textAlign: "center",
     marginBottom: 12,
-    textAlign: 'center',
-    fontWeight: '600',
+    fontWeight: "600",
   },
-  buttonContainer: {
-    marginTop: 8,
+
+  // soft decorative blobs (same vibe as login)
+  blobA: {
+    position: "absolute",
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "#e2ebff",
+    top: -60,
+    right: -40,
   },
-  switchButton: {
-    marginTop: 12,
+  blobB: {
+    position: "absolute",
+    width: 160,
+    height: 160,
+    borderRadius: 999,
+    backgroundColor: "#d7e4ff",
+    bottom: -40,
+    left: -30,
   },
 });

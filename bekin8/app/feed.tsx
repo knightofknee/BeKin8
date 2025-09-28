@@ -24,11 +24,8 @@ import {
 } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
 
-/**
- * Post structure returned from Firestore
- */
 interface Post {
-  id: string; // Firestore document id (unique per post)
+  id: string;
   authorUid: string;
   authorUsername: string;
   content: string;
@@ -36,7 +33,6 @@ interface Post {
   url?: string;
 }
 
-// tiny helper to fetch profile usernames when we only have uids
 async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   await Promise.all(
@@ -45,8 +41,7 @@ async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
         const snap = await getDoc(doc(db, 'Profiles', uid));
         if (snap.exists()) {
           const data: any = snap.data();
-          const uname =
-            (data?.username || data?.displayName || '').toString().trim();
+          const uname = (data?.username || data?.displayName || '').toString().trim();
           if (uname) out[uid] = uname;
         }
       } catch {
@@ -62,7 +57,6 @@ export default function Feed() {
   const [loading, setLoading] = useState<boolean>(true);
   const router = useRouter();
 
-  // === Feed loader kept as-is, but wrapped in useCallback so listeners can call it ===
   const loadFeed = useCallback(async () => {
     const user = auth.currentUser;
     if (!user) {
@@ -71,10 +65,9 @@ export default function Feed() {
       return;
     }
 
-    // --- 1. Resolve friend list (from Friends doc + FriendEdges + users/{uid}/friends) ---
-    const friendMap = new Map<string, string>(); // uid -> username (may be empty for now)
+    const friendMap = new Map<string, string>();
 
-    // A) Legacy/canonical Friends doc
+    // A) Friends doc
     try {
       const friendsRef = doc(db, 'Friends', user.uid);
       const friendsSnap = await getDoc(friendsRef);
@@ -90,7 +83,7 @@ export default function Feed() {
       console.error('Error fetching Friends doc:', err);
     }
 
-    // B) Canonical FriendEdges (accepted)
+    // B) FriendEdges (accepted)
     try {
       const me = user.uid;
       const qEdges = query(
@@ -110,7 +103,7 @@ export default function Feed() {
       console.warn('FriendEdges fetch failed:', e);
     }
 
-    // C) users/{uid}/friends subcollection (often carries usernames)
+    // C) users/{uid}/friends subcollection
     try {
       const subSnap = await getDocs(collection(db, 'users', user.uid, 'friends'));
       subSnap.forEach((d) => {
@@ -122,8 +115,8 @@ export default function Feed() {
           );
         }
       });
-    } catch (e) {
-      // ignore
+    } catch {
+      /* ignore */
     }
 
     const friendUids = Array.from(friendMap.keys());
@@ -133,7 +126,6 @@ export default function Feed() {
       return;
     }
 
-    // If any usernames are missing, fetch from Profiles
     const missingUids = friendUids.filter((u) => !friendMap.get(u));
     if (missingUids.length) {
       const fetched = await fetchUsernames(missingUids);
@@ -142,7 +134,7 @@ export default function Feed() {
       });
     }
 
-    // --- 2. Fetch posts for each friend ---
+    // Fetch posts per friend
     try {
       const friendObjs = friendUids.map((uid) => ({
         uid,
@@ -188,16 +180,16 @@ export default function Feed() {
         });
       });
 
-      // --- 3. Deduplicate (by id, keep newest) ---
+      // Dedup + sort
       const seen = new Map<string, Post>();
       collected.forEach((p) => {
         const existing = seen.get(p.id);
         if (!existing || existing.createdAt < p.createdAt) seen.set(p.id, p);
       });
-      const uniquePosts = Array.from(seen.values());
+      const uniquePosts = Array.from(seen.values()).sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+      );
 
-      // --- 4. Sort desc by createdAt ---
-      uniquePosts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       setPosts(uniquePosts);
     } catch (err) {
       console.error('Error loading posts:', err);
@@ -206,31 +198,18 @@ export default function Feed() {
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     setLoading(true);
     loadFeed();
   }, [loadFeed]);
 
-  // Live refresh on friend accept / friend accepted (change as little as possible)
   useEffect(() => {
     const me = auth.currentUser?.uid;
     if (!me) return;
 
-    // When my subcollection changes (common in your flows)
-    const unsubA = onSnapshot(
-      collection(db, 'users', me, 'friends'),
-      () => loadFeed(),
-      () => {} // ignore errors
-    );
-
-    // When canonical edges change (accepted new friend)
+    const unsubA = onSnapshot(collection(db, 'users', me, 'friends'), () => loadFeed(), () => {});
     const unsubB = onSnapshot(
-      query(
-        collection(db, 'FriendEdges'),
-        where('uids', 'array-contains', me),
-        where('state', '==', 'accepted')
-      ),
+      query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me), where('state', '==', 'accepted')),
       () => loadFeed(),
       () => {}
     );
@@ -241,7 +220,6 @@ export default function Feed() {
     };
   }, [loadFeed]);
 
-  // === RENDER STATES ===
   if (loading) {
     return (
       <View style={styles.center}>
@@ -252,14 +230,12 @@ export default function Feed() {
 
   if (!posts.length) {
     return (
-      <>
-        <View style={styles.center}>
-          <Text>No posts from your friends yet.</Text>
-        </View>
-        <View style={styles.feedButton}>
+      <View style={styles.center}>
+        <Text>No posts from your friends yet.</Text>
+        <View style={{ marginTop: 12, width: '60%' }}>
           <Button title="Add Friends" onPress={() => router.push('/friends')} />
         </View>
-      </>
+      </View>
     );
   }
 
@@ -295,41 +271,17 @@ export default function Feed() {
   );
 }
 
-// === STYLES ===
 const styles = StyleSheet.create({
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  list: {
-    padding: 16,
-  },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16 },
+  list: { padding: 16 },
   postContainer: {
     marginBottom: 16,
     padding: 16,
     backgroundColor: '#f9f9f9',
     borderRadius: 8,
   },
-  postAuthor: {
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  postLink: {
-    color: '#2F6FED',
-    textDecorationLine: 'underline',
-    fontWeight: '600',
-  },
-  postContent: {
-    marginBottom: 8,
-  },
-  postDate: {
-    fontSize: 12,
-    color: '#555',
-    textAlign: 'right',
-  },
-  feedButton: {
-    marginTop: 24,
-    width: '60%',
-  },
+  postAuthor: { fontWeight: 'bold', marginBottom: 4 },
+  postLink: { color: '#2F6FED', textDecorationLine: 'underline', fontWeight: '600' },
+  postContent: { marginBottom: 8 },
+  postDate: { fontSize: 12, color: '#555', textAlign: 'right' },
 });
