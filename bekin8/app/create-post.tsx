@@ -24,6 +24,7 @@ import {
   getDoc,
   doc,
 } from 'firebase/firestore';
+import BottomBar from '@/components/BottomBar';
 
 export default function CreatePostScreen() {
   const router = useRouter();
@@ -197,17 +198,19 @@ export default function CreatePostScreen() {
             />
           </View>
         </View>
-
+       
+            
         {/* Only your 2 nav links */}
-        <View style={styles.linksRow}>
+        {/* <View style={styles.linksRow}>
           <View style={styles.feedButton}>
             <Button title="Go to Feed" onPress={() => router.push('/feed')} />
           </View>
           <View style={styles.feedButton}>
             <Button title="Friends" onPress={() => router.push('/friends')} />
           </View>
-        </View>
-      </ScrollView>
+        </View> */}
+      </ScrollView> 
+      <BottomBar />
     </KeyboardAvoidingView>
   );
 }

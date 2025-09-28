@@ -6,27 +6,22 @@ export default function RootLayout() {
   return (
     <Stack
       screenOptions={{
-        headerTitleAlign: "center",
+        headerShown: false,
+        // Keep default animations for non-bottom-bar routes
+        animation: "default",
+        // Slightly nicer replace behavior when we redirect after auth
+        animationTypeForReplace: "pop",
       }}
     >
-      {/* Auth screens (no headers) */}
-      <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="signup" options={{ headerShown: false }} />
+      {/* Bottom-bar destinations: fast, subtle fade */}
+      <Stack.Screen name="home" options={{ animation: "fade" }} />
+      <Stack.Screen name="feed" options={{ animation: "fade" }} />
+      <Stack.Screen name="friends" options={{ animation: "fade" }} />
+      <Stack.Screen name="create-post" options={{ animation: "fade" }} />
 
-      {/* Main app screens */}
-      <Stack.Screen
-        name="home"
-        options={{
-          // Remove the back chevron after signup/login
-          headerBackVisible: false,
-          // Also prevent iOS swipe-back from showing the previous route
-          gestureEnabled: false,
-          title: "Home",
-        }}
-      />
-      <Stack.Screen name="feed" options={{ title: "Feed" }} />
-      <Stack.Screen name="friends" options={{ title: "Friends" }} />
-      <Stack.Screen name="create-post" options={{ title: "Create Post" }} />
+      {/* Auth & other routes keep platform default transitions */}
+      <Stack.Screen name="index" options={{ animation: "default" }} />
+      <Stack.Screen name="signup" options={{ animation: "default" }} />
     </Stack>
   );
 }

@@ -34,6 +34,7 @@ import FriendsProfileAndInvite from "@/components/FriendsProfileAndInvite";
 import FriendRequestsSection from "@/components/FriendRequestsSection";
 import FriendsList from "@/components/FriendsList";
 import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEditor";
+import BottomBar from "@/components/BottomBar";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 
@@ -704,6 +705,7 @@ export default function FriendsScreen() {
         onSaved={onSavedGroup}
         onDeleted={onDeletedGroup}
       />
+      <BottomBar />
     </View>
   );
 }
