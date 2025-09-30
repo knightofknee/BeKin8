@@ -1,6 +1,6 @@
 // components/FriendsList.tsx
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View, Switch } from "react-native";
 import { colors } from "./ui/colors";
 import { Friend } from "./types";
 
@@ -8,9 +8,12 @@ type RowProps = {
   item: Friend;
   busy: boolean;
   onRemove: () => void;
+  // NEW: per-friend notification preference
+  notify?: boolean;
+  onToggleNotify?: (value: boolean) => void;
 };
 
-function Row({ item, busy, onRemove }: RowProps) {
+function Row({ item, busy, onRemove, notify = false, onToggleNotify }: RowProps) {
   const disabled = busy || !item.uid;
   return (
     <View style={styles.row}>
@@ -19,19 +22,28 @@ function Row({ item, busy, onRemove }: RowProps) {
           {item.username?.[0]?.toUpperCase() || "?"}
         </Text>
       </View>
+
+      {/* Name */}
       <View style={{ flex: 1 }}>
         <Text style={styles.rowTitle}>{item.username}</Text>
       </View>
 
-      {/* “Do not” emoji remove button */}
+      {/* Notifications toggle (minimal, inline) */}
+      <View style={styles.notifyWrap}>
+        <Text style={styles.notifyLabel}>Notifications?</Text>
+        <Switch
+          value={!!notify}
+          onValueChange={(v) => onToggleNotify && onToggleNotify(v)}
+          disabled={disabled}
+        />
+      </View>
+
+      {/* Remove button */}
       <Pressable
         disabled={disabled}
         onPress={onRemove}
         hitSlop={10}
-        style={[
-          styles.iconBtn,
-          { opacity: disabled ? 0.5 : 1 },
-        ]}
+        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1 }]}
       >
         <Text style={styles.iconTxt}>🚫</Text>
       </Pressable>
@@ -76,5 +88,15 @@ const styles = StyleSheet.create({
   iconTxt: {
     fontSize: 18,
     lineHeight: 22,
+  },
+  notifyWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+  },
+  notifyLabel: {
+    fontSize: 11,
+    color: colors.subtle,
+    marginBottom: 4,
   },
 });

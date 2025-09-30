@@ -60,7 +60,7 @@ async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
 export default function Feed() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [showMine, setShowMine] = useState<boolean>(true);
+  const [showMine, setShowMine] = useState<boolean>(false);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const router = useRouter();
 

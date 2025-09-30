@@ -16,6 +16,7 @@ import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import {
   addDoc,
+  arrayUnion,
   collection,
   doc,
   getDoc,
@@ -532,6 +533,32 @@ export default function HomeScreen() {
     }
   };
 
+  // "I'm in" handler
+  const handleImIn = async () => {
+    const user = auth.currentUser;
+    const b = selectedBeacon;
+    if (!user || !b) return;
+
+    try {
+      // 1) Add user to inUids (set semantics, no dups)
+      await updateDoc(doc(db, 'Beacons', b.id), {
+        inUids: arrayUnion(user.uid),
+        updatedAt: serverTimestamp(),
+      });
+
+      // 2) Emit a system message into chat
+      const name = await resolveMyOwnerName(user);
+      await addDoc(collection(db, 'Beacons', b.id, 'ChatMessages'), {
+        type: 'system',
+        text: `${name || 'Someone'} is in`,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('im-in failed', e);
+      Alert.alert('Error', 'Could not mark you as in. Try again.');
+    }
+  };
+
   // labels
   const activeLabel = useMemo(() => {
     if (!myActiveBeacon) return null;
@@ -551,14 +578,14 @@ export default function HomeScreen() {
   }
 
   // Compute the date we’ll talk about
-const scheduledDate =
-  myActiveBeacon?.startAt ??
-  nextPlannedDate ??
-  startOfDay(new Date()); // fallback
+  const scheduledDate =
+    myActiveBeacon?.startAt ??
+    nextPlannedDate ??
+    startOfDay(new Date()); // fallback
 
-const scheduledLabel = sameDay(scheduledDate, new Date())
-  ? 'today'
-  : scheduledDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
+  const scheduledLabel = sameDay(scheduledDate, new Date())
+    ? 'today'
+    : scheduledDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
 
   return (
     <>
@@ -587,31 +614,28 @@ const scheduledLabel = sameDay(scheduledDate, new Date())
                 </TouchableOpacity>
               ) : null}
             </View>
-            <Text style={styles.hint}>
-  Tap the {isLit ? 'fire to extinguish' : 'log to light'} your beacon
-</Text>
 
             <Pressable
-  onPress={openOptions}
-  hitSlop={8}
-  style={({ pressed }) => [styles.optionsCta, pressed && styles.optionsCtaPressed]}
-  android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
->
-  <View style={styles.optionsCtaIconWrap}>
-    <Text style={styles.optionsCtaIcon}>🗓️</Text>
-  </View>
-  <View style={{ flex: 1 }}>
-    <Text style={styles.optionsCtaTitle}>Beacon options</Text>
-    <Text style={styles.optionsCtaSubtitle}>Pick a day • choose friends • add a note</Text>
-  </View>
-  <Text style={styles.optionsCtaChevron}>›</Text>
-</Pressable>
+              onPress={openOptions}
+              hitSlop={8}
+              style={({ pressed }) => [styles.optionsCta, pressed && styles.optionsCtaPressed]}
+              android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
+            >
+              <View style={styles.optionsCtaIconWrap}>
+                <Text style={styles.optionsCtaIcon}>🗓️</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.optionsCtaTitle}>Beacon options</Text>
+                <Text style={styles.optionsCtaSubtitle}>Pick a day • choose friends • add a note</Text>
+              </View>
+              <Text style={styles.optionsCtaChevron}>›</Text>
+            </Pressable>
 
             {isLit && myActiveBeacon ? (
-  <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
-) : (
-  <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
-)}
+              <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+            ) : (
+              <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
+            )}
           </View>
         </View>
 
@@ -699,47 +723,40 @@ const scheduledLabel = sameDay(scheduledDate, new Date())
           </View>
         </Modal>
 
-        {/* Beacon details modal (tap outside to close) */}
-<Modal
-  visible={!!selectedBeacon}
-  animationType="fade"
-  transparent
-  onRequestClose={() => setSelectedBeacon(null)}
->
-  {/* Backdrop closes modal */}
-  <Pressable
-    style={styles.modalBackdropCenter}
-    onPress={() => setSelectedBeacon(null)}
-  >
-    {/* Card consumes press, so it doesn't bubble to the backdrop */}
-    <Pressable
-      style={styles.detailCard}
-      onPress={(e) => e.stopPropagation()}
-    >
-      <View style={styles.modalHeader}>
-        <Text style={styles.modalTitle}>Beacon</Text>
-        <Pressable onPress={() => setSelectedBeacon(null)} hitSlop={10}>
-          <Text style={styles.close}>✕</Text>
-        </Pressable>
-      </View>
+        {/* Beacon details modal */}
+        <Modal
+          visible={!!selectedBeacon}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setSelectedBeacon(null)}
+        >
+          <View style={styles.modalBackdropCenter}>
+            <View style={styles.detailCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Beacon</Text>
+                <Pressable onPress={() => setSelectedBeacon(null)}>
+                  <Text style={styles.close}>✕</Text>
+                </Pressable>
+              </View>
 
-      {selectedBeacon && (
-        <>
-          <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
-          <Text style={styles.detailWhen}>
-            {dayLabel(selectedBeacon.startAt)} • {selectedBeacon.startAt.toLocaleDateString()}
-          </Text>
-          <View style={styles.detailMsgBox}>
-            <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
+              {selectedBeacon && (
+  <>
+    <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
+
+    {/* Removed the date + top-level "I'm in" row */}
+
+    <View style={styles.detailMsgBox}>
+      <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
+    </View>
+
+    <View style={{ marginTop: 12 }}>
+      <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
+    </View>
+  </>
+)}
+            </View>
           </View>
-          <View style={{ marginTop: 12 }}>
-            <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
-          </View>
-        </>
-      )}
-    </Pressable>
-  </Pressable>
-</Modal>
+        </Modal>
       </SafeAreaView>
 
       {/* Keep BottomBar pinned; controls have extra bottom margin so it doesn't hug */}
@@ -907,40 +924,40 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   detailMsg: { fontSize: 15, color: '#111827' },
+
+  // Options CTA styles
   optionsCta: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 12,
-  width: '100%',
-  backgroundColor: '#EEF3FF',
-  borderColor: '#D8E3FF',
-  borderWidth: 1,
-  borderRadius: 14,
-  paddingVertical: 12,
-  paddingHorizontal: 14,
-  marginTop: 4,
-  marginBottom: 12,
-  shadowColor: '#000',
-  shadowOpacity: 0.08,
-  shadowRadius: 10,
-  shadowOffset: { width: 0, height: 4 },
-  elevation: 2, // Android
-},
-optionsCtaPressed: {
-  transform: [{ scale: 0.99 }],
-  opacity: 0.95,
-},
-optionsCtaIconWrap: {
-  width: 34,
-  height: 34,
-  borderRadius: 8,
-  //backgroundColor: '#2F6FED',
-  alignItems: 'center',
-  justifyContent: 'center',
-},
-optionsCtaIcon: { color: '#fff', fontSize: 18, fontWeight: '800' },
-optionsCtaTitle: { fontSize: 16, fontWeight: '800', color: '#0B1426' },
-optionsCtaSubtitle: { marginTop: 2, color: '#48608C' },
-optionsCtaChevron: { fontSize: 22, color: '#2F6FED', marginLeft: 4, marginRight: 2 },
-hint: { fontSize: 14, color: '#667085', marginBottom: 10, textAlign: 'center' },
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+    backgroundColor: '#EEF3FF',
+    borderColor: '#D8E3FF',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 4,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2, // Android
+  },
+  optionsCtaPressed: {
+    transform: [{ scale: 0.99 }],
+    opacity: 0.95,
+  },
+  optionsCtaIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  optionsCtaIcon: { color: '#fff', fontSize: 18, fontWeight: '800' },
+  optionsCtaTitle: { fontSize: 16, fontWeight: '800', color: '#0B1426' },
+  optionsCtaSubtitle: { marginTop: 2, color: '#48608C' },
+  optionsCtaChevron: { fontSize: 22, color: '#2F6FED', marginLeft: 4, marginRight: 2 },
 });

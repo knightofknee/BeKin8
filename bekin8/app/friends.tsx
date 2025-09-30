@@ -40,6 +40,7 @@ const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBar
 
 export default function FriendsScreen() {
+  const [notifyByUid, setNotifyByUid] = useState<Record<string, boolean>>({});
   const router = useRouter();
 
   // Username state
@@ -191,6 +192,15 @@ export default function FriendsScreen() {
             if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
           });
           setSubFriends(cleaned);
+
+          // Build notify map keyed by uid (fallback to doc id if uid missing)
+          const nm: Record<string, boolean> = {};
+          snap.docs.forEach((d) => {
+            const data = d.data() as any;
+            const uid = (typeof data?.uid === "string" && data.uid) || d.id;
+            if (uid) nm[uid] = !!data?.notify;
+          });
+          setNotifyByUid(nm);
         }
       );
       cleanups.push(unsubSub);
@@ -592,7 +602,28 @@ export default function FriendsScreen() {
           item.uid ? `uid:${item.uid}` : `name:${item.username.toLowerCase()}:${index}`
         }
         renderItem={({ item }) => (
-          <FriendsList.Row item={item} busy={busy} onRemove={() => confirmRemove(item)} />
+          <FriendsList.Row
+            item={item}
+            busy={busy}
+            onRemove={() => confirmRemove(item)}
+            notify={!!(item.uid && notifyByUid[item.uid])}
+            onToggleNotify={async (v) => {
+              const me = auth.currentUser;
+              if (!me || !item.uid) return;
+              try {
+                // Optimistic local update
+                setNotifyByUid((prev) => ({ ...prev, [item.uid!]: v }));
+                await setDoc(
+                  doc(db, "users", me.uid, "friends", item.uid),
+                  { notify: v, updatedAt: serverTimestamp() },
+                  { merge: true }
+                );
+              } catch (e) {
+                // Roll back on failure
+                setNotifyByUid((prev) => ({ ...prev, [item.uid!]: !v }));
+              }
+            }}
+          />
         )}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         ListHeaderComponent={

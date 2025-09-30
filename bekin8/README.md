@@ -69,15 +69,25 @@ done-------chat for self posts are hard to read with the blue
 
 needs improvement -- * sexy bottom buttons for friends create post go to feed stuff
 
-done------* friend group invites
+----done------* friend group invites
 
-done-------2- make top of home take up more space lower
-done---------center friends at top
+---done-------2- make top of home take up more space lower
+----done---------center friends at top
 
 ---------center stuff in general?
 
-^comments on posts- just the same as the beacon chat
+------------done^comments on posts- just the same as the beacon chat
 
 ^^friends page gets update with notification control and eventually profile links. posts can have profile links too
 
-****  answer the call of the beacon instead of making your own. intensify the flame, make it grow
+--basic form in-****  answer the call of the beacon instead of making your own. intensify the flame, make it grow
+
+
+^^^^^ cool looking fire and logs
+
+^^ profiles let you edit your own posts
+
+
+notis then profis
+
+^filter feed by friend group
