@@ -699,39 +699,47 @@ const scheduledLabel = sameDay(scheduledDate, new Date())
           </View>
         </Modal>
 
-        {/* Beacon details modal */}
-        <Modal
-          visible={!!selectedBeacon}
-          animationType="fade"
-          transparent
-          onRequestClose={() => setSelectedBeacon(null)}
-        >
-          <View style={styles.modalBackdropCenter}>
-            <View style={styles.detailCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Beacon</Text>
-                <Pressable onPress={() => setSelectedBeacon(null)}>
-                  <Text style={styles.close}>✕</Text>
-                </Pressable>
-              </View>
+        {/* Beacon details modal (tap outside to close) */}
+<Modal
+  visible={!!selectedBeacon}
+  animationType="fade"
+  transparent
+  onRequestClose={() => setSelectedBeacon(null)}
+>
+  {/* Backdrop closes modal */}
+  <Pressable
+    style={styles.modalBackdropCenter}
+    onPress={() => setSelectedBeacon(null)}
+  >
+    {/* Card consumes press, so it doesn't bubble to the backdrop */}
+    <Pressable
+      style={styles.detailCard}
+      onPress={(e) => e.stopPropagation()}
+    >
+      <View style={styles.modalHeader}>
+        <Text style={styles.modalTitle}>Beacon</Text>
+        <Pressable onPress={() => setSelectedBeacon(null)} hitSlop={10}>
+          <Text style={styles.close}>✕</Text>
+        </Pressable>
+      </View>
 
-              {selectedBeacon && (
-                <>
-                  <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
-                  <Text style={styles.detailWhen}>
-                    {dayLabel(selectedBeacon.startAt)} • {selectedBeacon.startAt.toLocaleDateString()}
-                  </Text>
-                  <View style={styles.detailMsgBox}>
-                    <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
-                  </View>
-                  <View style={{ marginTop: 12 }}>
-                    <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
-                  </View>
-                </>
-              )}
-            </View>
+      {selectedBeacon && (
+        <>
+          <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
+          <Text style={styles.detailWhen}>
+            {dayLabel(selectedBeacon.startAt)} • {selectedBeacon.startAt.toLocaleDateString()}
+          </Text>
+          <View style={styles.detailMsgBox}>
+            <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
           </View>
-        </Modal>
+          <View style={{ marginTop: 12 }}>
+            <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
+          </View>
+        </>
+      )}
+    </Pressable>
+  </Pressable>
+</Modal>
       </SafeAreaView>
 
       {/* Keep BottomBar pinned; controls have extra bottom margin so it doesn't hug */}

@@ -9,6 +9,7 @@ import {
   Button,
   Pressable,
   Linking,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
@@ -26,6 +27,7 @@ import {
 import { useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import PostComments from '../components/PostComments';
 
 interface Post {
   id: string;
@@ -49,9 +51,7 @@ async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
           const uname = (data?.username || data?.displayName || '').toString().trim();
           if (uname) out[uid] = uname;
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     })
   );
   return out;
@@ -60,10 +60,11 @@ async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
 export default function Feed() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [showMine, setShowMine] = useState<boolean>(true); // toggle to include/exclude my posts
+  const [showMine, setShowMine] = useState<boolean>(true);
+  const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const router = useRouter();
 
-  // --- load persisted toggle on first render ---
+  // load persisted toggle
   useEffect(() => {
     (async () => {
       try {
@@ -73,7 +74,7 @@ export default function Feed() {
     })();
   }, []);
 
-  // --- persist toggle whenever it changes ---
+  // persist toggle
   useEffect(() => {
     (async () => {
       try {
@@ -82,7 +83,6 @@ export default function Feed() {
     })();
   }, [showMine]);
 
-  // --- Load feed (friends + me) ---
   const loadFeed = useCallback(async () => {
     const user = auth.currentUser;
     if (!user) {
@@ -92,9 +92,9 @@ export default function Feed() {
     }
 
     const meUid = user.uid;
-    const friendMap = new Map<string, string>(); // uid -> username (may be empty for now)
+    const friendMap = new Map<string, string>();
 
-    // A) Friends doc
+    // Friends doc
     try {
       const friendsRef = doc(db, 'Friends', meUid);
       const friendsSnap = await getDoc(friendsRef);
@@ -110,7 +110,7 @@ export default function Feed() {
       console.error('Error fetching Friends doc:', err);
     }
 
-    // B) FriendEdges (accepted)
+    // FriendEdges (accepted)
     try {
       const qEdges = query(
         collection(db, 'FriendEdges'),
@@ -129,7 +129,7 @@ export default function Feed() {
       console.warn('FriendEdges fetch failed:', e);
     }
 
-    // C) users/{uid}/friends subcollection
+    // users/{uid}/friends subcollection
     try {
       const subSnap = await getDocs(collection(db, 'users', meUid, 'friends'));
       subSnap.forEach((d) => {
@@ -141,25 +141,20 @@ export default function Feed() {
           );
         }
       });
-    } catch {
-      /* ignore */
-    }
+    } catch {}
 
-    // Always include ME in the author set (so I see my own posts)
+    // include me
     const authorUids = Array.from(new Set<string>([meUid, ...Array.from(friendMap.keys())]));
 
-    // Fill in missing friend usernames from Profiles (and also grab mine)
+    // fill names
     const missingUids = authorUids.filter((u) => (u === meUid ? false : !friendMap.get(u)));
     const fetched = await fetchUsernames([meUid, ...missingUids]);
     const myUsername = fetched[meUid] || 'You';
-
     Object.entries(fetched).forEach(([uid, uname]) => {
-      if (uid !== meUid) {
-        friendMap.set(uid, uname || friendMap.get(uid) || '');
-      }
+      if (uid !== meUid) friendMap.set(uid, uname || friendMap.get(uid) || '');
     });
 
-    // --- Fetch posts per author (friends + me) ---
+    // fetch posts
     try {
       const authorObjs = authorUids.map((uid) => ({
         uid,
@@ -205,7 +200,7 @@ export default function Feed() {
         });
       });
 
-      // Dedup by id (keep newest), then sort desc
+      // dedupe + sort
       const seen = new Map<string, Post>();
       collected.forEach((p) => {
         const existing = seen.get(p.id);
@@ -223,31 +218,29 @@ export default function Feed() {
     }
   }, []);
 
-  // Initial load
+  // initial load
   useEffect(() => {
     setLoading(true);
     loadFeed();
   }, [loadFeed]);
 
-  // Live refresh when friends change
+  // live refresh on friends changes
   useEffect(() => {
     const me = auth.currentUser?.uid;
     if (!me) return;
-
     const unsubA = onSnapshot(collection(db, 'users', me, 'friends'), () => loadFeed(), () => {});
     const unsubB = onSnapshot(
       query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me), where('state', '==', 'accepted')),
       () => loadFeed(),
       () => {}
     );
-
     return () => {
       unsubA();
       unsubB();
     };
   }, [loadFeed]);
 
-  // Apply my-posts filter at render-time (cheaper than refetching)
+  // filter my posts
   const displayedPosts = useMemo(() => {
     const me = auth.currentUser?.uid;
     if (!me) return posts;
@@ -282,8 +275,8 @@ export default function Feed() {
   return (
     <>
       <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
-        {/* Stacked header: title then toggle */}
-        <View style={styles.header}>
+        {/* Header */}
+        <View style={styles.headerCol}>
           <Text style={styles.headerTitle}>Feed</Text>
           <Pressable
             onPress={() => setShowMine((s) => !s)}
@@ -296,17 +289,15 @@ export default function Feed() {
         <FlatList
           data={displayedPosts}
           keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
-          contentContainerStyle={[styles.list, { paddingBottom: 100 }]} // space for BottomBar
+          contentContainerStyle={[styles.list, { paddingBottom: 100 }]}
           renderItem={({ item }) => (
-            <View style={styles.postContainer}>
+            <Pressable style={styles.postContainer} onPress={() => setSelectedPost(item)}>
               <Text style={styles.postAuthor}>{item.authorUsername}</Text>
 
               {item.url ? (
                 <Pressable
                   onPress={() =>
-                    Linking.openURL(
-                      /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
-                    )
+                    Linking.openURL(/^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`)
                   }
                   style={{ marginBottom: 6 }}
                 >
@@ -318,11 +309,23 @@ export default function Feed() {
 
               <Text style={styles.postContent}>{item.content}</Text>
               <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
-            </View>
+            </Pressable>
           )}
         />
       </SafeAreaView>
       <BottomBar />
+
+      {/* Comments Modal (tap outside to close) */}
+      <Modal
+        visible={!!selectedPost}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setSelectedPost(null)}
+      >
+        {selectedPost && (
+          <PostComments post={selectedPost} onClose={() => setSelectedPost(null)} />
+        )}
+      </Modal>
     </>
   );
 }
@@ -330,19 +333,18 @@ export default function Feed() {
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16 },
 
-  // NEW stacked header
-  header: {
-    alignItems: 'center',
+  headerCol: {
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 12,
+    paddingBottom: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#fff',
-    gap: 8,
   },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827', textAlign: 'center' },
+  headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827', textAlign: 'center', marginBottom: 6 },
+
   toggleBtn: {
+    alignSelf: 'center',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
