@@ -426,6 +426,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#0B1426',
     marginBottom: 10,
+    textAlign: 'center'
   },
 
   // wrapper that allows peeking the 4th card

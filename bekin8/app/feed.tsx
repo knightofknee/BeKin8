@@ -10,6 +10,7 @@ import {
   Pressable,
   Linking,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
 import {
   collection,
@@ -35,6 +36,8 @@ interface Post {
   url?: string;
 }
 
+const prefKey = () => `feed_showMine:${auth.currentUser?.uid ?? 'anon'}`;
+
 async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   await Promise.all(
@@ -59,6 +62,25 @@ export default function Feed() {
   const [loading, setLoading] = useState<boolean>(true);
   const [showMine, setShowMine] = useState<boolean>(true); // toggle to include/exclude my posts
   const router = useRouter();
+
+  // --- load persisted toggle on first render ---
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(prefKey());
+        if (saved != null) setShowMine(saved === '1');
+      } catch {}
+    })();
+  }, []);
+
+  // --- persist toggle whenever it changes ---
+  useEffect(() => {
+    (async () => {
+      try {
+        await AsyncStorage.setItem(prefKey(), showMine ? '1' : '0');
+      } catch {}
+    })();
+  }, [showMine]);
 
   // --- Load feed (friends + me) ---
   const loadFeed = useCallback(async () => {
@@ -258,47 +280,47 @@ export default function Feed() {
   }
 
   return (
-    <><SafeAreaView style={{ flex: 1 }} edges={["top", "left", "right"]}>
-      {/* Tiny header with a toggle */}
-      <View style={styles.headerRow}>
-        <Text style={styles.headerTitle}>Feed</Text>
-        <Pressable
-          onPress={() => setShowMine((s) => !s)}
-          style={({ pressed }) => [styles.toggleBtn, pressed && { opacity: 0.85 }]}
-        >
-          <Text style={styles.toggleBtnText}>{showMine ? 'Hide my posts' : 'Show my posts'}</Text>
-        </Pressable>
-      </View>
+    <>
+      <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+        {/* Stacked header: title then toggle */}
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Feed</Text>
+          <Pressable
+            onPress={() => setShowMine((s) => !s)}
+            style={({ pressed }) => [styles.toggleBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={styles.toggleBtnText}>{showMine ? 'Hide my posts' : 'Show my posts'}</Text>
+          </Pressable>
+        </View>
 
-      <FlatList
-        data={displayedPosts}
-        keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
-        contentContainerStyle={[styles.list, { paddingBottom: 100 }]} // space for BottomBar
-        renderItem={({ item }) => (
-          <View style={styles.postContainer}>
-            <Text style={styles.postAuthor}>{item.authorUsername}</Text>
+        <FlatList
+          data={displayedPosts}
+          keyExtractor={(item) => `${item.id}-${item.createdAt.getTime()}`}
+          contentContainerStyle={[styles.list, { paddingBottom: 100 }]} // space for BottomBar
+          renderItem={({ item }) => (
+            <View style={styles.postContainer}>
+              <Text style={styles.postAuthor}>{item.authorUsername}</Text>
 
-            {item.url ? (
-              <Pressable
-                onPress={() =>
-                  Linking.openURL(
-                    /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
-                  )
-                }
-                style={{ marginBottom: 6 }}
-              >
-                <Text style={styles.postLink} numberOfLines={1}>
-                  {String(item.url).replace(/^https?:\/\//i, '')}
-                </Text>
-              </Pressable>
-            ) : null}
+              {item.url ? (
+                <Pressable
+                  onPress={() =>
+                    Linking.openURL(
+                      /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
+                    )
+                  }
+                  style={{ marginBottom: 6 }}
+                >
+                  <Text style={styles.postLink} numberOfLines={1}>
+                    {String(item.url).replace(/^https?:\/\//i, '')}
+                  </Text>
+                </Pressable>
+              ) : null}
 
-            <Text style={styles.postContent}>{item.content}</Text>
-            <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
-          </View>
-        )}
-      />
-
+              <Text style={styles.postContent}>{item.content}</Text>
+              <Text style={styles.postDate}>{item.createdAt.toLocaleString()}</Text>
+            </View>
+          )}
+        />
       </SafeAreaView>
       <BottomBar />
     </>
@@ -308,18 +330,18 @@ export default function Feed() {
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16 },
 
-  headerRow: {
-    flexDirection: 'row',
+  // NEW stacked header
+  header: {
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 8,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#fff',
+    gap: 8,
   },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827' },
+  headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827', textAlign: 'center' },
   toggleBtn: {
     paddingHorizontal: 12,
     paddingVertical: 8,

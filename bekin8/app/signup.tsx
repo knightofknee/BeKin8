@@ -13,10 +13,11 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { useRouter, Link } from "expo-router";
+import { useRouter, Link, Stack } from "expo-router";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 const colors = {
   primary: "#2F6FED",
@@ -28,8 +29,11 @@ const colors = {
   error: "#B00020",
 };
 
+const TOP_OFFSET = 64; // match login offset
+
 export default function SignUp() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const emailRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
@@ -100,146 +104,150 @@ export default function SignUp() {
       style={{ flex: 1, backgroundColor: colors.bg }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <View style={styles.container}>
-          {/* decorative soft circles (match login) */}
-          <View style={styles.blobA} />
-          <View style={styles.blobB} />
+      
 
-          {/* header / logo */}
-          <View style={styles.header}>
-            <Image
-              source={require("../assets/images/adaptive-icon.png")}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-            <Text style={styles.title}>Create Account</Text>
-            <Text style={styles.subtitle}>Join BeKin</Text>
-          </View>
+      <SafeAreaView style={{ flex: 1 }}>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
+            {/* decorative soft circles (match login) */}
+            <View style={styles.blobA} />
+            <View style={styles.blobB} />
 
-          {/* card */}
-          <View style={styles.card}>
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
-              <TextInput
-                ref={emailRef}
-                style={[
-                  styles.input,
-                  { borderColor: emailFocused ? colors.primary : colors.border },
-                ]}
-                placeholder="you@example.com"
-                placeholderTextColor={colors.subtle}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-                textContentType="emailAddress"
-                autoComplete="email"
-                value={email}
-                onChangeText={setEmail}
-                onFocus={() => setEmailFocused(true)}
-                onBlur={() => setEmailFocused(false)}
-                returnKeyType="next"
-                onSubmitEditing={() => passwordRef.current?.focus()}
+            {/* header / logo */}
+            <View style={styles.header}>
+              <Image
+                source={require("../assets/images/adaptive-icon.png")}
+                style={styles.logo}
+                resizeMode="contain"
               />
+              <Text style={styles.title}>Create Account</Text>
+              <Text style={styles.subtitle}>Join BeKin</Text>
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <View
-                style={[
-                  styles.input,
-                  styles.inputRow,
-                  { borderColor: pwFocused ? colors.primary : colors.border },
-                ]}
-              >
+            {/* card */}
+            <View style={styles.card}>
+              {error ? <Text style={styles.error}>{error}</Text> : null}
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Email</Text>
                 <TextInput
-                  ref={passwordRef}
-                  style={{ flex: 1 }}
-                  placeholder="••••••••"
+                  ref={emailRef}
+                  style={[
+                    styles.input,
+                    { borderColor: emailFocused ? colors.primary : colors.border },
+                  ]}
+                  placeholder="you@example.com"
                   placeholderTextColor={colors.subtle}
-                  secureTextEntry={!showPw}
                   autoCapitalize="none"
                   autoCorrect={false}
-                  textContentType="newPassword"
-                  autoComplete="password-new"
-                  value={password}
-                  onChangeText={setPassword}
-                  onFocus={() => setPwFocused(true)}
-                  onBlur={() => setPwFocused(false)}
+                  keyboardType="email-address"
+                  textContentType="emailAddress"
+                  autoComplete="email"
+                  value={email}
+                  onChangeText={setEmail}
+                  onFocus={() => setEmailFocused(true)}
+                  onBlur={() => setEmailFocused(false)}
                   returnKeyType="next"
-                  onSubmitEditing={() => confirmRef.current?.focus()}
+                  onSubmitEditing={() => passwordRef.current?.focus()}
                 />
-                <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
-                  <Text style={styles.togglePw}>{showPw ? "Hide" : "Show"}</Text>
-                </Pressable>
               </View>
-            </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Confirm Password</Text>
-              <View
-                style={[
-                  styles.input,
-                  styles.inputRow,
-                  { borderColor: pw2Focused ? colors.primary : colors.border },
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Password</Text>
+                <View
+                  style={[
+                    styles.input,
+                    styles.inputRow,
+                    { borderColor: pwFocused ? colors.primary : colors.border },
+                  ]}
+                >
+                  <TextInput
+                    ref={passwordRef}
+                    style={{ flex: 1 }}
+                    placeholder="••••••••"
+                    placeholderTextColor={colors.subtle}
+                    secureTextEntry={!showPw}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    textContentType="newPassword"
+                    autoComplete="password-new"
+                    value={password}
+                    onChangeText={setPassword}
+                    onFocus={() => setPwFocused(true)}
+                    onBlur={() => setPwFocused(false)}
+                    returnKeyType="next"
+                    onSubmitEditing={() => confirmRef.current?.focus()}
+                  />
+                  <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
+                    <Text style={styles.togglePw}>{showPw ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Confirm Password</Text>
+                <View
+                  style={[
+                    styles.input,
+                    styles.inputRow,
+                    { borderColor: pw2Focused ? colors.primary : colors.border },
+                  ]}
+                >
+                  <TextInput
+                    ref={confirmRef}
+                    style={{ flex: 1 }}
+                    placeholder="••••••••"
+                    placeholderTextColor={colors.subtle}
+                    secureTextEntry={!showPw2}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    textContentType="newPassword"
+                    autoComplete="password-new"
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                    onFocus={() => setPw2Focused(true)}
+                    onBlur={() => setPw2Focused(false)}
+                    returnKeyType="go"
+                    onSubmitEditing={handleSignUp}
+                  />
+                  <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
+                    <Text style={styles.togglePw}>{showPw2 ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              <Pressable
+                onPress={handleSignUp}
+                disabled={loading}
+                style={({ pressed }) => [
+                  styles.primaryBtn,
+                  pressed && { opacity: 0.9 },
+                  loading && { opacity: 0.7 },
                 ]}
               >
-                <TextInput
-                  ref={confirmRef}
-                  style={{ flex: 1 }}
-                  placeholder="••••••••"
-                  placeholderTextColor={colors.subtle}
-                  secureTextEntry={!showPw2}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  textContentType="newPassword"
-                  autoComplete="password-new"
-                  value={confirmPassword}
-                  onChangeText={setConfirmPassword}
-                  onFocus={() => setPw2Focused(true)}
-                  onBlur={() => setPw2Focused(false)}
-                  returnKeyType="go"
-                  onSubmitEditing={handleSignUp}
-                />
-                <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
-                  <Text style={styles.togglePw}>{showPw2 ? "Hide" : "Show"}</Text>
-                </Pressable>
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.primaryBtnText}>Sign Up</Text>
+                )}
+              </Pressable>
+
+              <View style={styles.bottomRow}>
+                <Text style={{ color: colors.subtle }}>Already have an account?</Text>
+                <Link href="/" style={styles.link}>
+                  Sign in
+                </Link>
               </View>
-            </View>
-
-            <Pressable
-              onPress={handleSignUp}
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.primaryBtn,
-                pressed && { opacity: 0.9 },
-                loading && { opacity: 0.7 },
-              ]}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.primaryBtnText}>Sign Up</Text>
-              )}
-            </Pressable>
-
-            <View style={styles.bottomRow}>
-              <Text style={{ color: colors.subtle }}>Already have an account?</Text>
-              <Link href="/" style={styles.link}>
-                Sign in
-              </Link>
             </View>
           </View>
-        </View>
-      </TouchableWithoutFeedback>
+        </TouchableWithoutFeedback>
+      </SafeAreaView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 60, backgroundColor: colors.bg },
+  container: { flex: 1, paddingHorizontal: 20, backgroundColor: colors.bg /* top set inline */ },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: "800", color: colors.text },

@@ -17,6 +17,7 @@ import {
 import { Link, useRouter, Stack } from "expo-router";
 import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 const colors = {
   primary: "#2F6FED",
@@ -28,8 +29,12 @@ const colors = {
   error: "#B00020",
 };
 
+const TOP_OFFSET = 64; // consistent “reach-friendly” offset
+
 export default function Index() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -85,11 +90,11 @@ export default function Index() {
 
   return (
     <>
-      {/* Hide back button + gestures so you can't "back into" the app */}
       <Stack.Screen
         options={{
           headerBackVisible: false,
           gestureEnabled: false,
+          animation: 'fade',
         }}
       />
 
@@ -98,111 +103,111 @@ export default function Index() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <StatusBar barStyle="dark-content" />
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-          <View style={styles.container}>
-            {/* decorative soft circles */}
-            <View style={styles.blobA} />
-            <View style={styles.blobB} />
+        <SafeAreaView style={{ flex: 1 }}>
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+            <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
+              {/* decorative soft circles */}
+              <View style={styles.blobA} />
+              <View style={styles.blobB} />
 
-            {/* header / logo */}
-            <View style={styles.header}>
-              <Image
-                source={require("../assets/images/adaptive-icon.png")}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-              <Text style={styles.title}>Welcome back</Text>
-              <Text style={styles.subtitle}>Sign in to BeKin</Text>
-            </View>
-
-            {/* card */}
-            <View style={styles.card}>
-              {error ? <Text style={styles.error}>{error}</Text> : null}
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Email</Text>
-                <TextInput
-                  style={[
-                    styles.input,
-                    { borderColor: emailFocused ? colors.primary : colors.border },
-                  ]}
-                  placeholder="you@example.com"
-                  placeholderTextColor={colors.subtle}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="email-address"
-                  // Use standard autofill without iOS "strong password" UI
-                  textContentType="emailAddress"
-                  autoComplete="email"
-                  value={email}
-                  editable={!submitting}
-                  onChangeText={setEmail}
-                  onFocus={() => setEmailFocused(true)}
-                  onBlur={() => setEmailFocused(false)}
-                  returnKeyType="next"
-                  blurOnSubmit
-                  onSubmitEditing={() => Keyboard.dismiss()}
+              {/* header / logo */}
+              <View style={styles.header}>
+                <Image
+                  source={require("../assets/images/adaptive-icon.png")}
+                  style={styles.logo}
+                  resizeMode="contain"
                 />
+                <Text style={styles.title}>Welcome back</Text>
+                <Text style={styles.subtitle}>Sign in to BeKin</Text>
               </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Password</Text>
-                <View
-                  style={[
-                    styles.input,
-                    styles.inputRow,
-                    { borderColor: pwFocused ? colors.primary : colors.border },
-                  ]}
-                >
+              {/* card */}
+              <View style={styles.card}>
+                {error ? <Text style={styles.error}>{error}</Text> : null}
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>Email</Text>
                   <TextInput
-                    style={{ flex: 1 }}
-                    placeholder="••••••••"
+                    style={[
+                      styles.input,
+                      { borderColor: emailFocused ? colors.primary : colors.border },
+                    ]}
+                    placeholder="you@example.com"
                     placeholderTextColor={colors.subtle}
-                    secureTextEntry={!showPassword}
-                    value={password}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                    autoComplete="email"
+                    value={email}
                     editable={!submitting}
-                    onChangeText={setPassword}
-                    onFocus={() => setPwFocused(true)}
-                    onBlur={() => setPwFocused(false)}
-                    // Use "password" (not "newPassword") so iOS doesn't force the overlay
-                    textContentType="password"
-                    autoComplete="password"
-                    returnKeyType="go"
-                    onSubmitEditing={handleLogin}
+                    onChangeText={setEmail}
+                    onFocus={() => setEmailFocused(true)}
+                    onBlur={() => setEmailFocused(false)}
+                    returnKeyType="next"
+                    blurOnSubmit
+                    onSubmitEditing={() => Keyboard.dismiss()}
                   />
-                  <Pressable onPress={() => setShowPassword((s) => !s)} hitSlop={10}>
-                    <Text style={styles.togglePw}>{showPassword ? "Hide" : "Show"}</Text>
-                  </Pressable>
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>Password</Text>
+                  <View
+                    style={[
+                      styles.input,
+                      styles.inputRow,
+                      { borderColor: pwFocused ? colors.primary : colors.border },
+                    ]}
+                  >
+                    <TextInput
+                      style={{ flex: 1 }}
+                      placeholder="••••••••"
+                      placeholderTextColor={colors.subtle}
+                      secureTextEntry={!showPassword}
+                      value={password}
+                      editable={!submitting}
+                      onChangeText={setPassword}
+                      onFocus={() => setPwFocused(true)}
+                      onBlur={() => setPwFocused(false)}
+                      textContentType="password"
+                      autoComplete="password"
+                      returnKeyType="go"
+                      onSubmitEditing={handleLogin}
+                    />
+                    <Pressable onPress={() => setShowPassword((s) => !s)} hitSlop={10}>
+                      <Text style={styles.togglePw}>{showPassword ? "Hide" : "Show"}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <Pressable
+                  onPress={handleLogin}
+                  disabled={submitting}
+                  style={({ pressed }) => [
+                    styles.primaryBtn,
+                    pressed && { opacity: 0.9 },
+                    submitting && { opacity: 0.7 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sign in"
+                >
+                  {submitting ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.primaryBtnText}>Enter</Text>
+                  )}
+                </Pressable>
+
+                <View style={styles.bottomRow}>
+                  <Text style={{ color: colors.subtle }}>New here?</Text>
+                  <Link href="/signup" style={styles.link}>
+                    Create an account
+                  </Link>
                 </View>
               </View>
-
-              <Pressable
-                onPress={handleLogin}
-                disabled={submitting}
-                style={({ pressed }) => [
-                  styles.primaryBtn,
-                  pressed && { opacity: 0.9 },
-                  submitting && { opacity: 0.7 },
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel="Sign in"
-              >
-                {submitting ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.primaryBtnText}>Enter</Text>
-                )}
-              </Pressable>
-
-              <View style={styles.bottomRow}>
-                <Text style={{ color: colors.subtle }}>New here?</Text>
-                <Link href="/signup" style={styles.link}>
-                  Create an account
-                </Link>
-              </View>
             </View>
-          </View>
-        </TouchableWithoutFeedback>
+          </TouchableWithoutFeedback>
+        </SafeAreaView>
       </KeyboardAvoidingView>
     </>
   );
@@ -211,7 +216,7 @@ export default function Index() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
 
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 60 },
+  container: { flex: 1, paddingHorizontal: 20 /* top padding now set inline with safe-area */ },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: "800", color: colors.text },

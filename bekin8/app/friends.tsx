@@ -714,7 +714,7 @@ export default function FriendsScreen() {
 
 const styles = StyleSheet.create({
   headerWrap: { rowGap: 14 },
-  header: { fontSize: 28, fontWeight: "800", color: colors.text },
+  header: { fontSize: 28, fontWeight: "800", color: colors.text, textAlign: 'center' },
   card: {
     backgroundColor: colors.card,
     borderRadius: 16,

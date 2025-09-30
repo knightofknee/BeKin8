@@ -20,8 +20,8 @@ export default function RootLayout() {
       <Stack.Screen name="create-post" options={{ animation: "fade" }} />
 
       {/* Auth & other routes keep platform default transitions */}
-      <Stack.Screen name="index" options={{ animation: "default" }} />
-      <Stack.Screen name="signup" options={{ animation: "default" }} />
+      <Stack.Screen name="index" options={{ animation: "fade" }} />
+      <Stack.Screen name="signup" options={{ animation: "fade" }} />
     </Stack>
   );
 }

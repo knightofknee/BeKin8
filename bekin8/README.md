@@ -52,26 +52,32 @@ Join our community of developers creating universal apps.
 
 
 
-1- no username setting
+1- no username re-setting- not high value can break things
 
 carly  - test@tester
 
 
-2- answer the call of the beacon instead of making your own. intensify the flame, make it grow
 
 
 --- future
-add button for chat like smoke above the flame for the beaconer. a button
-chat for self posts are hard to read with the blue
+done-------add button for chat like smoke above the flame for the beaconer. a button
+done-------chat for self posts are hard to read with the blue
 
+^^^^
 * button to say you are joining/responding to a beacon
 
 
-* sexy bottom buttons for friends create post go to feed stuff
+needs improvement -- * sexy bottom buttons for friends create post go to feed stuff
 
-* friend group invites
+done------* friend group invites
 
-2- make top of home take up more space lower
-center friends at top
+done-------2- make top of home take up more space lower
+done---------center friends at top
 
-center stuff in general?
+---------center stuff in general?
+
+^comments on posts- just the same as the beacon chat
+
+^^friends page gets update with notification control and eventually profile links. posts can have profile links too
+
+****  answer the call of the beacon instead of making your own. intensify the flame, make it grow

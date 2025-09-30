@@ -96,9 +96,7 @@ export default function HomeScreen() {
 
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
-  const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(
-    null
-  ); // active doc if any (today or future)
+  const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(null); // active doc if any (today or future)
   const [nextPlannedDate, setNextPlannedDate] = useState<Date | null>(null); // soonest scheduled FUTURE date
   const [plannedMessage, setPlannedMessage] =
     useState<string>(DEFAULT_BEACON_MESSAGE); // message for planned/active
@@ -107,9 +105,7 @@ export default function HomeScreen() {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
-  const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(
-    null
-  );
+  const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
 
   // Friend groups state for scheduler
   const [groups, setGroups] = useState<FriendGroup[]>([]);
@@ -145,8 +141,7 @@ export default function HomeScreen() {
       qMine,
       (snap) => {
         let activeDoc: { id: string; data: any } | null = null;
-        let plannedSoonest: { id: string; data: any; start: Date } | null =
-          null;
+        let plannedSoonest: { id: string; data: any; start: Date } | null = null;
 
         snap.forEach((d) => {
           const data: any = d.data();
@@ -171,10 +166,8 @@ export default function HomeScreen() {
         if (activeDoc) {
           const stMs = getMillis(activeDoc.data?.startAt);
           const msg =
-            (typeof activeDoc.data?.message === 'string' &&
-              activeDoc.data.message.trim()) ||
-            (typeof activeDoc.data?.details === 'string' &&
-              activeDoc.data.details.trim()) ||
+            (typeof activeDoc.data?.message === 'string' && activeDoc.data.message.trim()) ||
+            (typeof activeDoc.data?.details === 'string' && activeDoc.data.details.trim()) ||
             DEFAULT_BEACON_MESSAGE;
 
           setMyActiveBeacon({
@@ -184,13 +177,11 @@ export default function HomeScreen() {
             startAt: new Date(stMs),
             active: true,
             scheduled:
-              activeDoc.data?.scheduled === true ||
-              activeDoc.data?.scheduled === 'true',
+              activeDoc.data?.scheduled === true || activeDoc.data?.scheduled === 'true',
             message: msg,
           });
           setIsLit(true);
           setPlannedMessage(msg);
-          // Preload groups in the editor from this active doc if present
           const gids: string[] = Array.isArray(activeDoc.data?.groupIds)
             ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
             : [];
@@ -252,8 +243,7 @@ export default function HomeScreen() {
               ...prev,
               startAt: new Date(stMs),
               active: !!data?.active,
-              scheduled:
-                data?.scheduled === true || data?.scheduled === 'true',
+              scheduled: data?.scheduled === true || data?.scheduled === 'true',
               message: msg,
             }
           : prev
@@ -280,7 +270,7 @@ export default function HomeScreen() {
     });
   }, []);
 
-  // Load friend groups (top-level FriendGroups owned by me)
+  // Load friend groups
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) {
@@ -288,29 +278,16 @@ export default function HomeScreen() {
       return;
     }
     setLoadingGroups(true);
-    const qGroups = query(
-      collection(db, 'FriendGroups'),
-      where('ownerUid', '==', user.uid)
-    );
+    const qGroups = query(collection(db, 'FriendGroups'), where('ownerUid', '==', user.uid));
     const unsub = onSnapshot(
       qGroups,
       (snap) => {
         const arr: FriendGroup[] = snap.docs.map((d) => {
           const data: any = d.data();
-          const rawMembers: any[] =
-            data?.memberUids ||
-            data?.members ||
-            data?.memberIds ||
-            [];
-        const memberUids = Array.isArray(rawMembers)
+          const rawMembers: any[] = data?.memberUids || data?.members || data?.memberIds || [];
+          const memberUids = Array.isArray(rawMembers)
             ? rawMembers
-                .map((m) =>
-                  typeof m === 'string'
-                    ? m
-                    : typeof m?.uid === 'string'
-                    ? m.uid
-                    : null
-                )
+                .map((m) => (typeof m === 'string' ? m : typeof m?.uid === 'string' ? m.uid : null))
                 .filter(Boolean)
             : [];
           return {
@@ -347,9 +324,7 @@ export default function HomeScreen() {
       srcDate = baseToday;
     }
 
-    let diffDays = Math.round(
-      (srcDate.getTime() - baseToday.getTime()) / (24 * 3600 * 1000)
-    );
+    let diffDays = Math.round((srcDate.getTime() - baseToday.getTime()) / (24 * 3600 * 1000));
     if (diffDays < 0) diffDays = 0;
     if (diffDays > 6) diffDays = 6;
 
@@ -358,118 +333,110 @@ export default function HomeScreen() {
     setOptionsOpen(true);
   };
 
-  // toggle (off = inactivate; on = create new active doc on chosen/planned date)
+  // toggle (off/on)
   const toggleBeacon = () => {
     const action = isLit ? 'Extinguish' : 'Light';
-    Alert.alert(
-      `${action} Beacon`,
-      `Are you sure you want to ${action.toLowerCase()} your beacon?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: action,
-          style: isLit ? 'destructive' : 'default',
-          onPress: async () => {
-            const user = auth.currentUser;
-            if (!user) {
-              Alert.alert('Error', 'User not authenticated');
-              return;
-            }
+    Alert.alert(`${action} Beacon`, `Are you sure you want to ${action.toLowerCase()} your beacon?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: action,
+        style: isLit ? 'destructive' : 'default',
+        onPress: async () => {
+          const user = auth.currentUser;
+          if (!user) {
+            Alert.alert('Error', 'User not authenticated');
+            return;
+          }
 
-            try {
-              const beaconsRef = collection(db, 'Beacons');
+          try {
+            const beaconsRef = collection(db, 'Beacons');
 
-              if (isLit && myActiveBeacon) {
-                // inactivate current active
-                await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
-                  active: false,
-                  scheduled: false,
-                  updatedAt: serverTimestamp(),
+            if (isLit && myActiveBeacon) {
+              // inactivate current active
+              await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
+                active: false,
+                scheduled: true,
+                updatedAt: serverTimestamp(),
+              });
+
+              // keep scheduler pointed at the extinguished day
+              const d = startOfDay(myActiveBeacon.startAt);
+              setNextPlannedDate(d);
+              setPlannedMessage(myActiveBeacon.message || DEFAULT_BEACON_MESSAGE);
+
+              const baseToday = startOfDay(new Date());
+              let diffDays = Math.round((d.getTime() - baseToday.getTime()) / (24 * 3600 * 1000));
+              if (diffDays < 0) diffDays = 0;
+              if (diffDays > 6) diffDays = 6;
+              setDayOffset(diffDays);
+
+              setIsLit(false);
+              setMyActiveBeacon(null);
+            } else {
+              // LIGHT -> create a new active doc on chosen/planned date
+              const base = startOfDay(new Date());
+              const chosen = nextPlannedDate
+                ? startOfDay(nextPlannedDate)
+                : (() => {
+                    const d = new Date(base);
+                    d.setDate(base.getDate() + dayOffset);
+                    return startOfDay(d);
+                  })();
+              const sd = startOfDay(chosen);
+              const ed = endOfDay(chosen);
+
+              // build allowedUids from selected groups (always include me)
+              const meUid = user.uid;
+              let allowedUids: string[] = [meUid];
+              groups
+                .filter((g) => selectedGroupIds.includes(g.id))
+                .forEach((g) => {
+                  allowedUids.push(...g.memberUids);
                 });
+              allowedUids = Array.from(new Set(allowedUids));
 
-                // keep scheduler pointed at the extinguished day
-                const d = startOfDay(myActiveBeacon.startAt);
-                setNextPlannedDate(d);
-                setPlannedMessage(
-                  myActiveBeacon.message || DEFAULT_BEACON_MESSAGE
-                );
+              const ownerName = await resolveMyOwnerName(user);
+              await addDoc(beaconsRef, {
+                ownerUid: user.uid,
+                ownerName,
+                message: plannedMessage || DEFAULT_BEACON_MESSAGE,
+                details: plannedMessage || DEFAULT_BEACON_MESSAGE,
+                active: true,
+                scheduled: true,
+                createdAt: Timestamp.now(),
+                updatedAt: serverTimestamp(),
+                startAt: Timestamp.fromDate(sd),
+                expiresAt: Timestamp.fromDate(ed),
+                groupIds: selectedGroupIds,
+                allowedUids,
+              });
 
-                const baseToday = startOfDay(new Date());
-                let diffDays = Math.round(
-                  (d.getTime() - baseToday.getTime()) / (24 * 3600 * 1000)
-                );
-                if (diffDays < 0) diffDays = 0;
-                if (diffDays > 6) diffDays = 6;
-                setDayOffset(diffDays);
-
-                setIsLit(false);
-                setMyActiveBeacon(null);
-              } else {
-                // LIGHT -> create a new active doc on chosen/planned date
-                const base = startOfDay(new Date());
-                const chosen = nextPlannedDate
-                  ? startOfDay(nextPlannedDate)
-                  : (() => {
-                      const d = new Date(base);
-                      d.setDate(base.getDate() + dayOffset);
-                      return startOfDay(d);
-                    })();
-                const sd = startOfDay(chosen);
-                const ed = endOfDay(chosen);
-
-                // build allowedUids from selected groups (always include me)
-                const meUid = user.uid;
-                let allowedUids: string[] = [meUid];
-                groups
-                  .filter((g) => selectedGroupIds.includes(g.id))
-                  .forEach((g) => {
-                    allowedUids.push(...g.memberUids);
-                  });
-                allowedUids = Array.from(new Set(allowedUids));
-
-                const ownerName = await resolveMyOwnerName(user);
-                await addDoc(beaconsRef, {
-                  ownerUid: user.uid,
-                  ownerName,
-                  message: plannedMessage || DEFAULT_BEACON_MESSAGE,
-                  details: plannedMessage || DEFAULT_BEACON_MESSAGE,
-                  active: true,
-                  scheduled: true,
-                  createdAt: Timestamp.now(),
-                  updatedAt: serverTimestamp(),
-                  startAt: Timestamp.fromDate(sd),
-                  expiresAt: Timestamp.fromDate(ed),
-                  groupIds: selectedGroupIds,
-                  allowedUids,
-                });
-
-                // unschedule any draft for that same day
-                const qDay = query(
-                  beaconsRef,
-                  where('ownerUid', '==', user.uid),
-                  where('startAt', '>=', Timestamp.fromDate(sd)),
-                  where('startAt', '<=', Timestamp.fromDate(ed))
-                );
-                const snapDay = await getDocs(qDay);
-                await Promise.all(
-                  snapDay.docs
-                    .filter((b) => b.data()?.active !== true)
-                    .map((b) =>
-                      updateDoc(b.ref, {
-                        scheduled: false,
-                        updatedAt: serverTimestamp(),
-                      })
-                    )
-                );
-              }
-            } catch (err) {
-              console.error('Error toggling beacon:', err);
-              Alert.alert('Error', 'Failed to update beacon.');
+              // unschedule any draft for that same day
+              const qDay = query(
+                beaconsRef,
+                where('ownerUid', '==', user.uid),
+                where('startAt', '>=', Timestamp.fromDate(sd)),
+                where('startAt', '<=', Timestamp.fromDate(ed))
+              );
+              const snapDay = await getDocs(qDay);
+              await Promise.all(
+                snapDay.docs
+                  .filter((b) => b.data()?.active !== true)
+                  .map((b) =>
+                    updateDoc(b.ref, {
+                      scheduled: false,
+                      updatedAt: serverTimestamp(),
+                    })
+                  )
+              );
             }
-          },
+          } catch (err) {
+            console.error('Error toggling beacon:', err);
+            Alert.alert('Error', 'Failed to update beacon.');
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   // save options
@@ -479,9 +446,7 @@ export default function HomeScreen() {
 
     try {
       const base = startOfDay(new Date());
-      const sd = startOfDay(
-        new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset)
-      );
+      const sd = startOfDay(new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset));
       const ed = endOfDay(sd);
 
       const beaconsRef = collection(db, 'Beacons');
@@ -551,13 +516,10 @@ export default function HomeScreen() {
           if (!stMs) return;
           const st = new Date(stMs);
           const isKeep = sameDay(st, sd);
-          const isScheduled =
-            data?.scheduled === true || data?.scheduled === 'true';
+          const isScheduled = data?.scheduled === true || data?.scheduled === 'true';
           const isActive = !!data?.active;
           if (!isKeep && isScheduled && !isActive) {
-            ops.push(
-              updateDoc(d.ref, { scheduled: false, updatedAt: serverTimestamp() })
-            );
+            ops.push(updateDoc(d.ref, { scheduled: false, updatedAt: serverTimestamp() }));
           }
         });
         if (ops.length) await Promise.all(ops);
@@ -582,239 +544,224 @@ export default function HomeScreen() {
   // Loading baseline
   if (isLit === null) {
     return (
-      <View style={styles.container}>
+      <View style={styles.controls}>
         <Text style={styles.status}>Checking beacon status…</Text>
       </View>
     );
   }
 
+  // Compute the date we’ll talk about
+const scheduledDate =
+  myActiveBeacon?.startAt ??
+  nextPlannedDate ??
+  startOfDay(new Date()); // fallback
+
+const scheduledLabel = sameDay(scheduledDate, new Date())
+  ? 'today'
+  : scheduledDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
+
   return (
     <>
-    <SafeAreaView style={{ flex: 1 }} edges={["top", "left", "right"]}>
-      {/* Friends Beacons */}
-      <FriendsBeaconsList onSelect={setSelectedBeacon} />
+      <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+        {/* Page layout: list grows to fill, controls sit above BottomBar */}
+        <View style={styles.page}>
+          {/* Friends Beacons (fills the gap to show more than ~3) */}
+          <View style={styles.beaconsWrap}>
+            <FriendsBeaconsList onSelect={setSelectedBeacon} />
+          </View>
 
-      {/* Bottom-hugging main area */}
-      <View style={styles.container}>
-        <View style={styles.myBeaconRow}>
-          <TouchableOpacity
-            onPress={toggleBeacon}
-            activeOpacity={0.7}
-            style={styles.beaconContainer}
-          >
-            <Text style={styles.beaconIcon}>{isLit ? '🔥' : '🪵'}</Text>
-          </TouchableOpacity>
+          {/* Controls block (lifted up a bit) */}
+          <View style={styles.controls}>
+            <View style={styles.myBeaconRow}>
+              <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
+                <Text style={styles.beaconIcon}>{isLit ? '🔥' : '🪵'}</Text>
+              </TouchableOpacity>
 
-          {isLit && myActiveBeacon ? (
-            <TouchableOpacity
-              onPress={() => setSelectedBeacon(myActiveBeacon)}
-              activeOpacity={0.8}
-              style={styles.myChatBtn}
-            >
-              <Text style={styles.myChatBtnTxt}>Open my beacon details</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
-        <TouchableOpacity onPress={openOptions} activeOpacity={0.8}>
-          <Text style={styles.title}>Beacon options</Text>
-        </TouchableOpacity>
-        <Text style={styles.subtitle}>
-          Tap the {isLit ? 'fire to extinguish' : 'log to light'} your beacon
-        </Text>
-
-        {isLit && myActiveBeacon ? (
-          <Text style={styles.statusActive}>
-            Your beacon is ACTIVE for {activeLabel}
-          </Text>
-        ) : nextPlannedDate ? (
-          <Text style={styles.status}>
-            Your beacon is{' '}
-            {sameDay(nextPlannedDate, new Date())
-              ? 'set for today'
-              : `set for ${nextPlannedDate
-                  .toLocaleDateString(undefined, { weekday: 'long' })
-                  .toLowerCase()}`}
-          </Text>
-        ) : (
-          <Text style={styles.statusInactive}>Your beacon is INACTIVE</Text>
-        )}
-
-        {/* <View style={styles.feedButton}>
-          <Button title="Go to Feed" onPress={() => router.push('/feed')} />
-        </View>
-        <View style={styles.feedButton}>
-          <Button title="Friends" onPress={() => router.push('/friends')} />
-        </View>
-        <View style={styles.feedButton}>
-          <Button
-            title="Create Post"
-            onPress={() => router.push('/create-post')}
-          />
-        </View> */}
-        <BottomBar />
-      </View>
-
-      {/* Options Modal */}
-      <Modal visible={optionsOpen} animationType="slide" transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Schedule / Edit Beacon</Text>
-              <Pressable onPress={() => setOptionsOpen(false)}>
-                <Text style={styles.close}>✕</Text>
-              </Pressable>
-            </View>
-
-            {/* Day */}
-            <Text style={styles.modalLabel}>Day</Text>
-            <View style={styles.daysWrap}>
-              {next7Days.map((d) => (
-                <Pressable
-                  key={d.offset}
-                  onPress={() => setDayOffset(d.offset)}
-                  style={[
-                    styles.dayChip,
-                    d.offset === dayOffset && styles.dayChipActive,
-                  ]}
+              {isLit && myActiveBeacon ? (
+                <TouchableOpacity
+                  onPress={() => setSelectedBeacon(myActiveBeacon)}
+                  activeOpacity={0.8}
+                  style={styles.myChatBtn}
                 >
-                  <Text
-                    style={[
-                      styles.dayChipText,
-                      d.offset === dayOffset && styles.dayChipTextActive,
-                    ]}
-                  >
-                    {d.label}
-                  </Text>
+                  <Text style={styles.myChatBtnTxt}>Open my beacon details</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <Text style={styles.hint}>
+  Tap the {isLit ? 'fire to extinguish' : 'log to light'} your beacon
+</Text>
+
+            <Pressable
+  onPress={openOptions}
+  hitSlop={8}
+  style={({ pressed }) => [styles.optionsCta, pressed && styles.optionsCtaPressed]}
+  android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
+>
+  <View style={styles.optionsCtaIconWrap}>
+    <Text style={styles.optionsCtaIcon}>🗓️</Text>
+  </View>
+  <View style={{ flex: 1 }}>
+    <Text style={styles.optionsCtaTitle}>Beacon options</Text>
+    <Text style={styles.optionsCtaSubtitle}>Pick a day • choose friends • add a note</Text>
+  </View>
+  <Text style={styles.optionsCtaChevron}>›</Text>
+</Pressable>
+
+            {isLit && myActiveBeacon ? (
+  <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+) : (
+  <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
+)}
+          </View>
+        </View>
+
+        {/* Options Modal */}
+        <Modal visible={optionsOpen} animationType="slide" transparent>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Schedule / Edit Beacon</Text>
+                <Pressable onPress={() => setOptionsOpen(false)}>
+                  <Text style={styles.close}>✕</Text>
                 </Pressable>
-              ))}
-            </View>
-
-            {/* Friend Groups */}
-            <Text style={[styles.modalLabel, { marginTop: 12 }]}>
-              Friend Groups (if none selected, all friends can see)
-            </Text>
-            {loadingGroups ? (
-              <View style={{ paddingVertical: 6 }}>
-                <ActivityIndicator />
               </View>
-            ) : groups.length ? (
+
+              {/* Day */}
+              <Text style={styles.modalLabel}>Day</Text>
               <View style={styles.daysWrap}>
-                {groups.map((g) => {
-                  const selected = selectedGroupIds.includes(g.id);
-                  return (
-                    <Pressable
-                      key={g.id}
-                      onPress={() =>
-                        setSelectedGroupIds((prev) =>
-                          selected
-                            ? prev.filter((x) => x !== g.id)
-                            : [...prev, g.id]
-                        )
-                      }
-                      style={[
-                        styles.dayChip,
-                        selected && styles.dayChipActive,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.dayChipText,
-                          selected && styles.dayChipTextActive,
-                        ]}
-                      >
-                        {g.name}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
+                {next7Days.map((d) => (
+                  <Pressable
+                    key={d.offset}
+                    onPress={() => setDayOffset(d.offset)}
+                    style={[styles.dayChip, d.offset === dayOffset && styles.dayChipActive]}
+                  >
+                    <Text style={[styles.dayChipText, d.offset === dayOffset && styles.dayChipTextActive]}>
+                      {d.label}
+                    </Text>
+                  </Pressable>
+                ))}
               </View>
-            ) : (
-              <Text style={{ color: '#667085', marginBottom: 6 }}>
-                No groups yet — create some in Friends.
+
+              {/* Friend Groups */}
+              <Text style={[styles.modalLabel, { marginTop: 12 }]}>
+                Friend Groups (if none selected, all friends can see)
               </Text>
-            )}
+              {loadingGroups ? (
+                <View style={{ paddingVertical: 6 }}>
+                  <ActivityIndicator />
+                </View>
+              ) : groups.length ? (
+                <View style={styles.daysWrap}>
+                  {groups.map((g) => {
+                    const selected = selectedGroupIds.includes(g.id);
+                    return (
+                      <Pressable
+                        key={g.id}
+                        onPress={() =>
+                          setSelectedGroupIds((prev) =>
+                            selected ? prev.filter((x) => x !== g.id) : [...prev, g.id]
+                          )
+                        }
+                        style={[styles.dayChip, selected && styles.dayChipActive]}
+                      >
+                        <Text style={[styles.dayChipText, selected && styles.dayChipTextActive]}>{g.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : (
+                <Text style={{ color: '#667085', marginBottom: 6 }}>
+                  No groups yet — create some in Friends.
+                </Text>
+              )}
 
-            {/* Message */}
-            <Text style={[styles.modalLabel, { marginTop: 12 }]}>Message</Text>
-            <TextInput
-              style={styles.msgInput}
-              placeholder={DEFAULT_BEACON_MESSAGE}
-              value={message}
-              onChangeText={setMessage}
-              maxLength={140}
-              multiline
-            />
-            <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
+              {/* Message */}
+              <Text style={[styles.modalLabel, { marginTop: 12 }]}>Message</Text>
+              <TextInput
+                style={styles.msgInput}
+                placeholder={DEFAULT_BEACON_MESSAGE}
+                value={message}
+                onChangeText={setMessage}
+                maxLength={140}
+                multiline
+              />
+              <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
 
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnGhost]}
-                onPress={() => setOptionsOpen(false)}
-              >
-                <Text style={styles.btnGhostText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary]}
-                onPress={saveBeaconOptions}
-              >
-                <Text style={styles.btnPrimaryText}>Save</Text>
-              </TouchableOpacity>
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setOptionsOpen(false)}>
+                  <Text style={styles.btnGhostText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={saveBeaconOptions}>
+                  <Text style={styles.btnPrimaryText}>Save</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
 
-      {/* Beacon details modal */}
-      <Modal
-        visible={!!selectedBeacon}
-        animationType="fade"
-        transparent
-        onRequestClose={() => setSelectedBeacon(null)}
-      >
-        <View style={styles.modalBackdropCenter}>
-          <View style={styles.detailCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Beacon</Text>
-              <Pressable onPress={() => setSelectedBeacon(null)}>
-                <Text style={styles.close}>✕</Text>
-              </Pressable>
+        {/* Beacon details modal */}
+        <Modal
+          visible={!!selectedBeacon}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setSelectedBeacon(null)}
+        >
+          <View style={styles.modalBackdropCenter}>
+            <View style={styles.detailCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Beacon</Text>
+                <Pressable onPress={() => setSelectedBeacon(null)}>
+                  <Text style={styles.close}>✕</Text>
+                </Pressable>
+              </View>
+
+              {selectedBeacon && (
+                <>
+                  <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
+                  <Text style={styles.detailWhen}>
+                    {dayLabel(selectedBeacon.startAt)} • {selectedBeacon.startAt.toLocaleDateString()}
+                  </Text>
+                  <View style={styles.detailMsgBox}>
+                    <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
+                  </View>
+                  <View style={{ marginTop: 12 }}>
+                    <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
+                  </View>
+                </>
+              )}
             </View>
-
-            {selectedBeacon && (
-              <>
-                <Text style={styles.detailOwner}>
-                  {selectedBeacon.displayName}
-                </Text>
-                <Text style={styles.detailWhen}>
-                  {dayLabel(selectedBeacon.startAt)} •{' '}
-                  {selectedBeacon.startAt.toLocaleDateString()}
-                </Text>
-                <View style={styles.detailMsgBox}>
-                  <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
-                </View>
-                <View style={{ marginTop: 12 }}>
-                  <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
-                </View>
-              </>
-            )}
           </View>
-        </View>
-      </Modal>
+        </Modal>
       </SafeAreaView>
+
+      {/* Keep BottomBar pinned; controls have extra bottom margin so it doesn't hug */}
+      <BottomBar />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  // Bottom-hugging main area
-  container: {
+  // Page structure
+  page: {
     flex: 1,
+    gap: 8,
+    paddingTop: 4,
+    paddingHorizontal: 0,
+  },
+  // This wrapper lets the beacons list expand to fill available vertical space.
+  beaconsWrap: {
+    flex: 1,
+    paddingHorizontal: 0,
+  },
+
+  // Controls block (no longer bottom-hugging)
+  controls: {
     backgroundColor: '#fff',
     alignItems: 'center',
-    padding: 24,
-    justifyContent: 'flex-end',
-    paddingBottom: 100,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 24,
+    marginBottom: 72, // lift above BottomBar
   },
   myBeaconRow: {
     flexDirection: 'row',
@@ -864,11 +811,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: 'red',
     marginBottom: 12,
-  },
-
-  feedButton: {
-    marginTop: 24,
-    width: '60%',
   },
 
   // --- Options modal styles ---
@@ -957,4 +899,40 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   detailMsg: { fontSize: 15, color: '#111827' },
+  optionsCta: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 12,
+  width: '100%',
+  backgroundColor: '#EEF3FF',
+  borderColor: '#D8E3FF',
+  borderWidth: 1,
+  borderRadius: 14,
+  paddingVertical: 12,
+  paddingHorizontal: 14,
+  marginTop: 4,
+  marginBottom: 12,
+  shadowColor: '#000',
+  shadowOpacity: 0.08,
+  shadowRadius: 10,
+  shadowOffset: { width: 0, height: 4 },
+  elevation: 2, // Android
+},
+optionsCtaPressed: {
+  transform: [{ scale: 0.99 }],
+  opacity: 0.95,
+},
+optionsCtaIconWrap: {
+  width: 34,
+  height: 34,
+  borderRadius: 8,
+  //backgroundColor: '#2F6FED',
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+optionsCtaIcon: { color: '#fff', fontSize: 18, fontWeight: '800' },
+optionsCtaTitle: { fontSize: 16, fontWeight: '800', color: '#0B1426' },
+optionsCtaSubtitle: { marginTop: 2, color: '#48608C' },
+optionsCtaChevron: { fontSize: 22, color: '#2F6FED', marginLeft: 4, marginRight: 2 },
+hint: { fontSize: 14, color: '#667085', marginBottom: 10, textAlign: 'center' },
 });
