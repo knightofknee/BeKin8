@@ -33,6 +33,7 @@ import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { registerAndSaveExpoToken } from './lib/push';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -252,6 +253,11 @@ export default function HomeScreen() {
     });
     return () => unsub();
   }, [selectedBeacon?.id]);
+
+  useEffect(() => {
+  // register the device’s push token (safe if it runs multiple times)
+  registerAndSaveExpoToken()
+}, []);
 
   // Chips for the next 7 days (for Options Modal)
   const next7Days = useMemo(() => {

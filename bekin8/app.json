@@ -2,7 +2,7 @@
   "expo": {
     "name": "bekin8",
     "slug": "bekin8",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "bekin8",
@@ -28,6 +28,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      ["expo-notifications"],
       "expo-router",
       [
         "expo-splash-screen",

@@ -18,6 +18,7 @@ import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { registerAndSaveExpoToken } from './lib/push';
 
 const colors = {
   primary: "#2F6FED",
@@ -81,6 +82,7 @@ export default function SignUp() {
     try {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+      await registerAndSaveExpoToken();
 
       // Minimal user doc so other screens can gate on username later
       await setDoc(doc(db, "users", cred.user.uid), {
@@ -90,7 +92,6 @@ export default function SignUp() {
         hasUsername: false,
         createdAt: serverTimestamp(),
       });
-
       router.replace("/home");
     } catch (e: any) {
       setError(friendlyError(e?.code, e?.message));

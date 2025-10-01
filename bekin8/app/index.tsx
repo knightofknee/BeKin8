@@ -18,6 +18,7 @@ import { Link, useRouter, Stack } from "expo-router";
 import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { registerAndSaveExpoToken } from './lib/push';
 
 const colors = {
   primary: "#2F6FED",
@@ -55,6 +56,18 @@ export default function Index() {
     return unsub;
   }, [router]);
 
+  useEffect(() => {
+  const unsub = onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      await registerAndSaveExpoToken();
+      router.replace('/home');
+    } else {
+      setBootChecking(false);
+    }
+  });
+  return unsub;
+}, [router]);
+
   const handleLogin = async () => {
     setError(null);
     if (!email || !password) {
@@ -64,6 +77,7 @@ export default function Index() {
     try {
       setSubmitting(true);
       await signInWithEmailAndPassword(auth, email.trim(), password);
+      await registerAndSaveExpoToken();
       router.replace("/home");
     } catch (e: any) {
       const code = e?.code || "";

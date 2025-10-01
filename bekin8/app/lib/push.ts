@@ -2,7 +2,7 @@
 import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
-import { auth, db } from "../firebase.config";
+import { auth, db } from "../../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 
 const tokenDocId = (t: string) => t.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
@@ -15,15 +15,4 @@ export async function registerAndSaveExpoToken() {
   let perm = await Notifications.getPermissionsAsync();
   if (perm.status !== "granted") {
     perm = await Notifications.requestPermissionsAsync();
-  }
-  if (perm.status !== "granted") return;
-
-  const { data: token } = await Notifications.getExpoPushTokenAsync();
-  if (!token?.startsWith("ExponentPushToken[")) return;
-
-  await setDoc(
-    doc(db, "users", user.uid, "pushTokens", tokenDocId(token)),
-    { token, platform: Platform.OS, updatedAt: serverTimestamp() },
-    { merge: true }
-  );
-}
+  }}
