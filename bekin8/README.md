@@ -91,3 +91,6 @@ needs improvement -- * sexy bottom buttons for friends create post go to feed st
 notis then profis
 
 ^filter feed by friend group
+
+
+&^^^^ future calendar has days of the week you can tap to light on, with different fire options

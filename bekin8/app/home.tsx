@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
-  Button,
   Modal,
   Pressable,
   TextInput,
@@ -53,11 +52,6 @@ function sameDay(a: Date, b: Date) {
     a.getDate() === b.getDate()
   );
 }
-function dayLabel(d: Date) {
-  const today = new Date();
-  if (sameDay(d, today)) return 'Today';
-  return d.toLocaleDateString(undefined, { weekday: 'long' });
-}
 function getMillis(v: any): number {
   if (!v) return 0;
   if (typeof v === 'number') return v;
@@ -71,10 +65,7 @@ function getMillis(v: any): number {
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 
-async function resolveMyOwnerName(user: {
-  uid: string;
-  displayName?: string | null;
-}) {
+async function resolveMyOwnerName(user: { uid: string; displayName?: string | null }) {
   let ownerName = (user.displayName || '').toString().trim();
   try {
     const p = await getDoc(doc(db, 'Profiles', user.uid));
@@ -98,10 +89,9 @@ export default function HomeScreen() {
 
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
-  const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(null); // active doc if any (today or future)
-  const [nextPlannedDate, setNextPlannedDate] = useState<Date | null>(null); // soonest scheduled FUTURE date
-  const [plannedMessage, setPlannedMessage] =
-    useState<string>(DEFAULT_BEACON_MESSAGE); // message for planned/active
+  const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(null);
+  const [nextPlannedDate, setNextPlannedDate] = useState<Date | null>(null);
+  const [plannedMessage, setPlannedMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
 
   // Modal state (options + details)
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -254,10 +244,10 @@ export default function HomeScreen() {
     return () => unsub();
   }, [selectedBeacon?.id]);
 
-  useEffect(() => {
   // register the device’s push token (safe if it runs multiple times)
-  registerAndSaveExpoToken()
-}, []);
+  useEffect(() => {
+    registerAndSaveExpoToken();
+  }, []);
 
   // Chips for the next 7 days (for Options Modal)
   const next7Days = useMemo(() => {
@@ -277,7 +267,7 @@ export default function HomeScreen() {
     });
   }, []);
 
-  // Load friend groups
+  // Load friend groups — **skip unnamed groups** (no "Untit empty Group" fallback)
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) {
@@ -285,25 +275,30 @@ export default function HomeScreen() {
       return;
     }
     setLoadingGroups(true);
+
     const qGroups = query(collection(db, 'FriendGroups'), where('ownerUid', '==', user.uid));
     const unsub = onSnapshot(
       qGroups,
       (snap) => {
-        const arr: FriendGroup[] = snap.docs.map((d) => {
+        const mapped = snap.docs.map((d) => {
           const data: any = d.data();
           const rawMembers: any[] = data?.memberUids || data?.members || data?.memberIds || [];
           const memberUids = Array.isArray(rawMembers)
             ? rawMembers
                 .map((m) => (typeof m === 'string' ? m : typeof m?.uid === 'string' ? m.uid : null))
-                .filter(Boolean)
+                .filter(Boolean) as string[]
             : [];
-          return {
-            id: d.id,
-            name: (data?.name || data?.title || 'Untitled Group').toString(),
-            memberUids,
-          };
+
+          const name = (data?.name || data?.title || '').toString().trim();
+          if (!name) return null; // skip unnamed groups entirely
+
+          return { id: d.id, name, memberUids } as FriendGroup;
         });
-        arr.sort((a, b) => a.name.localeCompare(b.name));
+
+        const arr: FriendGroup[] = (mapped.filter(Boolean) as FriendGroup[]).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+
         setGroups(arr);
         setLoadingGroups(false);
       },
@@ -359,14 +354,12 @@ export default function HomeScreen() {
             const beaconsRef = collection(db, 'Beacons');
 
             if (isLit && myActiveBeacon) {
-              // inactivate current active
               await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
                 active: false,
                 scheduled: true,
                 updatedAt: serverTimestamp(),
               });
 
-              // keep scheduler pointed at the extinguished day
               const d = startOfDay(myActiveBeacon.startAt);
               setNextPlannedDate(d);
               setPlannedMessage(myActiveBeacon.message || DEFAULT_BEACON_MESSAGE);
@@ -380,7 +373,6 @@ export default function HomeScreen() {
               setIsLit(false);
               setMyActiveBeacon(null);
             } else {
-              // LIGHT -> create a new active doc on chosen/planned date
               const base = startOfDay(new Date());
               const chosen = nextPlannedDate
                 ? startOfDay(nextPlannedDate)
@@ -392,7 +384,6 @@ export default function HomeScreen() {
               const sd = startOfDay(chosen);
               const ed = endOfDay(chosen);
 
-              // build allowedUids from selected groups (always include me)
               const meUid = user.uid;
               let allowedUids: string[] = [meUid];
               groups
@@ -418,7 +409,6 @@ export default function HomeScreen() {
                 allowedUids,
               });
 
-              // unschedule any draft for that same day
               const qDay = query(
                 beaconsRef,
                 where('ownerUid', '==', user.uid),
@@ -459,7 +449,6 @@ export default function HomeScreen() {
       const beaconsRef = collection(db, 'Beacons');
       const ownerName = await resolveMyOwnerName(user);
 
-      // build allowedUids from selected groups (always include me)
       const meUid = user.uid;
       let allowedUids: string[] = [meUid];
       groups
@@ -470,7 +459,6 @@ export default function HomeScreen() {
       allowedUids = Array.from(new Set(allowedUids));
 
       if (isLit && myActiveBeacon) {
-        // update the active doc in place
         await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
           ownerName,
           message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
@@ -483,7 +471,6 @@ export default function HomeScreen() {
           allowedUids,
         });
       } else {
-        // upsert a scheduled doc for that date (deterministic id)
         const yyyy = sd.getFullYear();
         const mm = String(sd.getMonth() + 1).padStart(2, '0');
         const dd = String(sd.getDate()).padStart(2, '0');
@@ -508,7 +495,6 @@ export default function HomeScreen() {
           { merge: true }
         );
 
-        // clear other scheduled drafts in the window except this one
         const qWin = query(
           beaconsRef,
           where('ownerUid', '==', user.uid),
@@ -546,13 +532,11 @@ export default function HomeScreen() {
     if (!user || !b) return;
 
     try {
-      // 1) Add user to inUids (set semantics, no dups)
       await updateDoc(doc(db, 'Beacons', b.id), {
         inUids: arrayUnion(user.uid),
         updatedAt: serverTimestamp(),
       });
 
-      // 2) Emit a system message into chat
       const name = await resolveMyOwnerName(user);
       await addDoc(collection(db, 'Beacons', b.id, 'ChatMessages'), {
         type: 'system',
@@ -565,15 +549,6 @@ export default function HomeScreen() {
     }
   };
 
-  // labels
-  const activeLabel = useMemo(() => {
-    if (!myActiveBeacon) return null;
-    const d = myActiveBeacon.startAt;
-    return sameDay(d, new Date())
-      ? 'today'
-      : d.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
-  }, [myActiveBeacon]);
-
   // Loading baseline
   if (isLit === null) {
     return (
@@ -583,12 +558,7 @@ export default function HomeScreen() {
     );
   }
 
-  // Compute the date we’ll talk about
-  const scheduledDate =
-    myActiveBeacon?.startAt ??
-    nextPlannedDate ??
-    startOfDay(new Date()); // fallback
-
+  const scheduledDate = myActiveBeacon?.startAt ?? nextPlannedDate ?? startOfDay(new Date());
   const scheduledLabel = sameDay(scheduledDate, new Date())
     ? 'today'
     : scheduledDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
@@ -596,14 +566,11 @@ export default function HomeScreen() {
   return (
     <>
       <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
-        {/* Page layout: list grows to fill, controls sit above BottomBar */}
         <View style={styles.page}>
-          {/* Friends Beacons (fills the gap to show more than ~3) */}
           <View style={styles.beaconsWrap}>
             <FriendsBeaconsList onSelect={setSelectedBeacon} />
           </View>
 
-          {/* Controls block (lifted up a bit) */}
           <View style={styles.controls}>
             <View style={styles.myBeaconRow}>
               <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
@@ -746,26 +713,21 @@ export default function HomeScreen() {
               </View>
 
               {selectedBeacon && (
-  <>
-    <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
-
-    {/* Removed the date + top-level "I'm in" row */}
-
-    <View style={styles.detailMsgBox}>
-      <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
-    </View>
-
-    <View style={{ marginTop: 12 }}>
-      <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
-    </View>
-  </>
-)}
+                <>
+                  <Text style={styles.detailOwner}>{selectedBeacon.displayName}</Text>
+                  <View style={styles.detailMsgBox}>
+                    <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
+                  </View>
+                  <View style={{ marginTop: 12 }}>
+                    <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
+                  </View>
+                </>
+              )}
             </View>
           </View>
         </Modal>
       </SafeAreaView>
 
-      {/* Keep BottomBar pinned; controls have extra bottom margin so it doesn't hug */}
       <BottomBar />
     </>
   );
@@ -779,13 +741,11 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     paddingHorizontal: 0,
   },
-  // This wrapper lets the beacons list expand to fill available vertical space.
   beaconsWrap: {
     flex: 1,
     paddingHorizontal: 0,
   },
 
-  // Controls block (no longer bottom-hugging)
   controls: {
     backgroundColor: '#fff',
     alignItems: 'center',
@@ -816,33 +776,8 @@ const styles = StyleSheet.create({
   },
   myChatBtnTxt: { fontWeight: '700', color: '#0B1426' },
 
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  status: {
-    fontSize: 16,
-    color: '#555',
-  },
-  statusActive: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: 'green',
-    marginBottom: 12,
-    textTransform: 'none',
-  },
-  statusInactive: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: 'red',
-    marginBottom: 12,
-  },
+  status: { fontSize: 16, color: '#555' },
+  statusActive: { fontSize: 18, fontWeight: '600', color: 'green', marginBottom: 12 },
 
   // --- Options modal styles ---
   modalBackdrop: {
@@ -856,19 +791,10 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 14,
     borderTopRightRadius: 14,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { fontSize: 18, fontWeight: '800' },
   close: { fontSize: 22, paddingHorizontal: 8 },
-  modalLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 8,
-    marginBottom: 6,
-  },
+  modalLabel: { fontSize: 14, fontWeight: '600', marginTop: 8, marginBottom: 6 },
 
   daysWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   dayChip: {
@@ -920,7 +846,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   detailOwner: { fontSize: 18, fontWeight: '800', marginTop: 2 },
-  detailWhen: { fontSize: 14, color: '#334155', marginTop: 6 },
   detailMsgBox: {
     marginTop: 10,
     borderWidth: 1,
@@ -949,19 +874,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
-    elevation: 2, // Android
+    elevation: 2,
   },
-  optionsCtaPressed: {
-    transform: [{ scale: 0.99 }],
-    opacity: 0.95,
-  },
-  optionsCtaIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  optionsCtaPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
+  optionsCtaIconWrap: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   optionsCtaIcon: { color: '#fff', fontSize: 18, fontWeight: '800' },
   optionsCtaTitle: { fontSize: 16, fontWeight: '800', color: '#0B1426' },
   optionsCtaSubtitle: { marginTop: 2, color: '#48608C' },

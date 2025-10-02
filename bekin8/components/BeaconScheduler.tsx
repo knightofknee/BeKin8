@@ -1,17 +1,10 @@
 // components/BeaconScheduler.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import {
   collection,
-  collectionGroup,
   doc,
   onSnapshot,
   query,
@@ -22,130 +15,102 @@ import {
 import { colors } from "@/components/ui/colors";
 
 type FriendGroup = {
-  id: string;          // document id
+  id: string;
   name: string;
-  memberUids: string[]; // normalized list of UIDs
-  source: "top" | "sub"; // where it came from (top-level vs users/{uid}/friendGroups)
+  memberUids: string[];
+  source: "top" | "sub";
 };
 
 type Props = {
-  beaconId?: string; // optional edit mode (we merge into existing)
+  beaconId?: string;
   onSaved?: () => void;
-  // Optional initial selections when editing:
   initialDays?: string[];
-  initialGroupIds?: string[]; // we’ll match by id only, regardless of source
+  initialGroupIds?: string[];
 };
 
-const daysOfWeek = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-export default function BeaconScheduler({
-  beaconId,
-  onSaved,
-  initialDays,
-  initialGroupIds,
-}: Props) {
+export default function BeaconScheduler({ beaconId, onSaved, initialDays, initialGroupIds }: Props) {
   const router = useRouter();
   const [selectedDays, setSelectedDays] = useState<string[]>(initialDays || []);
   const [friendGroups, setFriendGroups] = useState<FriendGroup[]>([]);
-  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(
-    initialGroupIds || []
-  );
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(initialGroupIds || []);
   const [saving, setSaving] = useState(false);
   const me = auth.currentUser;
 
-  // --- Load friend groups from BOTH places (robust to schema drift) ---
+  // --- Load friend groups from BOTH places; **skip unnamed**  ---
   useEffect(() => {
     if (!me) return;
 
-    // A) Top-level FriendGroups (ownerUid === me.uid OR ownerId === me.uid)
-    const qTop = query(
-      collection(db, "FriendGroups"),
-      where("ownerUid", "==", me.uid)
-    );
-
+    // A) Top-level FriendGroups
+    const qTop = query(collection(db, "FriendGroups"), where("ownerUid", "==", me.uid));
     const unsubA = onSnapshot(
       qTop,
       (snap) => {
-        const arr: FriendGroup[] = snap.docs
-          .map((d) => {
-            const data: any = d.data();
-            const ownerUid = data?.ownerUid || data?.ownerId;
-            if (ownerUid !== me.uid) return null;
-
-            const rawMembers: any =
-              data?.memberUids || data?.members || data?.memberIds || [];
-            const memberUids: string[] = Array.isArray(rawMembers)
-              ? rawMembers
-                  .map((m) =>
-                    typeof m === "string" ? m : typeof m?.uid === "string" ? m.uid : null
-                  )
-                  .filter(Boolean) as string[]
-              : [];
-
-            const name: string =
-              (data?.name || data?.title || "Untitled Group").toString();
-
-            return {
-              id: d.id,
-              name,
-              memberUids,
-              source: "top" as const,
-            };
-          })
-          .filter(Boolean) as FriendGroup[];
-
-        setFriendGroups((prev) => {
-          // merge with possible subcollection results without duplicates
-          const subOnly = prev.filter((g) => g.source === "sub");
-          const map = new Map<string, FriendGroup>();
-          [...subOnly, ...arr].forEach((g) => map.set(`${g.source}:${g.id}`, g));
-          return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-        });
-      },
-      () => {
-        // ignore read errors (rules). We'll still try subcollection below.
-      }
-    );
-
-    // B) users/{uid}/friendGroups (alternate location)
-    const qSub = collection(db, "users", me.uid, "friendGroups");
-    const unsubB = onSnapshot(
-      qSub,
-      (snap) => {
-        const arr: FriendGroup[] = snap.docs.map((d) => {
+        const arr: (FriendGroup | null)[] = snap.docs.map((d) => {
           const data: any = d.data();
+          const ownerUid = data?.ownerUid || data?.ownerId;
+          if (ownerUid !== me.uid) return null;
 
-          const rawMembers: any =
-            data?.memberUids || data?.members || data?.memberIds || [];
+          const rawMembers: any = data?.memberUids || data?.members || data?.memberIds || [];
           const memberUids: string[] = Array.isArray(rawMembers)
             ? rawMembers
-                .map((m) =>
-                  typeof m === "string" ? m : typeof m?.uid === "string" ? m.uid : null
-                )
+                .map((m) => (typeof m === "string" ? m : typeof m?.uid === "string" ? m.uid : null))
                 .filter(Boolean) as string[]
             : [];
 
-        const name: string =
-            (data?.name || data?.title || "Untitled Group").toString();
+          const name = (data?.name || data?.title || "").toString().trim();
+          if (!name) return null; // skip unnamed
 
-          return {
-            id: d.id,
-            name,
-            memberUids,
-            source: "sub" as const,
-          };
+          return { id: d.id, name, memberUids, source: "top" as const };
         });
+
+        const cleanedTop = (arr.filter(Boolean) as FriendGroup[]).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+
+        setFriendGroups((prev) => {
+          const subOnly = prev.filter((g) => g.source === "sub");
+          const map = new Map<string, FriendGroup>();
+          [...subOnly, ...cleanedTop].forEach((g) => map.set(`${g.source}:${g.id}`, g));
+          return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+        });
+      },
+      () => {}
+    );
+
+    // B) users/{uid}/friendGroups
+    const qSubCol = collection(db, "users", me.uid, "friendGroups");
+    const unsubB = onSnapshot(
+      qSubCol,
+      (snap) => {
+        const arr: (FriendGroup | null)[] = snap.docs.map((d) => {
+          const data: any = d.data();
+          const rawMembers: any = data?.memberUids || data?.members || data?.memberIds || [];
+          const memberUids: string[] = Array.isArray(rawMembers)
+            ? rawMembers
+                .map((m) => (typeof m === "string" ? m : typeof m?.uid === "string" ? m.uid : null))
+                .filter(Boolean) as string[]
+            : [];
+
+          const name = (data?.name || data?.title || "").toString().trim();
+          if (!name) return null; // skip unnamed
+
+          return { id: d.id, name, memberUids, source: "sub" as const };
+        });
+
+        const cleanedSub = (arr.filter(Boolean) as FriendGroup[]).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
 
         setFriendGroups((prev) => {
           const topOnly = prev.filter((g) => g.source === "top");
           const map = new Map<string, FriendGroup>();
-          [...topOnly, ...arr].forEach((g) => map.set(`${g.source}:${g.id}`, g));
+          [...topOnly, ...cleanedSub].forEach((g) => map.set(`${g.source}:${g.id}`, g));
           return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
         });
       },
-      () => {
-        // ignore if subcollection doesn't exist
-      }
+      () => {}
     );
 
     return () => {
@@ -156,27 +121,19 @@ export default function BeaconScheduler({
 
   // Initialize selections if props arrive late (rare)
   useEffect(() => {
-    if (initialDays && !selectedDays.length) {
-      setSelectedDays(initialDays);
-    }
+    if (initialDays && !selectedDays.length) setSelectedDays(initialDays);
   }, [initialDays]);
 
   useEffect(() => {
-    if (initialGroupIds && !selectedGroupIds.length) {
-      setSelectedGroupIds(initialGroupIds);
-    }
+    if (initialGroupIds && !selectedGroupIds.length) setSelectedGroupIds(initialGroupIds);
   }, [initialGroupIds]);
 
   const toggleDay = (day: string) => {
-    setSelectedDays((prev) =>
-      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
-    );
+    setSelectedDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
   };
 
   const toggleGroup = (id: string) => {
-    setSelectedGroupIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
+    setSelectedGroupIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
   const groupsSelected = useMemo(
@@ -197,25 +154,19 @@ export default function BeaconScheduler({
         allowedUids.push(...(g.memberUids || []));
       });
 
-      // Ensure uniqueness + include me (owner can always see)
+      // Ensure uniqueness + include owner
       allowedUids = Array.from(new Set([...allowedUids, user.uid]));
 
       const data = {
         ownerUid: user.uid,
-        // what the scheduler controls:
         days: selectedDays,
-        groupIds: selectedGroupIds, // just the ids (source-agnostic); you’re free to store source if you want
+        groupIds: selectedGroupIds,
         allowedUids,
         updatedAt: serverTimestamp(),
-        ...(beaconId
-          ? {}
-          : { createdAt: serverTimestamp(), isActive: true }), // creating a new one
+        ...(beaconId ? {} : { createdAt: serverTimestamp(), isActive: true }),
       };
 
-      const ref = beaconId
-        ? doc(db, "Beacons", beaconId)
-        : doc(collection(db, "Beacons"));
-
+      const ref = beaconId ? doc(db, "Beacons", beaconId) : doc(collection(db, "Beacons"));
       await setDoc(ref, data, { merge: true });
 
       onSaved?.();
@@ -236,14 +187,8 @@ export default function BeaconScheduler({
         {daysOfWeek.map((day) => {
           const selected = selectedDays.includes(day);
           return (
-            <Pressable
-              key={day}
-              onPress={() => toggleDay(day)}
-              style={[styles.chip, selected && styles.chipActive]}
-            >
-              <Text style={[styles.chipText, selected && styles.chipTextActive]}>
-                {day}
-              </Text>
+            <Pressable key={day} onPress={() => toggleDay(day)} style={[styles.chip, selected && styles.chipActive]}>
+              <Text style={[styles.chipText, selected && styles.chipTextActive]}>{day}</Text>
             </Pressable>
           );
         })}
@@ -254,16 +199,9 @@ export default function BeaconScheduler({
 
       {showEmptyHint ? (
         <View style={styles.emptyHintBox}>
-          <Text style={styles.emptyHintText}>
-            You don’t have any friend groups yet.
-          </Text>
-          <Text style={[styles.emptyHintText, { marginTop: 2 }]}>
-            Create groups from the Friends screen.
-          </Text>
-          <Pressable
-            onPress={() => router.push("/friends")}
-            style={styles.hintBtn}
-          >
+          <Text style={styles.emptyHintText}>You don’t have any friend groups yet.</Text>
+          <Text style={[styles.emptyHintText, { marginTop: 2 }]}>Create groups from the Friends screen.</Text>
+          <Pressable onPress={() => router.push("/friends")} style={styles.hintBtn}>
             <Text style={styles.hintBtnText}>Open Friends</Text>
           </Pressable>
         </View>
@@ -277,27 +215,15 @@ export default function BeaconScheduler({
                 onPress={() => toggleGroup(g.id)}
                 style={[styles.chip, selected && styles.chipActive]}
               >
-                <Text
-                  style={[styles.chipText, selected && styles.chipTextActive]}
-                >
-                  {g.name}
-                </Text>
+                <Text style={[styles.chipText, selected && styles.chipTextActive]}>{g.name}</Text>
               </Pressable>
             );
           })}
         </View>
       )}
 
-      <Pressable
-        onPress={saveBeacon}
-        disabled={saving}
-        style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-      >
-        {saving ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.saveBtnText}>Save Beacon</Text>
-        )}
+      <Pressable onPress={saveBeacon} disabled={saving} style={[styles.saveBtn, saving && { opacity: 0.6 }]}>
+        {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Beacon</Text>}
       </Pressable>
     </View>
   );
