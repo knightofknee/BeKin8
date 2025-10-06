@@ -11,11 +11,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Modal,
+  ActionSheetIOS,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   limit,
@@ -30,17 +33,16 @@ type ChatMessage = {
   id: string;
   text: string;
   createdAt: Date;
-  authorUid?: string; // absent for system messages
+  authorUid?: string;
   authorName?: string;
   type?: 'user' | 'system';
   subtype?: 'im-in' | string;
-  actorUid?: string;     // who triggered the system event
-  actorName?: string;    // pretty name for system event
+  actorUid?: string;
+  actorName?: string;
 };
 
 type ChatRoomProps = {
   beaconId: string;
-  // optional height override for embedding in modals
   maxHeight?: number;
 };
 
@@ -55,30 +57,36 @@ function getMillis(v: any): number {
 }
 
 async function resolveMyName(uid: string): Promise<string> {
-  // Prefer Profiles.username, fallback to auth.displayName/"Me"
   try {
     const snap = await getDoc(doc(db, 'Profiles', uid));
     const username = (snap.data() as any)?.username;
     if (typeof username === 'string' && username.trim()) return username.trim();
-  } catch { /* ignore */ }
+  } catch {}
   const u = auth.currentUser;
   return (u?.displayName || '').toString().trim() || 'Me';
 }
 
 export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
   const me = auth.currentUser;
+
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
 
-  // Slim header state
-  const [startLabel, setStartLabel] = useState<string>(''); // e.g. "Mon, Oct 6"
+  // 3-dots menu state (Android/others)
+  const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
 
-  // cache beacon expiry for TTL stamping (optional)
+  // Slim header state
+  const [startLabel, setStartLabel] = useState<string>('');
   const expiresAtRef = useRef<number | null>(null);
 
-  // Subscribe to the beacon: for TTL + date label
+  // 🔽 FlatList ref + scroll flags
+  const listRef = useRef<FlatList<ChatMessage>>(null);
+  const pendingScrollRef = useRef(false);
+  const didInitialScrollRef = useRef(false);
+
+  // Subscribe to the beacon meta (for TTL + date)
   useEffect(() => {
     const ref = doc(db, 'Beacons', beaconId);
     const unsub = onSnapshot(
@@ -98,11 +106,7 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
         if (stMs) {
           const d = new Date(stMs);
           setStartLabel(
-            d.toLocaleDateString(undefined, {
-              weekday: 'short',
-              month: 'short',
-              day: 'numeric',
-            })
+            d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
           );
         } else {
           setStartLabel('');
@@ -113,7 +117,7 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
     return () => unsub();
   }, [beaconId]);
 
-  // Subscribe to messages (always)
+  // Subscribe to messages
   useEffect(() => {
     const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
     const q = query(col, orderBy('createdAt', 'asc'), limit(300));
@@ -140,17 +144,31 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
     return () => unsub();
   }, [beaconId]);
 
-  // Have *I* already RSVP’d “I’m in”? (based on system message)
+  // ✅ Scroll logic:
+  // 1) After first load with content, scroll to bottom once.
+  // 2) Whenever we have a pending scroll (after sending), scroll on ANY messages update.
+  useEffect(() => {
+    if (messages.length > 0 && !didInitialScrollRef.current) {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: false });
+        didInitialScrollRef.current = true;
+      });
+      return;
+    }
+    if (pendingScrollRef.current) {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: true });
+        pendingScrollRef.current = false;
+      });
+    }
+  }, [messages]); // <-- key change: watch the array, not just length
+
   const iAmIn = useMemo(() => {
     if (!me) return false;
-    return messages.some(
-      (m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid
-    );
+    return messages.some((m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid);
   }, [messages, me]);
 
-  const canSend = useMemo(() => {
-    return !!me && text.trim().length > 0 && !sending;
-  }, [me, text, sending]);
+  const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
   const handleSend = async () => {
     if (!canSend || !me) return;
@@ -158,8 +176,6 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       setSending(true);
       const authorName = await resolveMyName(me.uid);
       const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
-
-      // TTL: stamp each message with the beacon's expiresAt if present
       const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
 
       await addDoc(col, {
@@ -172,8 +188,9 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       });
 
       setText('');
+      // Ask to scroll once snapshot includes/updates our row
+      pendingScrollRef.current = true;
     } catch (e) {
-      console.warn('send failed', e);
       Alert.alert('Send failed', 'Please try again.');
     } finally {
       setSending(false);
@@ -185,10 +202,8 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
     try {
       const actorName = await resolveMyName(me.uid);
       const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
-
       const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
 
-      // Post a *system* message that records my RSVP
       await addDoc(col, {
         type: 'system',
         subtype: 'im-in',
@@ -198,10 +213,67 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
         createdAt: serverTimestamp(),
         ...(expiresAt ? { expiresAt } : {}),
       });
-      // No local state toggle needed — the snapshot will pick it up and flip iAmIn
-    } catch (e) {
-      console.warn("I'm in failed", e);
+
+      pendingScrollRef.current = true;
+    } catch {
       Alert.alert("Couldn't set status", 'Please try again.');
+    }
+  };
+
+  // Menu helpers (unchanged)
+  const openMenu = (msg: ChatMessage) => {
+    if (msg.type === 'system') return;
+    if (Platform.OS === 'ios' && ActionSheetIOS) {
+      const isMine = !!me && msg.authorUid === me.uid;
+      const options = ['Cancel', 'Report'];
+      const cancelButtonIndex = 0;
+      let destructiveButtonIndex: number | undefined = undefined;
+      if (isMine) {
+        options.push('Delete message');
+        destructiveButtonIndex = options.length - 1;
+      }
+      ActionSheetIOS.showActionSheetWithOptions(
+        { title: 'Options', options, cancelButtonIndex, destructiveButtonIndex },
+        async (idx) => {
+          const picked = options[idx];
+          if (picked === 'Report') await handleReport(msg);
+          if (picked === 'Delete message') await handleDelete(msg);
+        }
+      );
+    } else {
+      setMenuFor(msg);
+    }
+  };
+
+  const handleReport = async (msg: ChatMessage) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    try {
+      await addDoc(collection(db, 'Reports'), {
+        targetType: 'beacon_message',
+        beaconId,
+        messageId: msg.id,
+        messageAuthorUid: msg.authorUid || null,
+        reporterUid: uid,
+        createdAt: serverTimestamp(),
+        status: 'open',
+        snippet: String(msg.text || '').slice(0, 200),
+      });
+      Alert.alert('Thanks', 'We received your report.');
+    } catch (e: any) {
+      Alert.alert('Report failed', e?.message ?? 'Please try again.');
+    }
+  };
+
+  const handleDelete = async (msg: ChatMessage) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || msg.authorUid !== uid) return;
+    try {
+      await deleteDoc(doc(db, 'Beacons', beaconId, 'ChatMessages', msg.id));
+    } catch (e: any) {
+      Alert.alert('Delete failed', e?.message ?? 'Please try again.');
+    } finally {
+      setMenuFor(null);
     }
   };
 
@@ -218,7 +290,7 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={[styles.wrap, { maxHeight }]}
     >
-      {/* Slim header with date + RSVP chip */}
+      {/* Slim header */}
       {(startLabel || true) && (
         <View style={styles.slimHeader}>
           <Text style={styles.slimDate}>{startLabel || 'Beacon'}</Text>
@@ -240,12 +312,13 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       )}
 
       <FlatList
+        ref={listRef}
         data={messages}
         keyExtractor={(m) => m.id}
         contentContainerStyle={{ padding: 8, gap: 8 }}
+        keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => {
           if (item.type === 'system') {
-            // Centered system line (no bubble, no name/time)
             return (
               <View style={styles.systemRow}>
                 <Text style={styles.systemText}>{item.text}</Text>
@@ -254,15 +327,42 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
           }
 
           const mine = item.authorUid === me?.uid;
+
+          // Dots are outside the bubble so they never overlap the meta line
           return (
             <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
+              {!mine && (
+                <Pressable
+                  onPress={() => openMenu(item)}
+                  hitSlop={8}
+                  style={[styles.dotsOutside, { marginRight: 6 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Message options"
+                >
+                  <Text style={styles.dots}>⋯</Text>
+                </Pressable>
+              )}
+
               <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-                <Text style={styles.msgMeta} numberOfLines={1}>
-                  {(item.authorName || (mine ? 'You' : 'Friend'))}{' '}
-                  • {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                <Text style={styles.msgMeta} numberOfLines={1} ellipsizeMode="tail">
+                  {(item.authorName || (mine ? 'You' : 'Friend'))}
+                  {' • '}
+                  {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </Text>
                 <Text style={styles.msgText}>{item.text}</Text>
               </View>
+
+              {mine && (
+                <Pressable
+                  onPress={() => openMenu(item)}
+                  hitSlop={8}
+                  style={[styles.dotsOutside, { marginLeft: 6 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Message options"
+                >
+                  <Text style={styles.dots}>⋯</Text>
+                </Pressable>
+              )}
             </View>
           );
         }}
@@ -286,6 +386,47 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
           {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
         </Pressable>
       </View>
+
+      {/* Android/others action sheet */}
+      <Modal
+        visible={!!menuFor && Platform.OS !== 'ios'}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuFor(null)}
+      >
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
+          <View style={styles.menuSheet}>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                if (menuFor) handleReport(menuFor);
+                setMenuFor(null);
+              }}
+            >
+              <Text style={styles.menuText}>Report</Text>
+            </Pressable>
+
+            {menuFor && me && menuFor.authorUid === me.uid ? (
+              <>
+                <View style={styles.menuDivider} />
+                <Pressable
+                  style={styles.menuItem}
+                  onPress={() => {
+                    if (menuFor) handleDelete(menuFor);
+                  }}
+                >
+                  <Text style={[styles.menuText, styles.menuTextDestructive]}>Delete message</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            <View style={styles.menuDivider} />
+            <Pressable style={styles.menuItem} onPress={() => setMenuFor(null)}>
+              <Text style={styles.menuText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -324,31 +465,35 @@ const styles = StyleSheet.create({
   imInTextDone: { color: '#065F46' },
 
   // Message rows
-  msgRow: { flexDirection: 'row' },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-start' },
   msgRowMine: { justifyContent: 'flex-end' },
   msgRowTheirs: { justifyContent: 'flex-start' },
 
   bubble: {
-    maxWidth: '82%',
+    maxWidth: '78%',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 14,
     borderWidth: 1,
   },
-  bubbleMine: {
-    backgroundColor: '#EEF2FF',
-    borderColor: '#C7DAFF',
-  },
-  bubbleTheirs: {
-    backgroundColor: '#F8FAFC',
-    borderColor: '#E5E7EB',
-  },
+  bubbleMine: { backgroundColor: '#EEF2FF', borderColor: '#C7DAFF' },
+  bubbleTheirs: { backgroundColor: '#F8FAFC', borderColor: '#E5E7EB' },
 
+  msgMeta: { fontSize: 11, color: '#64748B', marginBottom: 2 },
   msgText: { color: '#0B1426', fontSize: 15, lineHeight: 20 },
-  msgMeta: { fontSize: 11, marginBottom: 2, color: '#64748B' },
+
+  // Dots OUTSIDE the bubble
+  dotsOutside: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dots: { fontSize: 16, color: '#64748B' },
 
   // Centered system line
-  systemRow: { alignItems: 'center', paddingVertical: 2 },
+  systemRow: { alignItems: 'center', paddingVertical: 2, alignSelf: 'center' },
   systemText: { color: '#64748B', fontStyle: 'italic', fontSize: 12 },
 
   // Composer
@@ -380,4 +525,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendTxt: { color: '#fff', fontWeight: '800' },
+
+  // Bottom sheet menu (Android/others)
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    justifyContent: 'flex-end',
+  },
+  menuSheet: {
+    backgroundColor: '#fff',
+    paddingVertical: 4,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+  },
+  menuItem: { paddingVertical: 14, paddingHorizontal: 16 },
+  menuText: { fontSize: 16, color: '#0B1426', textAlign: 'center' },
+  menuTextDestructive: { color: '#DC2626', fontWeight: '700' },
+  menuDivider: { height: 1, backgroundColor: '#E5E7EB' },
 });

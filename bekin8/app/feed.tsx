@@ -10,6 +10,7 @@ import {
   Pressable,
   Linking,
   Modal,
+  Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
@@ -23,6 +24,9 @@ import {
   orderBy,
   limit,
   onSnapshot,
+  addDoc,
+  setDoc,
+  serverTimestamp,
 } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
@@ -51,7 +55,9 @@ async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
           const uname = (data?.username || data?.displayName || '').toString().trim();
           if (uname) out[uid] = uname;
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     })
   );
   return out;
@@ -62,6 +68,13 @@ export default function Feed() {
   const [loading, setLoading] = useState<boolean>(true);
   const [showMine, setShowMine] = useState<boolean>(false);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+
+  // Post action menu
+  const [menuFor, setMenuFor] = useState<Post | null>(null);
+
+  // My block list
+  const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
+
   const router = useRouter();
 
   // load persisted toggle
@@ -83,105 +96,122 @@ export default function Feed() {
     })();
   }, [showMine]);
 
-  const loadFeed = useCallback(async () => {
-    const user = auth.currentUser;
-    if (!user) {
-      setPosts([]);
-      setLoading(false);
-      return;
-    }
-
-    const meUid = user.uid;
-    const friendMap = new Map<string, string>();
-
-    // Friends doc
-    try {
-      const friendsRef = doc(db, 'Friends', meUid);
-      const friendsSnap = await getDoc(friendsRef);
-      if (friendsSnap.exists()) {
-        const rawFriends = (friendsSnap.data().friends ?? []) as any[];
-        rawFriends.forEach((f) => {
-          const uid = f?.uid;
-          const username = (f?.username || '').toString().trim();
-          if (uid) friendMap.set(uid, username || friendMap.get(uid) || '');
-        });
-      }
-    } catch (err) {
-      console.error('Error fetching Friends doc:', err);
-    }
-
-    // FriendEdges (accepted)
-    try {
-      const qEdges = query(
-        collection(db, 'FriendEdges'),
-        where('uids', 'array-contains', meUid),
-        where('state', '==', 'accepted')
-      );
-      const edgeSnap = await getDocs(qEdges);
-      edgeSnap.forEach((d) => {
-        const arr = (d.data() as any)?.uids || [];
-        const other = arr.find((u: string) => u !== meUid);
-        if (other) {
-          if (!friendMap.has(other)) friendMap.set(other, '');
-        }
-      });
-    } catch (e) {
-      console.warn('FriendEdges fetch failed:', e);
-    }
-
-    // users/{uid}/friends subcollection
-    try {
-      const subSnap = await getDocs(collection(db, 'users', meUid, 'friends'));
-      subSnap.forEach((d) => {
-        const f: any = d.data();
-        if (typeof f?.uid === 'string') {
-          friendMap.set(
-            f.uid,
-            (f?.username || '').toString().trim() || friendMap.get(f.uid) || ''
-          );
-        }
-      });
-    } catch {}
-
-    // include me
-    const authorUids = Array.from(new Set<string>([meUid, ...Array.from(friendMap.keys())]));
-
-    // fill names
-    const missingUids = authorUids.filter((u) => (u === meUid ? false : !friendMap.get(u)));
-    const fetched = await fetchUsernames([meUid, ...missingUids]);
-    const myUsername = fetched[meUid] || 'You';
-    Object.entries(fetched).forEach(([uid, uname]) => {
-      if (uid !== meUid) friendMap.set(uid, uname || friendMap.get(uid) || '');
+  // subscribe to my block list
+  useEffect(() => {
+    const me = auth.currentUser?.uid;
+    if (!me) return;
+    const unsub = onSnapshot(collection(db, 'users', me, 'blocks'), (snap) => {
+      const s = new Set<string>();
+      snap.forEach((d) => s.add(d.id));
+      setBlockedUids(s);
     });
+    return unsub;
+  }, []);
 
-    // fetch posts
+  const loadFeed = useCallback(async () => {
+    setLoading(true);
     try {
+      const user = auth.currentUser;
+      if (!user) {
+        setPosts([]);
+        return;
+      }
+
+      const meUid = user.uid;
+      const friendMap = new Map<string, string>();
+
+      // Friends doc
+      try {
+        const friendsRef = doc(db, 'Friends', meUid);
+        const friendsSnap = await getDoc(friendsRef);
+        if (friendsSnap.exists()) {
+          const rawFriends = (friendsSnap.data().friends ?? []) as any[];
+          rawFriends.forEach((f) => {
+            const uid = f?.uid;
+            const username = (f?.username || '').toString().trim();
+            if (uid) friendMap.set(uid, username || friendMap.get(uid) || '');
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching Friends doc:', err);
+      }
+
+      // FriendEdges (accepted)
+      try {
+        const qEdges = query(
+          collection(db, 'FriendEdges'),
+          where('uids', 'array-contains', meUid),
+          where('state', '==', 'accepted')
+        );
+        const edgeSnap = await getDocs(qEdges);
+        edgeSnap.forEach((d) => {
+          const arr = (d.data() as any)?.uids || [];
+          const other = arr.find((u: string) => u !== meUid);
+          if (other) {
+            if (!friendMap.has(other)) friendMap.set(other, '');
+          }
+        });
+      } catch (e) {
+        console.warn('FriendEdges fetch failed:', e);
+      }
+
+      // users/{uid}/friends subcollection
+      try {
+        const subSnap = await getDocs(collection(db, 'users', meUid, 'friends'));
+        subSnap.forEach((d) => {
+          const f: any = d.data();
+          if (typeof f?.uid === 'string') {
+            friendMap.set(
+              f.uid,
+              (f?.username || '').toString().trim() || friendMap.get(f.uid) || ''
+            );
+          }
+        });
+      } catch {}
+
+      // include me
+      const authorUids = Array.from(new Set([meUid, ...Array.from(friendMap.keys())]));
+
+      // fill names
+      const missingUids = authorUids.filter((u) => (u === meUid ? false : !friendMap.get(u)));
+      const fetched = await fetchUsernames([meUid, ...missingUids]);
+      const myUsername = fetched[meUid] || 'You';
+      Object.entries(fetched).forEach(([uid, uname]) => {
+        if (uid !== meUid) friendMap.set(uid, uname || friendMap.get(uid) || '');
+      });
+
+      // fetch posts (resilient to individual failures)
       const authorObjs = authorUids.map((uid) => ({
         uid,
         username: uid === meUid ? myUsername : friendMap.get(uid) || 'Friend',
       }));
 
-      const postSnaps = await Promise.all(
-        authorObjs.map((a) =>
-          getDocs(
-            query(
-              collection(db, 'Posts'),
-              where('author', '==', a.uid),
-              orderBy('timestamp', 'desc'),
-              limit(50)
-            )
+      const queries = authorObjs.map((a) =>
+        getDocs(
+          query(
+            collection(db, 'Posts'),
+            where('author', '==', a.uid),
+            orderBy('timestamp', 'desc'),
+            limit(50)
           )
         )
       );
 
+      const results = await Promise.allSettled(queries);
+
       const collected: Post[] = [];
-      postSnaps.forEach((snap, idx) => {
+      results.forEach((res, idx) => {
+        if (res.status !== 'fulfilled') {
+          console.warn('Posts query failed for', authorObjs[idx].uid, res.reason);
+          return;
+        }
+        const snap = res.value;
         const au = authorObjs[idx];
         snap.docs.forEach((docSnap) => {
           const data = docSnap.data() as any;
           const rawTs = data.timestamp ?? data.createdAt;
           const createdAt: Date =
-            rawTs && typeof rawTs.toDate === 'function'
+            rawTs && typeof rawTs?.toDate === 'function'
               ? rawTs.toDate()
               : rawTs instanceof Date
               ? rawTs
@@ -212,7 +242,8 @@ export default function Feed() {
 
       setPosts(uniquePosts);
     } catch (err) {
-      console.error('Error loading posts:', err);
+      console.error('loadFeed fatal error:', err);
+      // we still drop the loader in finally
     } finally {
       setLoading(false);
     }
@@ -220,7 +251,6 @@ export default function Feed() {
 
   // initial load
   useEffect(() => {
-    setLoading(true);
     loadFeed();
   }, [loadFeed]);
 
@@ -240,12 +270,51 @@ export default function Feed() {
     };
   }, [loadFeed]);
 
-  // filter my posts
+  // filter my posts toggle, THEN filter out blocked users
   const displayedPosts = useMemo(() => {
     const me = auth.currentUser?.uid;
-    if (!me) return posts;
-    return showMine ? posts : posts.filter((p) => p.authorUid !== me);
-  }, [posts, showMine]);
+    const base = showMine || !me ? posts : posts.filter((p) => p.authorUid !== me);
+    if (!blockedUids.size) return base;
+    return base.filter((p) => !blockedUids.has(p.authorUid));
+  }, [posts, showMine, blockedUids]);
+
+  const handleReport = useCallback(
+    async (p: Post) => {
+      const me = auth.currentUser?.uid;
+      if (!me) return;
+      try {
+        await addDoc(collection(db, 'Reports'), {
+          targetType: 'post',
+          targetId: p.id,
+          targetOwnerUid: p.authorUid,
+          reporterUid: me,
+          createdAt: serverTimestamp(),
+          status: 'open',
+        });
+        Alert.alert('Thanks', 'We received your report.');
+      } catch (e: any) {
+        Alert.alert('Report failed', e?.message ?? 'Try again.');
+      }
+    },
+    []
+  );
+
+  const handleBlock = useCallback(
+    async (p: Post) => {
+      const me = auth.currentUser?.uid;
+      if (!me) return;
+      if (p.authorUid === me) return;
+      try {
+        await setDoc(doc(db, 'users', me, 'blocks', p.authorUid), {
+          blockedAt: serverTimestamp(),
+        });
+        Alert.alert('Blocked', 'You will no longer see this user’s content.');
+      } catch (e: any) {
+        Alert.alert('Block failed', e?.message ?? 'Try again.');
+      }
+    },
+    []
+  );
 
   if (loading) {
     return (
@@ -292,7 +361,13 @@ export default function Feed() {
           contentContainerStyle={[styles.list, { paddingBottom: 100 }]}
           renderItem={({ item }) => (
             <Pressable style={styles.postContainer} onPress={() => setSelectedPost(item)}>
-              <Text style={styles.postAuthor}>{item.authorUsername}</Text>
+              {/* top row: author + menu */}
+              <View style={styles.postHeaderRow}>
+                <Text style={styles.postAuthor}>{item.authorUsername}</Text>
+                <Pressable onPress={() => setMenuFor(item)} hitSlop={10} style={styles.menuBtn}>
+                  <Text style={styles.menuDots}>⋯</Text>
+                </Pressable>
+              </View>
 
               {item.url ? (
                 <Pressable
@@ -322,9 +397,45 @@ export default function Feed() {
         transparent
         onRequestClose={() => setSelectedPost(null)}
       >
-        {selectedPost && (
-          <PostComments post={selectedPost} onClose={() => setSelectedPost(null)} />
-        )}
+        {selectedPost && <PostComments post={selectedPost} onClose={() => setSelectedPost(null)} />}
+      </Modal>
+
+      {/* Post Action Menu */}
+      <Modal
+        visible={!!menuFor}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setMenuFor(null)}
+      >
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
+          <View style={styles.menuSheet}>
+            <Pressable
+              style={styles.menuRow}
+              onPress={() => {
+                if (menuFor) handleReport(menuFor);
+                setMenuFor(null);
+              }}
+            >
+              <Text style={styles.menuText}>Report</Text>
+            </Pressable>
+
+            {menuFor && menuFor.authorUid !== auth.currentUser?.uid ? (
+              <Pressable
+                style={styles.menuRow}
+                onPress={() => {
+                  if (menuFor) handleBlock(menuFor);
+                  setMenuFor(null);
+                }}
+              >
+                <Text style={styles.menuText}>Block user</Text>
+              </Pressable>
+            ) : null}
+
+            <Pressable style={[styles.menuRow, styles.menuCancel]} onPress={() => setMenuFor(null)}>
+              <Text style={styles.menuText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
       </Modal>
     </>
   );
@@ -341,7 +452,13 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#fff',
   },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827', textAlign: 'center', marginBottom: 6 },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
 
   toggleBtn: {
     alignSelf: 'center',
@@ -361,8 +478,30 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#eee',
   },
+
+  postHeaderRow: { flexDirection: 'row', alignItems: 'center' },
+  menuBtn: { marginLeft: 'auto', paddingHorizontal: 6, paddingVertical: 4 },
+  menuDots: { fontSize: 18, color: '#6b7280' },
+
   postAuthor: { fontWeight: 'bold', marginBottom: 4, color: '#111827' },
   postLink: { color: '#2F6FED', textDecorationLine: 'underline', fontWeight: '600' },
-  postContent: { marginBottom: 8, color: '#111827' },
+  postContent: { marginBottom: 8, color: '#111827', marginTop: 4 },
   postDate: { fontSize: 12, color: '#555', textAlign: 'right' },
+
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: '#00000066',
+    justifyContent: 'flex-end',
+  },
+  menuSheet: {
+    backgroundColor: '#1f2937',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 24,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  menuRow: { paddingVertical: 14 },
+  menuCancel: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#374151' },
+  menuText: { color: '#fff', fontSize: 16 },
 });

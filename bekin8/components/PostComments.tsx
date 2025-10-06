@@ -1,5 +1,5 @@
 // components/PostComments.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -81,7 +81,12 @@ export default function PostComments({ post, onClose }: Props) {
   // overflow menu state (3-dots)
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
 
-  // subscribe to comments
+  // 🔽 FlatList ref + scroll flags
+  const listRef = useRef<FlatList<Comment>>(null);
+  const pendingScrollRef = useRef(false);
+  const didInitialScrollRef = useRef(false);
+
+  // subscribe to comments (Posts/{postId}/comments) — unchanged
   useEffect(() => {
     const col = collection(db, 'Posts', post.id, 'comments');
     const qy = query(col, orderBy('createdAt', 'asc'), limit(200));
@@ -108,6 +113,25 @@ export default function PostComments({ post, onClose }: Props) {
     return () => unsub();
   }, [post.id]);
 
+  // ✅ Scroll logic:
+  // 1) After first load with content, scroll to bottom once.
+  // 2) Whenever we have a pending scroll (after sending), scroll on ANY comments update.
+  useEffect(() => {
+    if (comments.length > 0 && !didInitialScrollRef.current) {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: false });
+        didInitialScrollRef.current = true;
+      });
+      return;
+    }
+    if (pendingScrollRef.current) {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: true });
+        pendingScrollRef.current = false;
+      });
+    }
+  }, [comments]); // watch the array, not just length
+
   const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
   const handleSend = async () => {
@@ -123,27 +147,29 @@ export default function PostComments({ post, onClose }: Props) {
         deleted: false,
       });
       setText('');
+      // Ask to scroll when snapshot includes our new row / resolves timestamp
+      pendingScrollRef.current = true;
     } finally {
       setSending(false);
     }
   };
 
-  const requestMenu = (comment: Comment) => {
-    if (!me || comment.authorUid !== me.uid || comment.deleted) return;
-    if (Platform.OS === 'ios' && ActionSheetIOS) {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: 'Options',
-          options: ['Cancel', 'Delete comment'],
-          cancelButtonIndex: 0,
-          destructiveButtonIndex: 1,
-        },
-        async (idx) => {
-          if (idx === 1) await doDelete(comment);
-        }
-      );
-    } else {
-      setMenuFor(comment);
+  // --- Report & Delete helpers (NEW: doReport, requestMenu supports both) ---
+  const doReport = async (comment: Comment) => {
+    if (!me) return;
+    try {
+      await addDoc(collection(db, 'Reports'), {
+        targetType: 'comment',
+        targetId: comment.id,
+        targetOwnerUid: comment.authorUid,
+        postId: post.id,
+        reporterUid: me.uid,
+        createdAt: serverTimestamp(),
+        status: 'open',
+      });
+      Alert.alert('Thanks', 'We received your report.');
+    } catch (e: any) {
+      Alert.alert('Report failed', e?.message ?? 'Try again.');
     }
   };
 
@@ -154,7 +180,6 @@ export default function PostComments({ post, onClose }: Props) {
       setMenuFor(null);
       return;
     } catch (e: any) {
-      // Permission-denied? Soft-delete as fallback
       const code = e?.code || '';
       if (code === 'permission-denied') {
         try {
@@ -170,6 +195,34 @@ export default function PostComments({ post, onClose }: Props) {
       }
       Alert.alert('Delete failed', 'Please try again.');
       setMenuFor(null);
+    }
+  };
+
+  const requestMenu = (comment: Comment) => {
+    if (!me || comment.deleted) return;
+    const isMine = comment.authorUid === me.uid;
+
+    if (Platform.OS === 'ios' && ActionSheetIOS) {
+      const options: string[] = ['Cancel', 'Report'];
+      const actions: Array<() => void> = [() => {}, () => void doReport(comment)];
+      let cancelButtonIndex = 0;
+      let destructiveButtonIndex: number | undefined = undefined;
+
+      if (isMine) {
+        options.push('Delete comment');
+        actions.push(() => void doDelete(comment));
+        destructiveButtonIndex = options.length - 1;
+      }
+
+      ActionSheetIOS.showActionSheetWithOptions(
+        { title: 'Options', options, cancelButtonIndex, destructiveButtonIndex },
+        (idx) => {
+          const fn = actions[idx];
+          if (fn) fn();
+        }
+      );
+    } else {
+      setMenuFor(comment);
     }
   };
 
@@ -210,9 +263,11 @@ export default function PostComments({ post, onClose }: Props) {
             </View>
           ) : (
             <FlatList
+              ref={listRef} // 🔗
               data={comments}
               keyExtractor={(c) => c.id}
               contentContainerStyle={{ paddingVertical: 8, gap: 8 }}
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => {
                 const mine = item.authorUid === me?.uid;
                 const deleted = item.deleted === true;
@@ -237,12 +292,15 @@ export default function PostComments({ post, onClose }: Props) {
                             <>• {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
                           )}
                         </Text>
-                        {mine && !deleted ? (
+
+                        {/* 3-dots (report for others; delete+report for mine) */}
+                        {!deleted ? (
                           <Pressable hitSlop={8} onPress={() => requestMenu(item)} style={styles.dotsBtn}>
                             <Text style={styles.dots}>⋯</Text>
                           </Pressable>
                         ) : null}
                       </View>
+
                       <Text style={[styles.msgText, deleted && styles.deletedText]}>
                         {deleted ? '[deleted]' : item.text}
                       </Text>
@@ -271,15 +329,41 @@ export default function PostComments({ post, onClose }: Props) {
       </Pressable>
 
       {/* ANDROID / CROSS-PLATFORM BOTTOM SHEET FOR 3-DOTS */}
-      <Modal visible={!!menuFor && Platform.OS !== 'ios'} transparent animationType="fade" onRequestClose={() => setMenuFor(null)}>
+      <Modal
+        visible={!!menuFor && Platform.OS !== 'ios'}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuFor(null)}
+      >
         <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
           <View style={styles.menuSheet}>
+            {/* Report always */}
             <Pressable
-              style={[styles.menuItem, styles.menuItemDestructive]}
-              onPress={() => menuFor && doDelete(menuFor)}
+              style={styles.menuItem}
+              onPress={() => {
+                if (menuFor) doReport(menuFor);
+                setMenuFor(null);
+              }}
             >
-              <Text style={[styles.menuText, styles.menuTextDestructive]}>Delete comment</Text>
+              <Text style={styles.menuText}>Report</Text>
             </Pressable>
+
+            {/* Delete only if mine */}
+            {menuFor && me && menuFor.authorUid === me.uid ? (
+              <>
+                <View style={styles.menuDivider} />
+                <Pressable
+                  style={[styles.menuItem, styles.menuItemDestructive]}
+                  onPress={() => {
+                    if (menuFor) doDelete(menuFor);
+                    setMenuFor(null);
+                  }}
+                >
+                  <Text style={[styles.menuText, styles.menuTextDestructive]}>Delete comment</Text>
+                </Pressable>
+              </>
+            ) : null}
+
             <View style={styles.menuDivider} />
             <Pressable style={styles.menuItem} onPress={() => setMenuFor(null)}>
               <Text style={styles.menuText}>Cancel</Text>

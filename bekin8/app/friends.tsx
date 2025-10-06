@@ -76,6 +76,9 @@ export default function FriendsScreen() {
   // Logout state
   const [loggingOut, setLoggingOut] = useState(false);
 
+  // NEW: my blocked users set
+  const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
+
   const showMessage = (text: string, type: "error" | "success") => {
     setMessage({ text, type });
     setTimeout(() => setMessage({ text: "", type: null }), 2500);
@@ -152,6 +155,7 @@ export default function FriendsScreen() {
         setGroups([]);
         setEditingGroup(null);
         setGroupEditorOpen(false);
+        setBlockedUids(new Set());
 
         // 🚪 Hard-guard: if unauthenticated, push to login and clear history
         router.replace("/");
@@ -244,6 +248,14 @@ export default function FriendsScreen() {
         setGroups(arr);
       });
       cleanups.push(unsubGroups);
+
+      // NEW: Subscribe to my block list
+      const unsubBlocks = onSnapshot(collection(db, "users", user.uid, "blocks"), (snap) => {
+        const s = new Set<string>();
+        snap.forEach((d) => s.add(d.id));
+        setBlockedUids(s);
+      });
+      cleanups.push(unsubBlocks);
     });
 
     return () => {
@@ -559,6 +571,37 @@ export default function FriendsScreen() {
     ]);
   };
 
+  // NEW: block friend (adds uid to users/{me}/blocks/{uid})
+  const blockFriend = async (friend: Friend) => {
+    const me = auth.currentUser;
+    if (!me) return showMessage("Please log in first.", "error");
+    if (!friend.uid) return showMessage("Can’t block this entry (missing UID).", "error");
+
+    try {
+      setBusy(true);
+      await setDoc(doc(db, "users", me.uid, "blocks", friend.uid), {
+        blockedAt: serverTimestamp(),
+      });
+      showMessage(`Blocked ${friend.username}.`, "success");
+    } catch (e) {
+      console.error("blockFriend error", e);
+      showMessage("Failed to block user.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmBlock = (friend: Friend) => {
+    Alert.alert(
+      "Block user",
+      `You won’t see content from ${friend.username}. Continue?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Block", style: "destructive", onPress: () => blockFriend(friend) },
+      ]
+    );
+  };
+
   // --- Logout handler (footer button) ---
   const handleLogout = async () => {
     if (loggingOut) return;
@@ -593,11 +636,14 @@ export default function FriendsScreen() {
     showMessage("Group deleted.", "success");
   };
 
+  // NEW: filter out blocked users from the displayed list
+  const visibleFriends = friends.filter((f) => !(f.uid && blockedUids.has(f.uid)));
+
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <FlatList
-        data={friends}
+        data={visibleFriends}
         keyExtractor={(item, index) =>
           item.uid ? `uid:${item.uid}` : `name:${item.username.toLowerCase()}:${index}`
         }
@@ -606,6 +652,7 @@ export default function FriendsScreen() {
             item={item}
             busy={busy}
             onRemove={() => confirmRemove(item)}
+            onBlock={() => confirmBlock(item)} // NEW
             notify={!!(item.uid && notifyByUid[item.uid])}
             onToggleNotify={async (v) => {
               const me = auth.currentUser;
@@ -695,7 +742,7 @@ export default function FriendsScreen() {
             {/* Friends section title */}
             <View style={[styles.card, { marginBottom: 0 }]}>
               <Text style={styles.sectionTitle}>My Friends</Text>
-              {friends.length === 0 && (
+              {visibleFriends.length === 0 && (
                 <Text style={styles.subtle}>No friends yet — send a request above.</Text>
               )}
             </View>

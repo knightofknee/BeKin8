@@ -171,3 +171,5 @@ export const onBeaconCreatedNotify = onDocumentCreated('Beacons/{beaconId}', asy
     })
   );
 });
+
+export { deleteAccountData } from "./deleteAccount";

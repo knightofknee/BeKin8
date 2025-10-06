@@ -13,12 +13,11 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { useRouter, Link, Stack } from "expo-router";
+import { useRouter, Link } from "expo-router";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { registerAndSaveExpoToken } from './lib/push';
 
 const colors = {
   primary: "#2F6FED",
@@ -82,7 +81,6 @@ export default function SignUp() {
     try {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
-      await registerAndSaveExpoToken();
 
       // Minimal user doc so other screens can gate on username later
       await setDoc(doc(db, "users", cred.user.uid), {
@@ -92,7 +90,9 @@ export default function SignUp() {
         hasUsername: false,
         createdAt: serverTimestamp(),
       });
-      router.replace("/home");
+
+      // Instead of requesting push permissions here, send user to the pre-permission screen.
+      router.replace("/notifications-permission");
     } catch (e: any) {
       setError(friendlyError(e?.code, e?.message));
     } finally {
@@ -100,13 +100,40 @@ export default function SignUp() {
     }
   };
 
+  // Platform helpers for autofill control
+  const emailAutoComplete = Platform.select({
+    ios: "email",
+    android: "email",
+    default: "email",
+  }) as any;
+
+  const pwAutoComplete = Platform.select({
+    ios: "password-new",      // iOS strong-password suggestion
+    android: "off",           // disable Android Autofill to avoid yellow lock
+    default: "off",
+  }) as any;
+
+  const confirmAutoComplete = Platform.select({
+    ios: "password-new",
+    android: "off",
+    default: "off",
+  }) as any;
+
+  const pwTextContentType = Platform.select({
+    ios: "newPassword",
+    default: "none",
+  }) as any;
+
+  const confirmTextContentType = Platform.select({
+    ios: "newPassword",
+    default: "none",
+  }) as any;
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.bg }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      
-
       <SafeAreaView style={{ flex: 1 }}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
           <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
@@ -129,6 +156,7 @@ export default function SignUp() {
             <View style={styles.card}>
               {error ? <Text style={styles.error}>{error}</Text> : null}
 
+              {/* Email */}
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Email</Text>
                 <TextInput
@@ -143,16 +171,18 @@ export default function SignUp() {
                   autoCorrect={false}
                   keyboardType="email-address"
                   textContentType="emailAddress"
-                  autoComplete="email"
+                  autoComplete={emailAutoComplete}
                   value={email}
                   onChangeText={setEmail}
                   onFocus={() => setEmailFocused(true)}
                   onBlur={() => setEmailFocused(false)}
                   returnKeyType="next"
                   onSubmitEditing={() => passwordRef.current?.focus()}
+                  editable={!loading}
                 />
               </View>
 
+              {/* Password */}
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Password</Text>
                 <View
@@ -170,14 +200,18 @@ export default function SignUp() {
                     secureTextEntry={!showPw}
                     autoCapitalize="none"
                     autoCorrect={false}
-                    textContentType="newPassword"
-                    autoComplete="password-new"
+                    textContentType={pwTextContentType}
+                    autoComplete={pwAutoComplete}
+                    // Android autofill protections:
+                    importantForAutofill={Platform.OS === "android" ? "no" : "auto"}
+                    disableFullscreenUI={Platform.OS === "android"}
                     value={password}
                     onChangeText={setPassword}
                     onFocus={() => setPwFocused(true)}
                     onBlur={() => setPwFocused(false)}
                     returnKeyType="next"
                     onSubmitEditing={() => confirmRef.current?.focus()}
+                    editable={!loading}
                   />
                   <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
                     <Text style={styles.togglePw}>{showPw ? "Hide" : "Show"}</Text>
@@ -185,6 +219,7 @@ export default function SignUp() {
                 </View>
               </View>
 
+              {/* Confirm Password */}
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Confirm Password</Text>
                 <View
@@ -202,14 +237,18 @@ export default function SignUp() {
                     secureTextEntry={!showPw2}
                     autoCapitalize="none"
                     autoCorrect={false}
-                    textContentType="newPassword"
-                    autoComplete="password-new"
+                    textContentType={confirmTextContentType}
+                    autoComplete={confirmAutoComplete}
+                    // Android autofill protections:
+                    importantForAutofill={Platform.OS === "android" ? "no" : "auto"}
+                    disableFullscreenUI={Platform.OS === "android"}
                     value={confirmPassword}
                     onChangeText={setConfirmPassword}
                     onFocus={() => setPw2Focused(true)}
                     onBlur={() => setPw2Focused(false)}
                     returnKeyType="go"
                     onSubmitEditing={handleSignUp}
+                    editable={!loading}
                   />
                   <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
                     <Text style={styles.togglePw}>{showPw2 ? "Hide" : "Show"}</Text>
@@ -217,6 +256,7 @@ export default function SignUp() {
                 </View>
               </View>
 
+              {/* Sign Up */}
               <Pressable
                 onPress={handleSignUp}
                 disabled={loading}
@@ -233,6 +273,16 @@ export default function SignUp() {
                 )}
               </Pressable>
 
+              {/* Terms / Privacy notice */}
+              <View style={styles.termsRow}>
+                <Text style={styles.termsText}>By signing up you agree to our </Text>
+                <Link href="/legal/terms" style={styles.link}>Terms</Link>
+                <Text style={styles.termsText}> and </Text>
+                <Link href="/legal/privacy" style={styles.link}>Privacy Policy</Link>
+                <Text style={styles.termsText}>.</Text>
+              </View>
+
+              {/* Already have an account */}
               <View style={styles.bottomRow}>
                 <Text style={{ color: colors.subtle }}>Already have an account?</Text>
                 <Link href="/" style={styles.link}>
@@ -287,6 +337,15 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+
+  termsRow: {
+    marginTop: 10,
+    marginBottom: 6,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  termsText: { color: colors.subtle, fontSize: 12 },
 
   bottomRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 },
   link: { color: colors.primary, fontWeight: "700" },

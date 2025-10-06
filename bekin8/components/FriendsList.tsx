@@ -8,13 +8,16 @@ type RowProps = {
   item: Friend;
   busy: boolean;
   onRemove: () => void;
-  // NEW: per-friend notification preference
+  // NEW: block handler
+  onBlock: () => void;
+  // per-friend notification preference
   notify?: boolean;
   onToggleNotify?: (value: boolean) => void;
 };
 
-function Row({ item, busy, onRemove, notify = false, onToggleNotify }: RowProps) {
+function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify }: RowProps) {
   const disabled = busy || !item.uid;
+
   return (
     <View style={styles.row}>
       <View style={styles.avatar}>
@@ -38,14 +41,24 @@ function Row({ item, busy, onRemove, notify = false, onToggleNotify }: RowProps)
         />
       </View>
 
-      {/* Remove button */}
+      {/* Block button */}
+      <Pressable
+        disabled={disabled}
+        onPress={onBlock}
+        hitSlop={10}
+        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1 }]}
+      >
+        <Text style={styles.iconTxt}>⛔</Text>
+      </Pressable>
+
+      {/* Remove (unfriend) button */}
       <Pressable
         disabled={disabled}
         onPress={onRemove}
         hitSlop={10}
         style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1 }]}
       >
-        <Text style={styles.iconTxt}>🚫</Text>
+        <Text style={styles.iconTxt}>🗑️</Text>
       </Pressable>
     </View>
   );

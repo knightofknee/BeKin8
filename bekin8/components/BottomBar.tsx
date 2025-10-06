@@ -2,14 +2,15 @@ import React, { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { usePathname, useRouter } from "expo-router";
 
-type TabKey = "home" | "feed" | "friends" | "create-post";
+type TabKey = "home" | "feed" | "friends" | "create-post" | "settings";
 type Tab = { key: TabKey; label: string; emoji: string; href: `/${string}` };
 
 const TABS: Tab[] = [
-  { key: "home",        label: "Home",    emoji: "🏠", href: "/home" },
-  { key: "feed",        label: "Feed",    emoji: "📰", href: "/feed" },
-  { key: "friends",     label: "Friends", emoji: "👥", href: "/friends" },
-  { key: "create-post", label: "Post",    emoji: "✍️", href: "/create-post" },
+  { key: "home",        label: "Home",     emoji: "🏠", href: "/home" },
+  { key: "feed",        label: "Feed",     emoji: "📰", href: "/feed" },
+  { key: "friends",     label: "Friends",  emoji: "👥", href: "/friends" },
+  { key: "create-post", label: "Post",     emoji: "✍️", href: "/create-post" },
+  { key: "settings",    label: "Settings", emoji: "⚙️", href: "/settings" }, // NEW last item
 ];
 
 export default function BottomBar() {
@@ -17,15 +18,15 @@ export default function BottomBar() {
   const pathname = usePathname();
 
   const activeKey: TabKey | null = useMemo(() => {
-    if (pathname?.startsWith("/home")) return "home";
-    if (pathname?.startsWith("/feed")) return "feed";
-    if (pathname?.startsWith("/friends")) return "friends";
-    if (pathname?.startsWith("/create-post")) return "create-post";
+    if (pathname?.startsWith("/home"))         return "home";
+    if (pathname?.startsWith("/feed"))         return "feed";
+    if (pathname?.startsWith("/friends"))      return "friends";
+    if (pathname?.startsWith("/create-post"))  return "create-post";
+    if (pathname?.startsWith("/settings"))     return "settings"; // NEW
     return null;
   }, [pathname]);
 
   const onNav = (href: `/${string}`) => {
-    // push = keeps back stack (no “stuck” pages)
     router.push(href);
   };
 
