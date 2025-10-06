@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { Stack, useRouter } from "expo-router";
 import { auth } from "../firebase.config";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { signOut } from "firebase/auth";
@@ -50,6 +50,7 @@ export default function SettingsScreen() {
 
   return (
     <>
+    <Stack.Screen options={{ animation: 'fade' }} />
       <SafeAreaView style={s.safe} edges={["top", "left", "right"]}>
         {/* Header */}
         <View style={s.header}>

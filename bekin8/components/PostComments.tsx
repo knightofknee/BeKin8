@@ -1,5 +1,5 @@
 // components/PostComments.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,6 +13,10 @@ import {
   TextInput,
   View,
   ActionSheetIOS,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
+  LayoutChangeEvent,
+  InteractionManager,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
@@ -78,18 +82,34 @@ export default function PostComments({ post, onClose }: Props) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
 
-  // overflow menu state (3-dots)
+  // 3-dots menu state
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
 
-  // 🔽 FlatList ref + scroll flags
+  // FlatList scroll wiring
   const listRef = useRef<FlatList<Comment>>(null);
-  const pendingScrollRef = useRef(false);
   const didInitialScrollRef = useRef(false);
+  const pendingScrollRef = useRef(false);
 
-  // subscribe to comments (Posts/{postId}/comments) — unchanged
+  const ensureInitialScroll = useCallback(() => {
+    if (!didInitialScrollRef.current && comments.length > 0) {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: false });
+        // double-pass for safety during modal layout
+        requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+        didInitialScrollRef.current = true;
+      });
+    }
+  }, [comments.length]);
+
+  // For the ↑ button
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [listHeight, setListHeight] = useState(0);
+
+  // subscribe to comments
   useEffect(() => {
     const col = collection(db, 'Posts', post.id, 'comments');
-    const qy = query(col, orderBy('createdAt', 'asc'), limit(200));
+    const qy = query(col, orderBy('createdAt', 'asc'), limit(300));
     const unsub = onSnapshot(
       qy,
       (snap) => {
@@ -113,24 +133,36 @@ export default function PostComments({ post, onClose }: Props) {
     return () => unsub();
   }, [post.id]);
 
-  // ✅ Scroll logic:
-  // 1) After first load with content, scroll to bottom once.
-  // 2) Whenever we have a pending scroll (after sending), scroll on ANY comments update.
+  // ---- ALWAYS OPEN AT BOTTOM (robust to modal animation/layout)
   useEffect(() => {
-    if (comments.length > 0 && !didInitialScrollRef.current) {
-      requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated: false });
-        didInitialScrollRef.current = true;
-      });
-      return;
-    }
+    ensureInitialScroll();
     if (pendingScrollRef.current) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });
         pendingScrollRef.current = false;
       });
     }
-  }, [comments]); // watch the array, not just length
+  }, [comments, ensureInitialScroll]);
+
+  const onListLayout = (e: LayoutChangeEvent) => {
+    setListHeight(e.nativeEvent.layout.height);
+  };
+
+  const onContentSizeChange = (_w: number, h: number) => {
+    setContentHeight(h);
+    const canScroll = h > listHeight + 1;
+    if (!canScroll) setShowScrollTop(false);
+  };
+
+  const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = e.nativeEvent.contentOffset.y;
+    const canScroll = contentHeight > listHeight + 1;
+    setShowScrollTop(canScroll && y > 8);
+  };
+
+  const scrollToTop = () => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  };
 
   const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
@@ -147,14 +179,13 @@ export default function PostComments({ post, onClose }: Props) {
         deleted: false,
       });
       setText('');
-      // Ask to scroll when snapshot includes our new row / resolves timestamp
-      pendingScrollRef.current = true;
+      pendingScrollRef.current = true; // scroll after snapshot lands
     } finally {
       setSending(false);
     }
   };
 
-  // --- Report & Delete helpers (NEW: doReport, requestMenu supports both) ---
+  // Report/Delete
   const doReport = async (comment: Comment) => {
     if (!me) return;
     try {
@@ -175,7 +206,6 @@ export default function PostComments({ post, onClose }: Props) {
 
   const doDelete = async (comment: Comment) => {
     try {
-      // Try hard delete
       await deleteDoc(doc(db, 'Posts', post.id, 'comments', comment.id));
       setMenuFor(null);
       return;
@@ -189,9 +219,7 @@ export default function PostComments({ post, onClose }: Props) {
           });
           setMenuFor(null);
           return;
-        } catch (e2) {
-          // fall through to generic error
-        }
+        } catch {}
       }
       Alert.alert('Delete failed', 'Please try again.');
       setMenuFor(null);
@@ -227,11 +255,12 @@ export default function PostComments({ post, onClose }: Props) {
   };
 
   return (
-    // Backdrop: tap to close
-    <Pressable style={styles.backdrop} onPress={onClose}>
-      {/* Card: stop tap propagation */}
-      <Pressable onPress={() => {}} style={styles.card}>
-        {/* Compact post header */}
+    <View style={styles.backdrop}>
+      {/* outside tap closes */}
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+
+      <View style={styles.card} pointerEvents="box-none">
+        {/* Header */}
         <View style={styles.headerRow}>
           <View style={styles.avatar}>
             <Text style={styles.avatarTxt}>
@@ -247,68 +276,93 @@ export default function PostComments({ post, onClose }: Props) {
           </Pressable>
         </View>
 
-        {/* Post preview (2 lines max) */}
+        {/* Post preview */}
         <Text style={styles.postPreview} numberOfLines={2}>
           {post.content}
         </Text>
 
-        {/* Thread */}
+        {/* Thread area (taller) */}
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.threadWrap}
+          onLayout={ensureInitialScroll}
         >
           {loading ? (
             <View style={styles.loading}>
               <ActivityIndicator />
             </View>
           ) : (
-            <FlatList
-              ref={listRef} // 🔗
-              data={comments}
-              keyExtractor={(c) => c.id}
-              contentContainerStyle={{ paddingVertical: 8, gap: 8 }}
-              keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => {
-                const mine = item.authorUid === me?.uid;
-                const deleted = item.deleted === true;
-                return (
-                  <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
-                    <View
-                      style={[
-                        styles.bubble,
-                        mine ? styles.bubbleMine : styles.bubbleTheirs,
-                        deleted && styles.bubbleDeleted,
-                      ]}
-                    >
-                      <View style={styles.rowTop}>
-                        <Text
-                          style={[styles.msgMeta, deleted && styles.deletedMeta]}
-                          numberOfLines={1}
-                        >
-                          {deleted
-                            ? 'Deleted'
-                            : (item.authorName || (mine ? 'You' : 'Friend'))}{' '}
-                          {!deleted && (
-                            <>• {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
-                          )}
+            <>
+              {showScrollTop && (
+                <Pressable
+                  onPress={scrollToTop}
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.scrollTopBtn,
+                    pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Scroll to top"
+                >
+                  <Text style={styles.scrollTopIcon}>↑</Text>
+                </Pressable>
+              )}
+
+              <FlatList
+                ref={listRef}
+                onLayout={onListLayout}
+                style={{ flex: 1 }}
+                data={comments}
+                keyExtractor={(c) => c.id}
+                contentContainerStyle={{ paddingVertical: 8, gap: 8 }}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator
+                onContentSizeChange={onContentSizeChange}
+                onScroll={onListScroll}
+                scrollEventThrottle={32}
+                removeClippedSubviews={false}
+                initialNumToRender={25}
+                renderItem={({ item }) => {
+                  const mine = item.authorUid === me?.uid;
+                  const deleted = item.deleted === true;
+                  return (
+                    <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
+                      <View
+                        style={[
+                          styles.bubble,
+                          mine ? styles.bubbleMine : styles.bubbleTheirs,
+                          deleted && styles.bubbleDeleted,
+                        ]}
+                      >
+                        <View style={styles.rowTop}>
+                          <Text
+                            style={[styles.msgMeta, deleted && styles.deletedMeta]}
+                            numberOfLines={1}
+                          >
+                            {deleted
+                              ? 'Deleted'
+                              : (item.authorName || (mine ? 'You' : 'Friend'))}{' '}
+                            {!deleted && (
+                              <>• {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
+                            )}
+                          </Text>
+
+                          {!deleted ? (
+                            <Pressable hitSlop={8} onPress={() => requestMenu(item)} style={styles.dotsBtn}>
+                              <Text style={styles.dots}>⋯</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+
+                        <Text style={[styles.msgText, deleted && styles.deletedText]}>
+                          {deleted ? '[deleted]' : item.text}
                         </Text>
-
-                        {/* 3-dots (report for others; delete+report for mine) */}
-                        {!deleted ? (
-                          <Pressable hitSlop={8} onPress={() => requestMenu(item)} style={styles.dotsBtn}>
-                            <Text style={styles.dots}>⋯</Text>
-                          </Pressable>
-                        ) : null}
                       </View>
-
-                      <Text style={[styles.msgText, deleted && styles.deletedText]}>
-                        {deleted ? '[deleted]' : item.text}
-                      </Text>
                     </View>
-                  </View>
-                );
-              }}
-            />
+                  );
+                }}
+              />
+            </>
           )}
 
           {/* Input */}
@@ -321,14 +375,18 @@ export default function PostComments({ post, onClose }: Props) {
               style={styles.input}
               multiline
             />
-            <Pressable onPress={handleSend} disabled={!canSend} style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}>
+            <Pressable
+              onPress={handleSend}
+              disabled={!canSend}
+              style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+            >
               {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
             </Pressable>
           </View>
         </KeyboardAvoidingView>
-      </Pressable>
+      </View>
 
-      {/* ANDROID / CROSS-PLATFORM BOTTOM SHEET FOR 3-DOTS */}
+      {/* Android / cross-platform sheet */}
       <Modal
         visible={!!menuFor && Platform.OS !== 'ios'}
         transparent
@@ -337,7 +395,6 @@ export default function PostComments({ post, onClose }: Props) {
       >
         <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
           <View style={styles.menuSheet}>
-            {/* Report always */}
             <Pressable
               style={styles.menuItem}
               onPress={() => {
@@ -348,7 +405,6 @@ export default function PostComments({ post, onClose }: Props) {
               <Text style={styles.menuText}>Report</Text>
             </Pressable>
 
-            {/* Delete only if mine */}
             {menuFor && me && menuFor.authorUid === me.uid ? (
               <>
                 <View style={styles.menuDivider} />
@@ -371,12 +427,12 @@ export default function PostComments({ post, onClose }: Props) {
           </View>
         </Pressable>
       </Modal>
-    </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  // Backdrop & card
+  // Backdrop (no wrapper stealing pans)
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.28)',
@@ -402,14 +458,27 @@ const styles = StyleSheet.create({
 
   postPreview: { color: '#111827', marginBottom: 8 },
 
-  // Thread area
+  // Thread area (taller height; FlatList uses flex:1 inside)
   threadWrap: {
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
     paddingTop: 8,
-    maxHeight: 340,
+    height: 420,
   },
   loading: { paddingVertical: 16, alignItems: 'center' },
+
+  // Floating scroll-to-top button
+  scrollTopBtn: {
+    position: 'absolute',
+    top: 6,
+    alignSelf: 'center',
+    zIndex: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  scrollTopIcon: { color: '#fff', fontWeight: '800', fontSize: 14 },
 
   // Messages
   msgRow: { flexDirection: 'row' },
@@ -467,7 +536,7 @@ const styles = StyleSheet.create({
   },
   sendTxt: { color: '#fff', fontWeight: '800' },
 
-  // Bottom sheet menu (Android/others)
+  // Android / cross-platform bottom sheet
   menuBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.28)',
@@ -481,7 +550,7 @@ const styles = StyleSheet.create({
   },
   menuItem: { paddingVertical: 14, paddingHorizontal: 16 },
   menuItemDestructive: {},
-  menuText: { fontSize: 16, color: '#0B1426' },
+  menuText: { fontSize: 16, color: '#0B1426', textAlign: 'center' },
   menuTextDestructive: { color: '#DC2626', fontWeight: '700' },
   menuDivider: { height: 1, backgroundColor: '#E5E7EB' },
 });

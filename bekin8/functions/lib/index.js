@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onBeaconCreatedNotify = exports.onBeaconActivatedNotify = void 0;
+exports.deleteAccountData = exports.onBeaconCreatedNotify = exports.onBeaconActivatedNotify = void 0;
 // functions/src/index.ts
 const admin = __importStar(require("firebase-admin"));
 const firestore_1 = require("firebase-functions/v2/firestore");
@@ -184,4 +184,6 @@ exports.onBeaconCreatedNotify = (0, firestore_1.onDocumentCreated)('Beacons/{bea
         }
     }));
 });
+var deleteAccount_1 = require("./deleteAccount");
+Object.defineProperty(exports, "deleteAccountData", { enumerable: true, get: function () { return deleteAccount_1.deleteAccountData; } });
 //# sourceMappingURL=index.js.map

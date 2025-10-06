@@ -13,6 +13,10 @@ import {
   Alert,
   Modal,
   ActionSheetIOS,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
+  StyleProp,
+  ViewStyle,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
@@ -43,7 +47,12 @@ type ChatMessage = {
 
 type ChatRoomProps = {
   beaconId: string;
+  /** Height cap for the chat panel; omit to use tall default */
   maxHeight?: number;
+  /** If provided, renders a local backdrop that closes when tapped (like PostComments) */
+  onClose?: () => void;
+  /** Optional style for the outer card/panel */
+  style?: StyleProp<ViewStyle>;
 };
 
 function getMillis(v: any): number {
@@ -66,7 +75,7 @@ async function resolveMyName(uid: string): Promise<string> {
   return (u?.displayName || '').toString().trim() || 'Me';
 }
 
-export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
+export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: ChatRoomProps) {
   const me = auth.currentUser;
 
   const [loading, setLoading] = useState(true);
@@ -85,6 +94,9 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const pendingScrollRef = useRef(false);
   const didInitialScrollRef = useRef(false);
+
+  // Show a small "scroll to top" arrow when not at the top
+  const [canScrollUp, setCanScrollUp] = useState(false);
 
   // Subscribe to the beacon meta (for TTL + date)
   useEffect(() => {
@@ -152,6 +164,7 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: false });
         didInitialScrollRef.current = true;
+        setCanScrollUp(true); // we started at bottom, so there IS content above
       });
       return;
     }
@@ -159,19 +172,20 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });
         pendingScrollRef.current = false;
+        setCanScrollUp(true);
       });
     }
-  }, [messages]); // <-- key change: watch the array, not just length
+  }, [messages]);
 
   const iAmIn = useMemo(() => {
     if (!me) return false;
     return messages.some((m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid);
   }, [messages, me]);
 
-  const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
+  const canSendMsg = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
   const handleSend = async () => {
-    if (!canSend || !me) return;
+    if (!canSendMsg || !me) return;
     try {
       setSending(true);
       const authorName = await resolveMyName(me.uid);
@@ -277,18 +291,21 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
     }
   };
 
-  if (loading) {
-    return (
-      <View style={[styles.wrap, { maxHeight }]}>
-        <ActivityIndicator />
-      </View>
-    );
-  }
+  // track whether we can scroll up (i.e., not at top)
+  const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = e.nativeEvent.contentOffset.y;
+    setCanScrollUp(y > 8);
+  };
 
-  return (
+  const scrollToTop = () => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  };
+
+  // -------- Render body (the panel) --------
+  const Panel = (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={[styles.wrap, { maxHeight }]}
+      style={[styles.wrap, { maxHeight }, style]}
     >
       {/* Slim header */}
       {(startLabel || true) && (
@@ -311,12 +328,30 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
         </View>
       )}
 
+      {/* Floating "more above" arrow */}
+      {canScrollUp && (
+        <Pressable
+          onPress={scrollToTop}
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.scrollTopBtn,
+            pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to top"
+        >
+          <Text style={styles.scrollTopIcon}>↑</Text>
+        </Pressable>
+      )}
+
       <FlatList
         ref={listRef}
         data={messages}
         keyExtractor={(m) => m.id}
         contentContainerStyle={{ padding: 8, gap: 8 }}
         keyboardShouldPersistTaps="handled"
+        onScroll={onListScroll}
+        scrollEventThrottle={32}
         renderItem={({ item }) => {
           if (item.type === 'system') {
             return (
@@ -380,8 +415,8 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
         />
         <Pressable
           onPress={handleSend}
-          disabled={!canSend}
-          style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+          disabled={!canSendMsg}
+          style={[styles.sendBtn, { opacity: canSendMsg ? 1 : 0.5 }]}
         >
           {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
         </Pressable>
@@ -429,9 +464,42 @@ export default function ChatRoom({ beaconId, maxHeight = 220 }: ChatRoomProps) {
       </Modal>
     </KeyboardAvoidingView>
   );
+
+  // If onClose is provided, mimic PostComments: add a local backdrop that closes on tap
+  if (onClose) {
+    return (
+      <View style={styles.modalShim}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={styles.cardWrap}>{Panel}</View>
+      </View>
+    );
+  }
+
+  // Otherwise just render the panel (as before)
+  if (loading) {
+    return (
+      <View style={[styles.wrap, { maxHeight }]}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+  return Panel;
 }
 
 const styles = StyleSheet.create({
+  // Optional modal-like wrapper (when onClose is passed)
+  modalShim: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  cardWrap: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+
   wrap: {
     borderWidth: 1,
     borderColor: '#E5E7EB',
@@ -463,6 +531,19 @@ const styles = StyleSheet.create({
 
   imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
   imInTextDone: { color: '#065F46' },
+
+  // Floating scroll-to-top button
+  scrollTopBtn: {
+    position: 'absolute',
+    top: 6,
+    alignSelf: 'center',
+    zIndex: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  scrollTopIcon: { color: '#fff', fontWeight: '800', fontSize: 14 },
 
   // Message rows
   msgRow: { flexDirection: 'row', alignItems: 'flex-start' },

@@ -704,7 +704,8 @@ export default function HomeScreen() {
           onRequestClose={() => setSelectedBeacon(null)}
         >
           <View style={styles.modalBackdropCenter}>
-            <View style={styles.detailCard}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setSelectedBeacon(null)} />
+            <View style={styles.detailCard} pointerEvents="box-none">
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Beacon</Text>
                 <Pressable onPress={() => setSelectedBeacon(null)}>
@@ -719,7 +720,7 @@ export default function HomeScreen() {
                     <Text style={styles.detailMsg}>{selectedBeacon.message}</Text>
                   </View>
                   <View style={{ marginTop: 12 }}>
-                    <ChatRoom beaconId={selectedBeacon.id} maxHeight={260} />
+                    <ChatRoom beaconId={selectedBeacon.id} maxHeight={420} />
                   </View>
                 </>
               )}
