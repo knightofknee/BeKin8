@@ -10,6 +10,11 @@ import {
   Pressable,
   TextInput,
   ActivityIndicator,
+  Platform,
+  KeyboardAvoidingView,
+  Keyboard,
+  InputAccessoryView,
+  ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
@@ -64,6 +69,8 @@ function getMillis(v: any): number {
 }
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
+const MSG_ACCESSORY_ID = 'beacon-msg-accessory';
+const IOS_ACCESSORY_HEIGHT = 48;
 
 async function resolveMyOwnerName(user: { uid: string; displayName?: string | null }) {
   let ownerName = (user.displayName || '').toString().trim();
@@ -615,84 +622,111 @@ export default function HomeScreen() {
         {/* Options Modal */}
         <Modal visible={optionsOpen} animationType="slide" transparent>
           <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Schedule / Edit Beacon</Text>
-                <Pressable onPress={() => setOptionsOpen(false)}>
-                  <Text style={styles.close}>✕</Text>
-                </Pressable>
-              </View>
-
-              {/* Day */}
-              <Text style={styles.modalLabel}>Day</Text>
-              <View style={styles.daysWrap}>
-                {next7Days.map((d) => (
-                  <Pressable
-                    key={d.offset}
-                    onPress={() => setDayOffset(d.offset)}
-                    style={[styles.dayChip, d.offset === dayOffset && styles.dayChipActive]}
-                  >
-                    <Text style={[styles.dayChipText, d.offset === dayOffset && styles.dayChipTextActive]}>
-                      {d.label}
-                    </Text>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'position' : 'height'}
+              keyboardVerticalOffset={0}
+              style={{ width: '100%' }}
+            >
+              <View style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Schedule / Edit Beacon</Text>
+                  <Pressable onPress={() => setOptionsOpen(false)}>
+                    <Text style={styles.close}>✕</Text>
                   </Pressable>
-                ))}
-              </View>
-
-              {/* Friend Groups */}
-              <Text style={[styles.modalLabel, { marginTop: 12 }]}>
-                Friend Groups (if none selected, all friends can see)
-              </Text>
-              {loadingGroups ? (
-                <View style={{ paddingVertical: 6 }}>
-                  <ActivityIndicator />
                 </View>
-              ) : groups.length ? (
-                <View style={styles.daysWrap}>
-                  {groups.map((g) => {
-                    const selected = selectedGroupIds.includes(g.id);
-                    return (
+
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? IOS_ACCESSORY_HEIGHT + 8 : 12 }}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {/* Day */}
+                  <Text style={styles.modalLabel}>Day</Text>
+                  <View style={styles.daysWrap}>
+                    {next7Days.map((d) => (
                       <Pressable
-                        key={g.id}
-                        onPress={() =>
-                          setSelectedGroupIds((prev) =>
-                            selected ? prev.filter((x) => x !== g.id) : [...prev, g.id]
-                          )
-                        }
-                        style={[styles.dayChip, selected && styles.dayChipActive]}
+                        key={d.offset}
+                        onPress={() => setDayOffset(d.offset)}
+                        style={[styles.dayChip, d.offset === dayOffset && styles.dayChipActive]}
                       >
-                        <Text style={[styles.dayChipText, selected && styles.dayChipTextActive]}>{g.name}</Text>
+                        <Text style={[styles.dayChipText, d.offset === dayOffset && styles.dayChipTextActive]}>
+                          {d.label}
+                        </Text>
                       </Pressable>
-                    );
-                  })}
-                </View>
-              ) : (
-                <Text style={{ color: '#667085', marginBottom: 6 }}>
-                  No groups yet — create some in Friends.
-                </Text>
-              )}
+                    ))}
+                  </View>
 
-              {/* Message */}
-              <Text style={[styles.modalLabel, { marginTop: 12 }]}>Message</Text>
-              <TextInput
-                style={styles.msgInput}
-                placeholder={DEFAULT_BEACON_MESSAGE}
-                value={message}
-                onChangeText={setMessage}
-                maxLength={140}
-                multiline
-              />
-              <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
+                  {/* Friend Groups */}
+                  <Text style={[styles.modalLabel, { marginTop: 12 }]}>
+                    Friend Groups (if none selected, all friends can see)
+                  </Text>
+                  {loadingGroups ? (
+                    <View style={{ paddingVertical: 6 }}>
+                      <ActivityIndicator />
+                    </View>
+                  ) : groups.length ? (
+                    <View style={styles.daysWrap}>
+                      {groups.map((g) => {
+                        const selected = selectedGroupIds.includes(g.id);
+                        return (
+                          <Pressable
+                            key={g.id}
+                            onPress={() =>
+                              setSelectedGroupIds((prev) =>
+                                selected ? prev.filter((x) => x !== g.id) : [...prev, g.id]
+                              )
+                            }
+                            style={[styles.dayChip, selected && styles.dayChipActive]}
+                          >
+                            <Text style={[styles.dayChipText, selected && styles.dayChipTextActive]}>{g.name}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    <Text style={{ color: '#667085', marginBottom: 6 }}>
+                      No groups yet — create some in Friends.
+                    </Text>
+                  )}
 
-              <View style={styles.modalBtnRow}>
-                <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setOptionsOpen(false)}>
-                  <Text style={styles.btnGhostText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={saveBeaconOptions}>
-                  <Text style={styles.btnPrimaryText}>Save</Text>
-                </TouchableOpacity>
+                  {/* Message */}
+                  <Text style={[styles.modalLabel, { marginTop: 12 }]}>Message</Text>
+                  <TextInput
+                    style={styles.msgInput}
+                    placeholder={DEFAULT_BEACON_MESSAGE}
+                    value={message}
+                    onChangeText={setMessage}
+                    maxLength={140}
+                    multiline
+                    inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
+                    returnKeyType="done"
+                    blurOnSubmit={false}
+                  />
+                  <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
+
+                  <View style={styles.modalBtnRow}>
+                    <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setOptionsOpen(false)}>
+                      <Text style={styles.btnGhostText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={saveBeaconOptions}>
+                      <Text style={styles.btnPrimaryText}>Save</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
               </View>
-            </View>
+            </KeyboardAvoidingView>
+            {Platform.OS === 'ios' && (
+              <InputAccessoryView nativeID={MSG_ACCESSORY_ID}>
+                <View style={{ borderTopWidth: 1, borderTopColor: '#E5E7EB', backgroundColor: '#fff' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', padding: 8 }}>
+                    <View style={{ flex: 1 }} />
+                    <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
+                      <Text style={{ fontWeight: '700', color: '#0B1426' }}>Done</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </InputAccessoryView>
+            )}
           </View>
         </Modal>
 

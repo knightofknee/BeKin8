@@ -8,7 +8,6 @@ import {
   TextInput,
   Pressable,
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   Alert,
   Modal,
@@ -17,6 +16,9 @@ import {
   NativeScrollEvent,
   StyleProp,
   ViewStyle,
+  Keyboard,
+  InputAccessoryView,
+  Dimensions,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
@@ -47,11 +49,8 @@ type ChatMessage = {
 
 type ChatRoomProps = {
   beaconId: string;
-  /** Height cap for the chat panel; omit to use tall default */
   maxHeight?: number;
-  /** If provided, renders a local backdrop that closes when tapped (like PostComments) */
   onClose?: () => void;
-  /** Optional style for the outer card/panel */
   style?: StyleProp<ViewStyle>;
 };
 
@@ -75,6 +74,8 @@ async function resolveMyName(uid: string): Promise<string> {
   return (u?.displayName || '').toString().trim() || 'Me';
 }
 
+const CHAT_ACCESSORY_ID = 'chatroom-accessory';
+
 export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: ChatRoomProps) {
   const me = auth.currentUser;
 
@@ -83,22 +84,60 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
 
-  // 3-dots menu state (Android/others)
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
 
-  // Slim header state
   const [startLabel, setStartLabel] = useState<string>('');
   const expiresAtRef = useRef<number | null>(null);
 
-  // 🔽 FlatList ref + scroll flags
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const pendingScrollRef = useRef(false);
   const didInitialScrollRef = useRef(false);
 
-  // Show a small "scroll to top" arrow when not at the top
   const [canScrollUp, setCanScrollUp] = useState(false);
 
-  // Subscribe to the beacon meta (for TTL + date)
+  // ---- Only-lift-by-overlap logic (iOS) ----
+  const containerRef = useRef<View>(null);
+  const lastKbTopRef = useRef<number | null>(null); // screenY of keyboard top
+  const [lift, setLift] = useState(0);
+
+  const recalcLift = (kbTop?: number | null) => {
+    if (Platform.OS !== 'ios') return;
+    if (typeof kbTop === 'number') lastKbTopRef.current = kbTop;
+    requestAnimationFrame(() => {
+      containerRef.current?.measureInWindow((_x, y, _w, h) => {
+        const panelBottom = y + h;
+        const keyboardTop =
+          typeof (kbTop ?? lastKbTopRef.current) === 'number'
+            ? (kbTop ?? lastKbTopRef.current)!
+            : Dimensions.get('window').height;
+        const overlap = panelBottom - keyboardTop; // positive if covered
+        setLift(overlap > 0 ? overlap : 0);
+      });
+    });
+  };
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const onWillShow = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
+    const onWillChange = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
+    const onWillHide = () => {
+      lastKbTopRef.current = null;
+      setLift(0);
+    };
+    const s1 = Keyboard.addListener('keyboardWillShow', onWillShow);
+    const s2 = Keyboard.addListener('keyboardWillChangeFrame', onWillChange);
+    const s3 = Keyboard.addListener('keyboardWillHide', onWillHide);
+    return () => {
+      s1.remove();
+      s2.remove();
+      s3.remove();
+    };
+  }, []);
+
+  // Recompute after layout changes too
+  const onContainerLayout = () => recalcLift(null);
+
+  // ---- Data subscriptions ----
   useEffect(() => {
     const ref = doc(db, 'Beacons', beaconId);
     const unsub = onSnapshot(
@@ -129,7 +168,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     return () => unsub();
   }, [beaconId]);
 
-  // Subscribe to messages
   useEffect(() => {
     const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
     const q = query(col, orderBy('createdAt', 'asc'), limit(300));
@@ -156,15 +194,13 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     return () => unsub();
   }, [beaconId]);
 
-  // ✅ Scroll logic:
-  // 1) After first load with content, scroll to bottom once.
-  // 2) Whenever we have a pending scroll (after sending), scroll on ANY messages update.
+  // Scroll-to-bottom behaviors
   useEffect(() => {
     if (messages.length > 0 && !didInitialScrollRef.current) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: false });
         didInitialScrollRef.current = true;
-        setCanScrollUp(true); // we started at bottom, so there IS content above
+        setCanScrollUp(true);
       });
       return;
     }
@@ -202,7 +238,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       });
 
       setText('');
-      // Ask to scroll once snapshot includes/updates our row
       pendingScrollRef.current = true;
     } catch (e) {
       Alert.alert('Send failed', 'Please try again.');
@@ -234,7 +269,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     }
   };
 
-  // Menu helpers (unchanged)
   const openMenu = (msg: ChatMessage) => {
     if (msg.type === 'system') return;
     if (Platform.OS === 'ios' && ActionSheetIOS) {
@@ -291,7 +325,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     }
   };
 
-  // track whether we can scroll up (i.e., not at top)
   const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     setCanScrollUp(y > 8);
@@ -301,13 +334,34 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     listRef.current?.scrollToOffset({ offset: 0, animated: true });
   };
 
-  // -------- Render body (the panel) --------
-  const Panel = (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={[styles.wrap, { maxHeight }, style]}
-    >
-      {/* Slim header */}
+  const ComposerRow = (
+    <View style={styles.inputRow}>
+      <TextInput
+        value={text}
+        onChangeText={setText}
+        placeholder="Message"
+        placeholderTextColor="#9CA3AF"
+        editable
+        style={styles.input}
+        multiline
+        onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
+        inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
+        blurOnSubmit={false}
+        returnKeyType="send"
+        onSubmitEditing={handleSend}
+      />
+      <Pressable
+        onPress={handleSend}
+        disabled={!canSendMsg}
+        style={[styles.sendBtn, { opacity: canSendMsg ? 1 : 0.5 }]}
+      >
+        {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
+      </Pressable>
+    </View>
+  );
+
+  const PanelBody = (
+    <>
       {(startLabel || true) && (
         <View style={styles.slimHeader}>
           <Text style={styles.slimDate}>{startLabel || 'Beacon'}</Text>
@@ -328,7 +382,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         </View>
       )}
 
-      {/* Floating "more above" arrow */}
       {canScrollUp && (
         <Pressable
           onPress={scrollToTop}
@@ -348,7 +401,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         ref={listRef}
         data={messages}
         keyExtractor={(m) => m.id}
-        contentContainerStyle={{ padding: 8, gap: 8 }}
+        contentContainerStyle={{ padding: 8, gap: 8, paddingBottom: 8 }}
         keyboardShouldPersistTaps="handled"
         onScroll={onListScroll}
         scrollEventThrottle={32}
@@ -363,7 +416,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
           const mine = item.authorUid === me?.uid;
 
-          // Dots are outside the bubble so they never overlap the meta line
           return (
             <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
               {!mine && (
@@ -403,26 +455,8 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         }}
       />
 
-      <View style={styles.inputRow}>
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder="Message"
-          placeholderTextColor="#9CA3AF"
-          editable
-          style={styles.input}
-          multiline
-        />
-        <Pressable
-          onPress={handleSend}
-          disabled={!canSendMsg}
-          style={[styles.sendBtn, { opacity: canSendMsg ? 1 : 0.5 }]}
-        >
-          {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
-        </Pressable>
-      </View>
+      {ComposerRow}
 
-      {/* Android/others action sheet */}
       <Modal
         visible={!!menuFor && Platform.OS !== 'ios'}
         transparent
@@ -462,20 +496,35 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           </View>
         </Pressable>
       </Modal>
-    </KeyboardAvoidingView>
+    </>
   );
 
-  // If onClose is provided, mimic PostComments: add a local backdrop that closes on tap
+  // ----- Render (apply only-overlap lift) -----
+  const translated = Platform.OS === 'ios' && lift > 0 ? { transform: [{ translateY: -lift }] } : null;
+
   if (onClose) {
     return (
-      <View style={styles.modalShim}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.cardWrap}>{Panel}</View>
-      </View>
+      <>
+        <View style={styles.modalShim}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+          <View ref={containerRef} onLayout={onContainerLayout} style={[styles.cardWrap, translated]}>
+            <View style={[styles.wrap, { maxHeight }, style]}>{PanelBody}</View>
+          </View>
+        </View>
+
+        {Platform.OS === 'ios' && (
+          <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
+            <View style={styles.iosAccessory}>
+              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
+                <Text style={styles.iosDoneText}>Done</Text>
+              </Pressable>
+            </View>
+          </InputAccessoryView>
+        )}
+      </>
     );
   }
 
-  // Otherwise just render the panel (as before)
   if (loading) {
     return (
       <View style={[styles.wrap, { maxHeight }]}>
@@ -483,11 +532,49 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       </View>
     );
   }
-  return Panel;
+
+  return (
+    <>
+      <View
+        ref={containerRef}
+        onLayout={onContainerLayout}
+        style={[styles.wrap, { maxHeight }, style, translated]}
+      >
+        {PanelBody}
+      </View>
+
+      {Platform.OS === 'ios' && (
+        <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
+          <View style={styles.iosAccessory}>
+            <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
+              <Text style={styles.iosDoneText}>Done</Text>
+            </Pressable>
+          </View>
+        </InputAccessoryView>
+      )}
+    </>
+  );
 }
 
 const styles = StyleSheet.create({
-  // Optional modal-like wrapper (when onClose is passed)
+  // iOS input accessory
+  iosAccessory: {
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 6,
+  },
+  iosDoneBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(15,23,42,0.08)',
+  },
+  iosDoneText: { fontWeight: '700', color: '#0B1426' },
+
   modalShim: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.28)',
@@ -508,7 +595,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
 
-  // Slim header
   slimHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -528,11 +614,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#2F6FED',
   },
   imInText: { color: '#fff', fontWeight: '800', fontSize: 12 },
-
   imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
   imInTextDone: { color: '#065F46' },
 
-  // Floating scroll-to-top button
   scrollTopBtn: {
     position: 'absolute',
     top: 6,
@@ -545,7 +629,6 @@ const styles = StyleSheet.create({
   },
   scrollTopIcon: { color: '#fff', fontWeight: '800', fontSize: 14 },
 
-  // Message rows
   msgRow: { flexDirection: 'row', alignItems: 'flex-start' },
   msgRowMine: { justifyContent: 'flex-end' },
   msgRowTheirs: { justifyContent: 'flex-start' },
@@ -563,7 +646,6 @@ const styles = StyleSheet.create({
   msgMeta: { fontSize: 11, color: '#64748B', marginBottom: 2 },
   msgText: { color: '#0B1426', fontSize: 15, lineHeight: 20 },
 
-  // Dots OUTSIDE the bubble
   dotsOutside: {
     width: 28,
     height: 28,
@@ -573,17 +655,16 @@ const styles = StyleSheet.create({
   },
   dots: { fontSize: 16, color: '#64748B' },
 
-  // Centered system line
   systemRow: { alignItems: 'center', paddingVertical: 2, alignSelf: 'center' },
   systemText: { color: '#64748B', fontStyle: 'italic', fontSize: 12 },
 
-  // Composer
   inputRow: {
     flexDirection: 'row',
     gap: 8,
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
     padding: 8,
+    backgroundColor: '#fff',
   },
   input: {
     flex: 1,
@@ -607,7 +688,6 @@ const styles = StyleSheet.create({
   },
   sendTxt: { color: '#fff', fontWeight: '800' },
 
-  // Bottom sheet menu (Android/others)
   menuBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.28)',

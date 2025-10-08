@@ -1,6 +1,16 @@
 // components/BeaconScheduler.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  ActivityIndicator,
+  Platform,
+  TouchableWithoutFeedback,
+  Keyboard,
+  ScrollView,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import {
@@ -13,6 +23,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
+import KeyboardAware from "./KeyboardAware";
 
 type FriendGroup = {
   id: string;
@@ -36,6 +47,24 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
   const [friendGroups, setFriendGroups] = useState<FriendGroup[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(initialGroupIds || []);
   const [saving, setSaving] = useState(false);
+
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      () => setKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => setKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   const me = auth.currentUser;
 
   // --- Load friend groups from BOTH places; **skip unnamed**  ---
@@ -180,52 +209,74 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
   const showEmptyHint = !friendGroups.length;
 
   return (
-    <View style={styles.container}>
-      {/* Day selector */}
-      <Text style={styles.label}>Day</Text>
-      <View style={styles.rowWrap}>
-        {daysOfWeek.map((day) => {
-          const selected = selectedDays.includes(day);
-          return (
-            <Pressable key={day} onPress={() => toggleDay(day)} style={[styles.chip, selected && styles.chipActive]}>
-              <Text style={[styles.chipText, selected && styles.chipTextActive]}>{day}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
+    <KeyboardAware
+      // For a sheet-like panel, move the entire content above the keyboard.
+      behaviorIOS="position"
+      headerHeight={0}
+      style={styles.flex}
+    >
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.container,
+            keyboardVisible && { paddingBottom: 24 }, // keep last controls visible
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Day selector */}
+          <Text style={styles.label}>Day</Text>
+          <View style={styles.rowWrap}>
+            {daysOfWeek.map((day) => {
+              const selected = selectedDays.includes(day);
+              return (
+                <Pressable key={day} onPress={() => toggleDay(day)} style={[styles.chip, selected && styles.chipActive]}>
+                  <Text style={[styles.chipText, selected && styles.chipTextActive]}>{day}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
-      {/* Friend groups selector */}
-      <Text style={[styles.label, { marginTop: 16 }]}>Friend Groups</Text>
+          {/* Friend groups selector */}
+          <Text style={[styles.label, { marginTop: 16 }]}>Friend Groups</Text>
 
-      {showEmptyHint ? (
-        <View style={styles.emptyHintBox}>
-          <Text style={styles.emptyHintText}>You don’t have any friend groups yet.</Text>
-          <Text style={[styles.emptyHintText, { marginTop: 2 }]}>Create groups from the Friends screen.</Text>
-          <Pressable onPress={() => router.push("/friends")} style={styles.hintBtn}>
-            <Text style={styles.hintBtnText}>Open Friends</Text>
-          </Pressable>
-        </View>
-      ) : (
-        <View style={styles.rowWrap}>
-          {friendGroups.map((g) => {
-            const selected = selectedGroupIds.includes(g.id);
-            return (
-              <Pressable
-                key={`${g.source}:${g.id}`}
-                onPress={() => toggleGroup(g.id)}
-                style={[styles.chip, selected && styles.chipActive]}
-              >
-                <Text style={[styles.chipText, selected && styles.chipTextActive]}>{g.name}</Text>
+          {showEmptyHint ? (
+            <View style={styles.emptyHintBox}>
+              <Text style={styles.emptyHintText}>You don’t have any friend groups yet.</Text>
+              <Text style={[styles.emptyHintText, { marginTop: 2 }]}>Create groups from the Friends screen.</Text>
+              <Pressable onPress={() => router.push("/friends")} style={styles.hintBtn}>
+                <Text style={styles.hintBtnText}>Open Friends</Text>
               </Pressable>
-            );
-          })}
-        </View>
-      )}
+            </View>
+          ) : (
+            <View style={styles.rowWrap}>
+              {friendGroups.map((g) => {
+                const selected = selectedGroupIds.includes(g.id);
+                return (
+                  <Pressable
+                    key={`${g.source}:${g.id}`}
+                    onPress={() => toggleGroup(g.id)}
+                    style={[styles.chip, selected && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, selected && styles.chipTextActive]}>{g.name}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
 
-      <Pressable onPress={saveBeacon} disabled={saving} style={[styles.saveBtn, saving && { opacity: 0.6 }]}>
-        {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Beacon</Text>}
-      </Pressable>
-    </View>
+          <Pressable onPress={saveBeacon} disabled={saving} style={[styles.saveBtn, saving && { opacity: 0.6 }]}>
+            {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Beacon</Text>}
+          </Pressable>
+        </ScrollView>
+      </TouchableWithoutFeedback>
+
+      {keyboardVisible && (
+        <Pressable accessibilityLabel="Dismiss keyboard" onPress={Keyboard.dismiss} style={styles.keyboardDismissFab}>
+          <Text style={styles.keyboardDismissFabText}>Done</Text>
+        </Pressable>
+      )}
+    </KeyboardAware>
   );
 }
 
@@ -277,4 +328,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   saveBtnText: { color: "#fff", fontWeight: "700" },
+
+  flex: { flex: 1 },
+
+  keyboardDismissFab: {
+    position: "absolute",
+    right: 16,
+    bottom: Platform.select({ ios: 24, android: 16 }),
+    backgroundColor: colors.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  keyboardDismissFabText: { color: "#fff", fontWeight: "700" },
 });

@@ -4,7 +4,6 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -16,7 +15,9 @@ import {
   NativeSyntheticEvent,
   NativeScrollEvent,
   LayoutChangeEvent,
-  InteractionManager,
+  KeyboardAvoidingView,
+  InputAccessoryView,
+  Keyboard,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
@@ -75,6 +76,9 @@ async function resolveMyName(uid: string): Promise<string> {
   return 'Me';
 }
 
+const ACCESSORY_ID = 'postcomments-accessory';
+const IOS_ACCESSORY_HEIGHT = 56;
+
 export default function PostComments({ post, onClose }: Props) {
   const me = auth.currentUser;
   const [loading, setLoading] = useState(true);
@@ -82,10 +86,8 @@ export default function PostComments({ post, onClose }: Props) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
 
-  // 3-dots menu state
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
 
-  // FlatList scroll wiring
   const listRef = useRef<FlatList<Comment>>(null);
   const didInitialScrollRef = useRef(false);
   const pendingScrollRef = useRef(false);
@@ -94,19 +96,16 @@ export default function PostComments({ post, onClose }: Props) {
     if (!didInitialScrollRef.current && comments.length > 0) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: false });
-        // double-pass for safety during modal layout
         requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
         didInitialScrollRef.current = true;
       });
     }
   }, [comments.length]);
 
-  // For the ↑ button
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [contentHeight, setContentHeight] = useState(0);
   const [listHeight, setListHeight] = useState(0);
 
-  // subscribe to comments
   useEffect(() => {
     const col = collection(db, 'Posts', post.id, 'comments');
     const qy = query(col, orderBy('createdAt', 'asc'), limit(300));
@@ -133,7 +132,6 @@ export default function PostComments({ post, onClose }: Props) {
     return () => unsub();
   }, [post.id]);
 
-  // ---- ALWAYS OPEN AT BOTTOM (robust to modal animation/layout)
   useEffect(() => {
     ensureInitialScroll();
     if (pendingScrollRef.current) {
@@ -144,25 +142,18 @@ export default function PostComments({ post, onClose }: Props) {
     }
   }, [comments, ensureInitialScroll]);
 
-  const onListLayout = (e: LayoutChangeEvent) => {
-    setListHeight(e.nativeEvent.layout.height);
-  };
-
+  const onListLayout = (e: LayoutChangeEvent) => setListHeight(e.nativeEvent.layout.height);
   const onContentSizeChange = (_w: number, h: number) => {
     setContentHeight(h);
     const canScroll = h > listHeight + 1;
     if (!canScroll) setShowScrollTop(false);
   };
-
   const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     const canScroll = contentHeight > listHeight + 1;
     setShowScrollTop(canScroll && y > 8);
   };
-
-  const scrollToTop = () => {
-    listRef.current?.scrollToOffset({ offset: 0, animated: true });
-  };
+  const scrollToTop = () => listRef.current?.scrollToOffset({ offset: 0, animated: true });
 
   const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
@@ -179,13 +170,12 @@ export default function PostComments({ post, onClose }: Props) {
         deleted: false,
       });
       setText('');
-      pendingScrollRef.current = true; // scroll after snapshot lands
+      pendingScrollRef.current = true;
     } finally {
       setSending(false);
     }
   };
 
-  // Report/Delete
   const doReport = async (comment: Comment) => {
     if (!me) return;
     try {
@@ -255,135 +245,141 @@ export default function PostComments({ post, onClose }: Props) {
   };
 
   return (
-    <View style={styles.backdrop}>
-      {/* outside tap closes */}
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+    <>
+      <View style={styles.backdrop}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-      <View style={styles.card} pointerEvents="box-none">
-        {/* Header */}
-        <View style={styles.headerRow}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarTxt}>
-              {(post.authorUsername?.[0] || 'F').toUpperCase()}
-            </Text>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.author}>{post.authorUsername}</Text>
-            <Text style={styles.meta}>{post.createdAt.toLocaleString()}</Text>
-          </View>
-          <Pressable hitSlop={10} onPress={onClose}>
-            <Text style={styles.close}>✕</Text>
-          </Pressable>
-        </View>
-
-        {/* Post preview */}
-        <Text style={styles.postPreview} numberOfLines={2}>
-          {post.content}
-        </Text>
-
-        {/* Thread area (taller) */}
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.threadWrap}
-          onLayout={ensureInitialScroll}
-        >
-          {loading ? (
-            <View style={styles.loading}>
-              <ActivityIndicator />
-            </View>
-          ) : (
-            <>
-              {showScrollTop && (
-                <Pressable
-                  onPress={scrollToTop}
-                  hitSlop={10}
-                  style={({ pressed }) => [
-                    styles.scrollTopBtn,
-                    pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Scroll to top"
-                >
-                  <Text style={styles.scrollTopIcon}>↑</Text>
+        {/* Center container STAYS centered; KAV moves the CARD only */}
+        <View style={styles.centerWrap} pointerEvents="box-none">
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'position' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? IOS_ACCESSORY_HEIGHT : 0}
+            style={styles.kav}
+          >
+            <View style={styles.card} pointerEvents="box-none">
+              {/* Header */}
+              <View style={styles.headerRow}>
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarTxt}>
+                    {(post.authorUsername?.[0] || 'F').toUpperCase()}
+                  </Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.author}>{post.authorUsername}</Text>
+                  <Text style={styles.meta}>{post.createdAt.toLocaleString()}</Text>
+                </View>
+                <Pressable hitSlop={10} onPress={onClose}>
+                  <Text style={styles.close}>✕</Text>
                 </Pressable>
-              )}
+              </View>
 
-              <FlatList
-                ref={listRef}
-                onLayout={onListLayout}
-                style={{ flex: 1 }}
-                data={comments}
-                keyExtractor={(c) => c.id}
-                contentContainerStyle={{ paddingVertical: 8, gap: 8 }}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator
-                onContentSizeChange={onContentSizeChange}
-                onScroll={onListScroll}
-                scrollEventThrottle={32}
-                removeClippedSubviews={false}
-                initialNumToRender={25}
-                renderItem={({ item }) => {
-                  const mine = item.authorUid === me?.uid;
-                  const deleted = item.deleted === true;
-                  return (
-                    <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
-                      <View
-                        style={[
-                          styles.bubble,
-                          mine ? styles.bubbleMine : styles.bubbleTheirs,
-                          deleted && styles.bubbleDeleted,
+              {/* Post preview */}
+              <Text style={styles.postPreview} numberOfLines={2}>
+                {post.content}
+              </Text>
+
+              {/* Thread */}
+              <View style={styles.threadWrap}>
+                {loading ? (
+                  <View style={styles.loading}>
+                    <ActivityIndicator />
+                  </View>
+                ) : (
+                  <>
+                    {showScrollTop && (
+                      <Pressable
+                        onPress={scrollToTop}
+                        hitSlop={10}
+                        style={({ pressed }) => [
+                          styles.scrollTopBtn,
+                          pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
                         ]}
+                        accessibilityRole="button"
+                        accessibilityLabel="Scroll to top"
                       >
-                        <View style={styles.rowTop}>
-                          <Text
-                            style={[styles.msgMeta, deleted && styles.deletedMeta]}
-                            numberOfLines={1}
-                          >
-                            {deleted
-                              ? 'Deleted'
-                              : (item.authorName || (mine ? 'You' : 'Friend'))}{' '}
-                            {!deleted && (
-                              <>• {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
-                            )}
-                          </Text>
+                        <Text style={styles.scrollTopIcon}>↑</Text>
+                      </Pressable>
+                    )}
 
-                          {!deleted ? (
-                            <Pressable hitSlop={8} onPress={() => requestMenu(item)} style={styles.dotsBtn}>
-                              <Text style={styles.dots}>⋯</Text>
-                            </Pressable>
-                          ) : null}
-                        </View>
+                    <FlatList
+                      ref={listRef}
+                      onLayout={onListLayout}
+                      style={{ flex: 1 }}
+                      data={comments}
+                      keyExtractor={(c) => c.id}
+                      contentContainerStyle={{ paddingVertical: 8, gap: 8, paddingBottom: 8 }}
+                      keyboardShouldPersistTaps="handled"
+                      showsVerticalScrollIndicator
+                      onContentSizeChange={onContentSizeChange}
+                      onScroll={onListScroll}
+                      scrollEventThrottle={32}
+                      removeClippedSubviews={false}
+                      initialNumToRender={25}
+                      renderItem={({ item }) => {
+                        const mine = item.authorUid === me?.uid;
+                        const deleted = item.deleted === true;
+                        return (
+                          <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
+                            <View
+                              style={[
+                                styles.bubble,
+                                mine ? styles.bubbleMine : styles.bubbleTheirs,
+                                deleted && styles.bubbleDeleted,
+                              ]}
+                            >
+                              <View style={styles.rowTop}>
+                                <Text style={[styles.msgMeta, deleted && styles.deletedMeta]} numberOfLines={1}>
+                                  {deleted ? 'Deleted' : (item.authorName || (mine ? 'You' : 'Friend'))}{' '}
+                                  {!deleted && (
+                                    <>• {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
+                                  )}
+                                </Text>
 
-                        <Text style={[styles.msgText, deleted && styles.deletedText]}>
-                          {deleted ? '[deleted]' : item.text}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                }}
-              />
-            </>
-          )}
+                                {!deleted ? (
+                                  <Pressable hitSlop={8} onPress={() => requestMenu(item)} style={styles.dotsBtn}>
+                                    <Text style={styles.dots}>⋯</Text>
+                                  </Pressable>
+                                ) : null}
+                              </View>
 
-          {/* Input */}
-          <View style={styles.inputRow}>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              placeholder="Add a friendly comment"
-              placeholderTextColor="#9CA3AF"
-              style={styles.input}
-              multiline
-            />
-            <Pressable
-              onPress={handleSend}
-              disabled={!canSend}
-              style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
-            >
-              {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
+                              <Text style={[styles.msgText, deleted && styles.deletedText]}>
+                                {deleted ? '[deleted]' : item.text}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      }}
+                    />
+                  </>
+                )}
+
+                {/* Composer */}
+                <View style={styles.inputRow}>
+                  <TextInput
+                    value={text}
+                    onChangeText={setText}
+                    placeholder="Add a friendly comment"
+                    placeholderTextColor="#9CA3AF"
+                    style={styles.input}
+                    multiline
+                    inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
+                    blurOnSubmit={false}
+                    returnKeyType="send"
+                    onSubmitEditing={handleSend}
+                    onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
+                  />
+                  <Pressable
+                    onPress={handleSend}
+                    disabled={!canSend}
+                    style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+                  >
+                    {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
       </View>
 
       {/* Android / cross-platform sheet */}
@@ -427,30 +423,48 @@ export default function PostComments({ post, onClose }: Props) {
           </View>
         </Pressable>
       </Modal>
-    </View>
+
+      {/* iOS Done bar */}
+      {Platform.OS === 'ios' && (
+        <InputAccessoryView nativeID={ACCESSORY_ID}>
+          <View style={styles.iosAccessory}>
+            <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
+              <Text style={styles.iosDoneText}>Done</Text>
+            </Pressable>
+          </View>
+        </InputAccessoryView>
+      )}
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  // Backdrop (no wrapper stealing pans)
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.28)',
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.28)' },
+
+  // Center the card when keyboard is hidden; no bottom padding so it can be flush when lifted
+  centerWrap: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
-    padding: 16,
+    alignItems: 'stretch',
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 0,
   },
+  kav: {
+    width: '100%'
+  },
+
   card: {
+    width: '100%',
     backgroundColor: '#fff',
     borderRadius: 14,
     padding: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
 
-  // Header
   headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 10 },
-  avatar: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: '#2F6FED', alignItems: 'center', justifyContent: 'center',
-  },
+  avatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#2F6FED', alignItems: 'center', justifyContent: 'center' },
   avatarTxt: { color: '#fff', fontWeight: '800' },
   author: { fontWeight: '800', color: '#0B1426' },
   meta: { color: '#64748B', fontSize: 12 },
@@ -458,16 +472,9 @@ const styles = StyleSheet.create({
 
   postPreview: { color: '#111827', marginBottom: 8 },
 
-  // Thread area (taller height; FlatList uses flex:1 inside)
-  threadWrap: {
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-    paddingTop: 8,
-    height: 420,
-  },
+  threadWrap: { borderTopWidth: 1, borderTopColor: '#E5E7EB', paddingTop: 8, height: 420 },
   loading: { paddingVertical: 16, alignItems: 'center' },
 
-  // Floating scroll-to-top button
   scrollTopBtn: {
     position: 'absolute',
     top: 6,
@@ -480,18 +487,11 @@ const styles = StyleSheet.create({
   },
   scrollTopIcon: { color: '#fff', fontWeight: '800', fontSize: 14 },
 
-  // Messages
   msgRow: { flexDirection: 'row' },
   msgRowMine: { justifyContent: 'flex-end' },
   msgRowTheirs: { justifyContent: 'flex-start' },
 
-  bubble: {
-    maxWidth: '82%',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
-    borderWidth: 1,
-  },
+  bubble: { maxWidth: '82%', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14, borderWidth: 1 },
   bubbleMine: { backgroundColor: '#EEF2FF', borderColor: '#C7DAFF' },
   bubbleTheirs: { backgroundColor: '#F8FAFC', borderColor: '#E5E7EB' },
   bubbleDeleted: { backgroundColor: '#F9FAFB', borderColor: '#F1F5F9' },
@@ -505,7 +505,6 @@ const styles = StyleSheet.create({
   msgMeta: { fontSize: 11, marginBottom: 2, color: '#64748B', flexShrink: 1 },
   deletedMeta: { color: '#94A3B8' },
 
-  // Input
   inputRow: {
     flexDirection: 'row',
     gap: 8,
@@ -536,21 +535,28 @@ const styles = StyleSheet.create({
   },
   sendTxt: { color: '#fff', fontWeight: '800' },
 
-  // Android / cross-platform bottom sheet
-  menuBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-    justifyContent: 'flex-end',
-  },
-  menuSheet: {
-    backgroundColor: '#fff',
-    paddingVertical: 4,
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
-  },
+  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.28)', justifyContent: 'flex-end' },
+  menuSheet: { backgroundColor: '#fff', paddingVertical: 4, borderTopLeftRadius: 14, borderTopRightRadius: 14 },
   menuItem: { paddingVertical: 14, paddingHorizontal: 16 },
   menuItemDestructive: {},
   menuText: { fontSize: 16, color: '#0B1426', textAlign: 'center' },
   menuTextDestructive: { color: '#DC2626', fontWeight: '700' },
   menuDivider: { height: 1, backgroundColor: '#E5E7EB' },
+
+  iosAccessory: {
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 6,
+  },
+  iosDoneBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(15,23,42,0.08)',
+  },
+  iosDoneText: { fontWeight: '700', color: '#0B1426' },
 });

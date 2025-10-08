@@ -1,5 +1,5 @@
 // app/create-post.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  InputAccessoryView,
+  Keyboard,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
@@ -27,20 +29,22 @@ import {
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-// Approximate BottomBar height + cushion
 const BOTTOM_BAR_HEIGHT = 56;
+const ACCESSORY_ID = 'create-post-accessory';
 
 export default function CreatePostScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const [username, setUsername] = useState<string>('');
+  const [username, setUsername] = useState('');
   const [loadingUser, setLoadingUser] = useState(true);
-
   const [title, setTitle] = useState('');
   const [link, setLink] = useState('');
   const [content, setContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  const visibilityTimeout = useRef<NodeJS.Timeout | null>(null);
 
   const wordCount = useMemo(
     () => (content.trim().length ? content.trim().split(/\s+/).length : 0),
@@ -48,27 +52,39 @@ export default function CreatePostScreen() {
   );
   const isCharLimitExceeded = content.length > 10000;
 
+  // keyboard visibility tracking (prevents Done bar when keyboard isn't actually shown)
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      if (visibilityTimeout.current) clearTimeout(visibilityTimeout.current);
+      visibilityTimeout.current = setTimeout(() => setKeyboardVisible(true), 40);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      if (visibilityTimeout.current) clearTimeout(visibilityTimeout.current);
+      visibilityTimeout.current = setTimeout(() => setKeyboardVisible(false), 40);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      if (visibilityTimeout.current) clearTimeout(visibilityTimeout.current);
+    };
+  }, []);
+
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) {
-      router.replace('/'); // kick to login if not signed in
+      router.replace('/');
       return;
     }
-    const fetchProfile = async () => {
+    (async () => {
       try {
-        const profileRef = doc(db, 'Profiles', user.uid);
-        const snap = await getDoc(profileRef);
-        if (snap.exists()) {
-          const data = snap.data() as any;
-          setUsername(data.username ?? '');
-        }
+        const snap = await getDoc(doc(db, 'Profiles', user.uid));
+        if (snap.exists()) setUsername((snap.data() as any).username ?? '');
       } catch (e) {
         console.error('Error fetching profile:', e);
       } finally {
         setLoadingUser(false);
       }
-    };
-    fetchProfile();
+    })();
   }, [router]);
 
   const handleSubmit = async () => {
@@ -97,9 +113,7 @@ export default function CreatePostScreen() {
     }
 
     setSubmitting(true);
-
     try {
-      // enforce 2 posts per week
       const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
       const qRef = query(
         collection(db, 'Posts'),
@@ -109,15 +123,12 @@ export default function CreatePostScreen() {
       );
       const snap = await getDocs(qRef);
       if (snap.size > 1) {
-        Alert.alert(
-          'Posting limit reached',
-          'You have already submitted 2 posts in the past week.'
-        );
+        Alert.alert('Posting limit reached', 'You have already submitted 2 posts in the past week.');
         return;
       }
 
       const tags = (content.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
-      const newPost = {
+      await addDoc(collection(db, 'Posts'), {
         title: title.trim(),
         link: link.trim() || null,
         content,
@@ -125,9 +136,7 @@ export default function CreatePostScreen() {
         authorName: username || null,
         timestamp: Date.now(),
         tags,
-      };
-
-      await addDoc(collection(db, 'Posts'), newPost);
+      });
 
       Alert.alert('Success', 'Your post has been created.');
       router.push('/feed');
@@ -162,20 +171,22 @@ export default function CreatePostScreen() {
           contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
         >
           <Text style={styles.h1}>Create Post</Text>
-          <Text style={styles.subtleCenter}>
-            You are limited to 2 posts in the past week.
-          </Text>
+          <Text style={styles.subtleCenter}>You are limited to 2 posts in the past week.</Text>
 
-          {/* Form fills the vertical space; textarea expands; submit is always visible */}
           <View style={[styles.form, { flex: 1 }]}>
+            {/* TITLE */}
             <TextInput
               value={title}
               onChangeText={setTitle}
               placeholder="Title"
               style={styles.input}
               returnKeyType="next"
+              onFocus={() => setKeyboardVisible(true)}
+              onBlur={() => setKeyboardVisible(false)}
+              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
             />
 
+            {/* LINK */}
             <TextInput
               value={link}
               onChangeText={setLink}
@@ -184,9 +195,12 @@ export default function CreatePostScreen() {
               autoCapitalize="none"
               keyboardType="url"
               returnKeyType="next"
+              onFocus={() => setKeyboardVisible(true)}
+              onBlur={() => setKeyboardVisible(false)}
+              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
             />
 
-            {/* Expanding textarea */}
+            {/* CONTENT */}
             <TextInput
               value={content}
               onChangeText={setContent}
@@ -196,6 +210,11 @@ export default function CreatePostScreen() {
               textAlignVertical="top"
               autoCorrect
               autoCapitalize="sentences"
+              returnKeyType="done"
+              blurOnSubmit={false}
+              onFocus={() => setKeyboardVisible(true)}
+              onBlur={() => setKeyboardVisible(false)}
+              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
             />
 
             <View style={styles.counterRow}>
@@ -217,6 +236,15 @@ export default function CreatePostScreen() {
 
         <BottomBar />
       </KeyboardAvoidingView>
+
+      {/* iOS Done bar for ALL fields — only when keyboard is visible */}
+      {Platform.OS === 'ios' && keyboardVisible && (
+        <InputAccessoryView nativeID={ACCESSORY_ID}>
+          <View style={styles.iosAccessory}>
+            <Button title="Done" color="#007AFF" onPress={() => Keyboard.dismiss()} />
+          </View>
+        </InputAccessoryView>
+      )}
     </SafeAreaView>
   );
 }
@@ -228,10 +256,7 @@ const styles = StyleSheet.create({
   h1: { fontSize: 28, fontWeight: '700', textAlign: 'center', marginVertical: 8 },
   subtleCenter: { textAlign: 'center', opacity: 0.8, marginBottom: 12 },
 
-  form: {
-    gap: 12,
-    marginBottom: 0,
-  },
+  form: { gap: 12, marginBottom: 0 },
 
   input: {
     borderWidth: 1,
@@ -242,7 +267,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
   },
 
-  // Stretches to absorb extra vertical space, but never hides the submit button
   textarea: {
     flex: 1,
     minHeight: 320,
@@ -259,4 +283,14 @@ const styles = StyleSheet.create({
   counterExceeded: { fontSize: 12, color: 'red' },
 
   submitButton: { marginTop: 8 },
+
+  // iOS accessory (right-aligned Done)
+  iosAccessory: {
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    alignItems: 'flex-end',
+  },
 });
