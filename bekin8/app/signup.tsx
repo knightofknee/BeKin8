@@ -7,11 +7,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableWithoutFeedback,
   View,
+  InputAccessoryView,
 } from "react-native";
 import { useRouter, Link } from "expo-router";
 import { createUserWithEmailAndPassword } from "firebase/auth";
@@ -30,11 +32,14 @@ const colors = {
 };
 
 const TOP_OFFSET = 64; // match login offset
+const PW_ACCESSORY_ID = "signup-password-accessory";
+const CONFIRM_ACCESSORY_ID = "signup-confirm-accessory";
 
 export default function SignUp() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  const scrollRef = useRef<ScrollView>(null);
   const emailRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
   const confirmRef = useRef<TextInput>(null);
@@ -82,7 +87,6 @@ export default function SignUp() {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
 
-      // Minimal user doc so other screens can gate on username later
       await setDoc(doc(db, "users", cred.user.uid), {
         uid: cred.user.uid,
         email: trimmedEmail,
@@ -91,7 +95,6 @@ export default function SignUp() {
         createdAt: serverTimestamp(),
       });
 
-      // Instead of requesting push permissions here, send user to the pre-permission screen.
       router.replace("/notifications-permission");
     } catch (e: any) {
       setError(friendlyError(e?.code, e?.message));
@@ -100,34 +103,36 @@ export default function SignUp() {
     }
   };
 
-  // Platform helpers for autofill control
+  // Email behaves normally (can suggest user’s addresses)
   const emailAutoComplete = Platform.select({
     ios: "email",
     android: "email",
     default: "email",
   }) as any;
 
-  const pwAutoComplete = Platform.select({
-    ios: "password-new",      // iOS strong-password suggestion
-    android: "off",           // disable Android Autofill to avoid yellow lock
-    default: "off",
+  // *** Hard block suggestions & autofill for BOTH password fields ***
+  // iOS: oneTimeCode hack kills QuickType/strong password banner for secure text fields
+  const noSuggestTextContentType = Platform.select({
+    ios: "oneTimeCode",
+    default: "none",
   }) as any;
 
-  const confirmAutoComplete = Platform.select({
-    ios: "password-new",
+  const noSuggestAutoComplete = Platform.select({
+    ios: "off",
     android: "off",
     default: "off",
   }) as any;
 
-  const pwTextContentType = Platform.select({
-    ios: "newPassword",
-    default: "none",
+  const pwKeyboardType = Platform.select({
+    ios: "default",
+    android: "visible-password", // avoids Android autofill “lock” UI
+    default: "default",
   }) as any;
 
-  const confirmTextContentType = Platform.select({
-    ios: "newPassword",
-    default: "none",
-  }) as any;
+  // Keep bottom elements visible: give extra bottom padding and gently scroll on focus for lower fields
+  const scrollToEndSoon = () => {
+    requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+  };
 
   return (
     <KeyboardAvoidingView
@@ -136,7 +141,18 @@ export default function SignUp() {
     >
       <SafeAreaView style={{ flex: 1 }}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-          <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
+          <ScrollView
+            ref={scrollRef}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[
+              styles.container,
+              {
+                paddingTop: insets.top + TOP_OFFSET,
+                // Enough bottom space so Confirm + Sign Up button never sit under the keyboard
+                paddingBottom: 48 + insets.bottom,
+              },
+            ]}
+          >
             {/* decorative soft circles (match login) */}
             <View style={styles.blobA} />
             <View style={styles.blobB} />
@@ -177,7 +193,7 @@ export default function SignUp() {
                   onFocus={() => setEmailFocused(true)}
                   onBlur={() => setEmailFocused(false)}
                   returnKeyType="next"
-                  onSubmitEditing={() => passwordRef.current?.focus()}
+                  onSubmitEditing={() => requestAnimationFrame(() => passwordRef.current?.focus())}
                   editable={!loading}
                 />
               </View>
@@ -200,17 +216,20 @@ export default function SignUp() {
                     secureTextEntry={!showPw}
                     autoCapitalize="none"
                     autoCorrect={false}
-                    textContentType={pwTextContentType}
-                    autoComplete={pwAutoComplete}
+                    spellCheck={false}
+                    keyboardType={pwKeyboardType}
+                    textContentType={noSuggestTextContentType}
+                    autoComplete={noSuggestAutoComplete}
+                    inputAccessoryViewID={Platform.OS === "ios" ? PW_ACCESSORY_ID : undefined}
                     // Android autofill protections:
                     importantForAutofill={Platform.OS === "android" ? "no" : "auto"}
                     disableFullscreenUI={Platform.OS === "android"}
                     value={password}
                     onChangeText={setPassword}
-                    onFocus={() => setPwFocused(true)}
+                    onFocus={() => { setPwFocused(true); scrollToEndSoon(); }}
                     onBlur={() => setPwFocused(false)}
                     returnKeyType="next"
-                    onSubmitEditing={() => confirmRef.current?.focus()}
+                    onSubmitEditing={() => requestAnimationFrame(() => confirmRef.current?.focus())}
                     editable={!loading}
                   />
                   <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
@@ -237,14 +256,17 @@ export default function SignUp() {
                     secureTextEntry={!showPw2}
                     autoCapitalize="none"
                     autoCorrect={false}
-                    textContentType={confirmTextContentType}
-                    autoComplete={confirmAutoComplete}
+                    spellCheck={false}
+                    keyboardType={pwKeyboardType}
+                    textContentType={noSuggestTextContentType}
+                    autoComplete={noSuggestAutoComplete}
+                    inputAccessoryViewID={Platform.OS === "ios" ? CONFIRM_ACCESSORY_ID : undefined}
                     // Android autofill protections:
                     importantForAutofill={Platform.OS === "android" ? "no" : "auto"}
                     disableFullscreenUI={Platform.OS === "android"}
                     value={confirmPassword}
                     onChangeText={setConfirmPassword}
-                    onFocus={() => setPw2Focused(true)}
+                    onFocus={() => { setPw2Focused(true); scrollToEndSoon(); }}
                     onBlur={() => setPw2Focused(false)}
                     returnKeyType="go"
                     onSubmitEditing={handleSignUp}
@@ -290,15 +312,27 @@ export default function SignUp() {
                 </Link>
               </View>
             </View>
-          </View>
+          </ScrollView>
         </TouchableWithoutFeedback>
+
+        {/* iOS-only: tiny accessories to remove predictive bar/strong password UI */}
+        {Platform.OS === "ios" && (
+          <>
+            <InputAccessoryView nativeID={PW_ACCESSORY_ID}>
+              <View style={{ height: 1, backgroundColor: "transparent" }} />
+            </InputAccessoryView>
+            <InputAccessoryView nativeID={CONFIRM_ACCESSORY_ID}>
+              <View style={{ height: 1, backgroundColor: "transparent" }} />
+            </InputAccessoryView>
+          </>
+        )}
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, backgroundColor: colors.bg /* top set inline */ },
+  container: { flexGrow: 1, paddingHorizontal: 20, backgroundColor: colors.bg },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: "800", color: colors.text },

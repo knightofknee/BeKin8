@@ -1,5 +1,5 @@
 // app/index.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -13,12 +13,13 @@ import {
   TextInput,
   TouchableWithoutFeedback,
   View,
+  ScrollView,
 } from "react-native";
 import { Link, useRouter, Stack } from "expo-router";
 import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { registerAndSaveExpoToken } from './lib/push';
+import { registerAndSaveExpoToken } from "./lib/push";
 
 const colors = {
   primary: "#2F6FED",
@@ -31,10 +32,14 @@ const colors = {
 };
 
 const TOP_OFFSET = 64; // consistent “reach-friendly” offset
+const BUTTON_HEIGHT = 56;
 
 export default function Index() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+
+  const scrollRef = useRef<ScrollView>(null);
+  const pwRef = useRef<TextInput>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,16 +62,16 @@ export default function Index() {
   }, [router]);
 
   useEffect(() => {
-  const unsub = onAuthStateChanged(auth, async (user) => {
-    if (user) {
-      await registerAndSaveExpoToken();
-      router.replace('/home');
-    } else {
-      setBootChecking(false);
-    }
-  });
-  return unsub;
-}, [router]);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        await registerAndSaveExpoToken();
+        router.replace("/home");
+      } else {
+        setBootChecking(false);
+      }
+    });
+    return unsub;
+  }, [router]);
 
   const handleLogin = async () => {
     setError(null);
@@ -102,24 +107,42 @@ export default function Index() {
     );
   }
 
+  // Enough bottom space so the Enter button sits fully above the keyboard on small devices
+  const bottomPadding = BUTTON_HEIGHT + 20 + insets.bottom;
+
+  const scrollToEndSoon = () => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToEnd({ animated: true });
+    });
+  };
+
   return (
     <>
       <Stack.Screen
         options={{
           headerBackVisible: false,
           gestureEnabled: false,
-          animation: 'fade',
+          animation: "fade",
         }}
       />
 
       <KeyboardAvoidingView
         style={{ flex: 1, backgroundColor: colors.bg }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
+        // If you add a native header, set its height here
+        keyboardVerticalOffset={0}
       >
         <StatusBar barStyle="dark-content" />
         <SafeAreaView style={{ flex: 1 }}>
           <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-            <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
+            <ScrollView
+              ref={scrollRef}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={[
+                styles.container,
+                { paddingTop: insets.top + TOP_OFFSET, paddingBottom: bottomPadding, flexGrow: 1 },
+              ]}
+            >
               {/* decorative soft circles */}
               <View style={styles.blobA} />
               <View style={styles.blobB} />
@@ -160,7 +183,7 @@ export default function Index() {
                     onBlur={() => setEmailFocused(false)}
                     returnKeyType="next"
                     blurOnSubmit
-                    onSubmitEditing={() => Keyboard.dismiss()}
+                    onSubmitEditing={() => pwRef.current?.focus()}
                   />
                 </View>
 
@@ -174,6 +197,7 @@ export default function Index() {
                     ]}
                   >
                     <TextInput
+                      ref={pwRef}
                       style={{ flex: 1 }}
                       placeholder="••••••••"
                       placeholderTextColor={colors.subtle}
@@ -181,8 +205,12 @@ export default function Index() {
                       value={password}
                       editable={!submitting}
                       onChangeText={setPassword}
-                      onFocus={() => setPwFocused(true)}
+                      onFocus={() => {
+                        setPwFocused(true);
+                        scrollToEndSoon();
+                      }}
                       onBlur={() => setPwFocused(false)}
+                      // Keep Keychain suggestions for login (users expect it)
                       textContentType="password"
                       autoComplete="password"
                       returnKeyType="go"
@@ -219,7 +247,7 @@ export default function Index() {
                   </Link>
                 </View>
               </View>
-            </View>
+            </ScrollView>
           </TouchableWithoutFeedback>
         </SafeAreaView>
       </KeyboardAvoidingView>
@@ -230,7 +258,7 @@ export default function Index() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
 
-  container: { flex: 1, paddingHorizontal: 20 /* top padding now set inline with safe-area */ },
+  container: { flexGrow: 1, paddingHorizontal: 20 /* top padding set inline with safe-area */ },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: "800", color: colors.text },
@@ -262,10 +290,11 @@ const styles = StyleSheet.create({
   togglePw: { fontWeight: "700", color: colors.primary },
 
   primaryBtn: {
+    height: 56,
     backgroundColor: colors.primary,
-    paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
+    justifyContent: "center",
     marginTop: 4,
   },
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
