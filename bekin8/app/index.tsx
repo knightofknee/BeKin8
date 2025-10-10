@@ -1,5 +1,5 @@
 // app/index.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -13,13 +13,12 @@ import {
   TextInput,
   TouchableWithoutFeedback,
   View,
-  ScrollView,
 } from "react-native";
-import { Link, useRouter, Stack } from "expo-router";
-import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
+import { Link, Stack } from "expo-router";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { registerAndSaveExpoToken } from "./lib/push";
+import { registerAndSaveExpoToken } from "../lib/push";
 
 const colors = {
   primary: "#2F6FED",
@@ -32,46 +31,17 @@ const colors = {
 };
 
 const TOP_OFFSET = 64; // consistent “reach-friendly” offset
-const BUTTON_HEIGHT = 56;
 
 export default function Index() {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
-
-  const scrollRef = useRef<ScrollView>(null);
-  const pwRef = useRef<TextInput>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [bootChecking, setBootChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [emailFocused, setEmailFocused] = useState(false);
   const [pwFocused, setPwFocused] = useState(false);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        router.replace("/home");
-      } else {
-        setBootChecking(false);
-      }
-    });
-    return unsub;
-  }, [router]);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        await registerAndSaveExpoToken();
-        router.replace("/home");
-      } else {
-        setBootChecking(false);
-      }
-    });
-    return unsub;
-  }, [router]);
 
   const handleLogin = async () => {
     setError(null);
@@ -82,8 +52,8 @@ export default function Index() {
     try {
       setSubmitting(true);
       await signInWithEmailAndPassword(auth, email.trim(), password);
+      // Let the gate redirect to /home. Do optional post-login work:
       await registerAndSaveExpoToken();
-      router.replace("/home");
     } catch (e: any) {
       const code = e?.code || "";
       let msg = "Login failed. Please try again.";
@@ -95,25 +65,6 @@ export default function Index() {
     } finally {
       setSubmitting(false);
     }
-  };
-
-  if (bootChecking) {
-    return (
-      <View style={styles.center}>
-        <StatusBar barStyle="dark-content" />
-        <ActivityIndicator />
-        <Text style={{ marginTop: 12, color: colors.subtle }}>Checking session…</Text>
-      </View>
-    );
-  }
-
-  // Enough bottom space so the Enter button sits fully above the keyboard on small devices
-  const bottomPadding = BUTTON_HEIGHT + 20 + insets.bottom;
-
-  const scrollToEndSoon = () => {
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollToEnd({ animated: true });
-    });
   };
 
   return (
@@ -129,20 +80,11 @@ export default function Index() {
       <KeyboardAvoidingView
         style={{ flex: 1, backgroundColor: colors.bg }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
-        // If you add a native header, set its height here
-        keyboardVerticalOffset={0}
       >
         <StatusBar barStyle="dark-content" />
         <SafeAreaView style={{ flex: 1 }}>
           <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-            <ScrollView
-              ref={scrollRef}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={[
-                styles.container,
-                { paddingTop: insets.top + TOP_OFFSET, paddingBottom: bottomPadding, flexGrow: 1 },
-              ]}
-            >
+            <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
               {/* decorative soft circles */}
               <View style={styles.blobA} />
               <View style={styles.blobB} />
@@ -183,7 +125,7 @@ export default function Index() {
                     onBlur={() => setEmailFocused(false)}
                     returnKeyType="next"
                     blurOnSubmit
-                    onSubmitEditing={() => pwRef.current?.focus()}
+                    onSubmitEditing={() => Keyboard.dismiss()}
                   />
                 </View>
 
@@ -197,7 +139,6 @@ export default function Index() {
                     ]}
                   >
                     <TextInput
-                      ref={pwRef}
                       style={{ flex: 1 }}
                       placeholder="••••••••"
                       placeholderTextColor={colors.subtle}
@@ -205,12 +146,8 @@ export default function Index() {
                       value={password}
                       editable={!submitting}
                       onChangeText={setPassword}
-                      onFocus={() => {
-                        setPwFocused(true);
-                        scrollToEndSoon();
-                      }}
+                      onFocus={() => setPwFocused(true)}
                       onBlur={() => setPwFocused(false)}
-                      // Keep Keychain suggestions for login (users expect it)
                       textContentType="password"
                       autoComplete="password"
                       returnKeyType="go"
@@ -242,12 +179,13 @@ export default function Index() {
 
                 <View style={styles.bottomRow}>
                   <Text style={{ color: colors.subtle }}>New here?</Text>
+                  {/* This now works because /signup is a PUBLIC_ROUTE in the gate */}
                   <Link href="/signup" style={styles.link}>
                     Create an account
                   </Link>
                 </View>
               </View>
-            </ScrollView>
+            </View>
           </TouchableWithoutFeedback>
         </SafeAreaView>
       </KeyboardAvoidingView>
@@ -258,7 +196,7 @@ export default function Index() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
 
-  container: { flexGrow: 1, paddingHorizontal: 20 /* top padding set inline with safe-area */ },
+  container: { flex: 1, paddingHorizontal: 20 },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: "800", color: colors.text },
@@ -290,11 +228,10 @@ const styles = StyleSheet.create({
   togglePw: { fontWeight: "700", color: colors.primary },
 
   primaryBtn: {
-    height: 56,
     backgroundColor: colors.primary,
+    paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
-    justifyContent: "center",
     marginTop: 4,
   },
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },

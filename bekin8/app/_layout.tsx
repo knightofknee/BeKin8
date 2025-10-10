@@ -1,27 +1,60 @@
 // app/_layout.tsx
-import React from "react";
-import { Stack } from "expo-router";
+import React, { useEffect, useMemo } from "react";
+import { Slot, usePathname, useRouter } from "expo-router";
+import { ActivityIndicator, View } from "react-native";
+import * as SplashScreen from "expo-splash-screen";
+import { AuthProvider, useAuth } from "../providers/AuthProvider";
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
+/** Routes that are accessible when NOT signed in */
+const PUBLIC_ROUTES = new Set<string>([
+  "/",          // login
+  "/signup",    // create account
+  // add others if you have them:
+  // "/forgot-password",
+  // "/privacy",
+  // "/legal",
+]);
+
+function Gate() {
+  const { user, initialized } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (!initialized) return;
+
+    if (user) {
+      // Signed-in users shouldn't sit on login/signup
+      if (pathname === "/" || pathname === "/signup") {
+        router.replace("/home");
+      }
+    } else {
+      // Signed-out users must stay on public routes
+      if (!PUBLIC_ROUTES.has(pathname)) {
+        router.replace("/");
+      }
+    }
+
+    SplashScreen.hideAsync().catch(() => {});
+  }, [initialized, user, pathname]);
+
+  if (!initialized) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
+  return <Slot />;
+}
 
 export default function RootLayout() {
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-        // Keep default animations for non-bottom-bar routes
-        animation: "default",
-        // Slightly nicer replace behavior when we redirect after auth
-        animationTypeForReplace: "pop",
-      }}
-    >
-      {/* Bottom-bar destinations: fast, subtle fade */}
-      <Stack.Screen name="home" options={{ animation: "fade" }} />
-      <Stack.Screen name="feed" options={{ animation: "fade" }} />
-      <Stack.Screen name="friends" options={{ animation: "fade" }} />
-      <Stack.Screen name="create-post" options={{ animation: "fade" }} />
-
-      {/* Auth & other routes keep platform default transitions */}
-      <Stack.Screen name="index" options={{ animation: "fade" }} />
-      <Stack.Screen name="signup" options={{ animation: "fade" }} />
-    </Stack>
+    <AuthProvider>
+      <Gate />
+    </AuthProvider>
   );
 }

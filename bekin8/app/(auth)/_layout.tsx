@@ -1,7 +1,7 @@
 // app/(auth)/_layout.tsx
 import { Stack, Redirect } from "expo-router";
 import React from "react";
-import { useAuth } from "../providers/AuthProvider";
+import { useAuth } from "../../providers/AuthProvider";
 
 export default function AuthLayout() {
   const { user, loading } = useAuth();

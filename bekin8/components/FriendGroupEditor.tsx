@@ -11,7 +11,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/firebase.config";
 import {
   arrayUnion,
@@ -28,6 +27,7 @@ import {
   where,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
+import { useAuth } from "../providers/AuthProvider";
 
 export type FriendGroup = {
   id?: string;
@@ -94,7 +94,6 @@ export default function FriendGroupEditor({
   onSaved,
   onDeleted,
 }: Props) {
-  const [meUid, setMeUid] = useState<string | null>(null);
 
   // Editor state
   const [name, setName] = useState(group?.name || "");
@@ -114,13 +113,8 @@ export default function FriendGroupEditor({
   }, [visible, group?.id]);
 
   // subscribe auth (only while visible)
-  useEffect(() => {
-    if (!visible) return;
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setMeUid(u?.uid || null);
-    });
-    return unsub;
-  }, [visible]);
+  const { user, initialized } = useAuth();
+const meUid = visible && initialized ? user?.uid ?? null : null;
 
   // --- Load & subscribe to ALL friends (subcollection, legacy, and edges) ---
   useEffect(() => {

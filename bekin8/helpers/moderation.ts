@@ -1,6 +1,6 @@
 // helpers/moderation.ts
 import { addDoc, collection, serverTimestamp, setDoc, doc } from "firebase/firestore";
-import { db } from "../../firebase.config";
+import { db } from "../firebase.config";
 
 export type ReportPayload = {
   targetType: "post" | "comment" | "user";

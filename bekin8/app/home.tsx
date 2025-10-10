@@ -37,7 +37,7 @@ import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { registerAndSaveExpoToken } from './lib/push';
+import { registerAndSaveExpoToken } from '../lib/push';
 
 // --- date helpers ---
 function startOfDay(d: Date) {

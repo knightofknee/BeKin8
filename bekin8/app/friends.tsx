@@ -10,7 +10,7 @@ import {
   Alert,
   Pressable,
 } from "react-native";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { signOut } from "firebase/auth";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import {
@@ -35,11 +35,13 @@ import FriendRequestsSection from "@/components/FriendRequestsSection";
 import FriendsList from "@/components/FriendsList";
 import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEditor";
 import BottomBar from "@/components/BottomBar";
+import { useAuth } from "../providers/AuthProvider";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBar
 
 export default function FriendsScreen() {
+  const { user, initialized } = useAuth();
   const [notifyByUid, setNotifyByUid] = useState<Record<string, boolean>>({});
   const router = useRouter();
 
@@ -138,79 +140,83 @@ export default function FriendsScreen() {
   };
 
   useEffect(() => {
-    let cleanups: Array<() => void> = [];
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      cleanups.forEach((fn) => fn());
-      cleanups = [];
+    // Wait until auth state is known; if logged out, clear state and exit.
+    if (!initialized) return;
 
-      if (!user) {
-        // Clear local state
-        setFriends([]);
-        setIncoming([]);
-        setOutgoing([]);
-        setCurrentUsername(null);
-        setSubFriends([]);
-        setLegacyFriends([]);
-        setEdges([]);
-        setGroups([]);
-        setEditingGroup(null);
-        setGroupEditorOpen(false);
-        setBlockedUids(new Set());
+    // If `user` is null, clear local state (screen will be unreachable anyway due to the gate).
+    if (!user) {
+      setFriends([]);
+      setIncoming([]);
+      setOutgoing([]);
+      setCurrentUsername(null);
+      setSubFriends([]);
+      setLegacyFriends([]);
+      setEdges([]);
+      setGroups([]);
+      setEditingGroup(null);
+      setGroupEditorOpen(false);
+      setBlockedUids(new Set());
+      setNotifyByUid({});
+      return;
+    }
 
-        // 🚪 Hard-guard: if unauthenticated, push to login and clear history
-        router.replace("/");
-        return;
-      }
+    // Logged in: set up all Firestore subscriptions.
+    const cleanups: Array<() => void> = [];
 
-      fetchCurrentUsername();
+    // One-time per mount post-auth task
+    fetchCurrentUsername();
 
-      // Subscribe: incoming pending
+    // Incoming pending
+    {
       const qIn = query(
         collection(db, "FriendRequests"),
         where("receiverUid", "==", user.uid),
         where("status", "==", "pending")
       );
-      const unsubIn = onSnapshot(qIn, (snap) => {
-        setIncoming(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
-      });
-      cleanups.push(unsubIn);
+      cleanups.push(
+        onSnapshot(qIn, (snap) => {
+          setIncoming(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        })
+      );
+    }
 
-      // Subscribe: outgoing pending
+    // Outgoing pending
+    {
       const qOut = query(
         collection(db, "FriendRequests"),
         where("senderUid", "==", user.uid),
         where("status", "==", "pending")
       );
-      const unsubOut = onSnapshot(qOut, (snap) => {
-        setOutgoing(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
-      });
-      cleanups.push(unsubOut);
-
-      // Subscribe: preferred subcollection
-      const unsubSub = onSnapshot(
-        collection(db, "users", user.uid, "friends"),
-        (snap) => {
-          const arr = snap.docs.map((d) => d.data() as any);
-          const cleaned = cleanAndDedupeFriends(arr);
-          cleaned.forEach((f) => {
-            if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
-          });
-          setSubFriends(cleaned);
-
-          // Build notify map keyed by uid (fallback to doc id if uid missing)
-          const nm: Record<string, boolean> = {};
-          snap.docs.forEach((d) => {
-            const data = d.data() as any;
-            const uid = (typeof data?.uid === "string" && data.uid) || d.id;
-            if (uid) nm[uid] = !!data?.notify;
-          });
-          setNotifyByUid(nm);
-        }
+      cleanups.push(
+        onSnapshot(qOut, (snap) => {
+          setOutgoing(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        })
       );
-      cleanups.push(unsubSub);
+    }
 
-      // Subscribe: legacy top-level Friends/{me}
-      const unsubLegacy = onSnapshot(doc(db, "Friends", user.uid), (snap) => {
+    // Preferred subcollection
+    cleanups.push(
+      onSnapshot(collection(db, "users", user.uid, "friends"), (snap) => {
+        const arr = snap.docs.map((d) => d.data() as any);
+        const cleaned = cleanAndDedupeFriends(arr);
+        cleaned.forEach((f) => {
+          if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
+        });
+        setSubFriends(cleaned);
+
+        const nm: Record<string, boolean> = {};
+        snap.docs.forEach((d) => {
+          const data = d.data() as any;
+          const uid = (typeof data?.uid === "string" && data.uid) || d.id;
+          if (uid) nm[uid] = !!data?.notify;
+        });
+        setNotifyByUid(nm);
+      })
+    );
+
+    // Legacy top-level Friends/{me}
+    cleanups.push(
+      onSnapshot(doc(db, "Friends", user.uid), (snap) => {
         if (!snap.exists()) {
           setLegacyFriends([]);
           return;
@@ -220,49 +226,51 @@ export default function FriendsScreen() {
           if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
         });
         setLegacyFriends(cleaned);
-      });
-      cleanups.push(unsubLegacy);
+      })
+    );
 
-      // Subscribe: canonical edges (accepted)
+    // Canonical edges (accepted)
+    {
       const qEdges = query(
         collection(db, "FriendEdges"),
         where("uids", "array-contains", user.uid),
         where("state", "==", "accepted")
       );
-      const unsubEdges = onSnapshot(qEdges, (snap) => {
-        setEdges(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
-      });
-      cleanups.push(unsubEdges);
+      cleanups.push(
+        onSnapshot(qEdges, (snap) => {
+          setEdges(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        })
+      );
+    }
 
-      // Subscribe: Friend Groups for this user
+    // Friend Groups
+    {
       const qGroups = query(
         collection(db, "FriendGroups"),
         where("ownerUid", "==", user.uid),
         orderBy("name")
       );
-      const unsubGroups = onSnapshot(qGroups, (snap) => {
-        const arr: FriendGroup[] = snap.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as any),
-        }));
-        setGroups(arr);
-      });
-      cleanups.push(unsubGroups);
+      cleanups.push(
+        onSnapshot(qGroups, (snap) => {
+          const arr: any[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+          setGroups(arr);
+        })
+      );
+    }
 
-      // NEW: Subscribe to my block list
-      const unsubBlocks = onSnapshot(collection(db, "users", user.uid, "blocks"), (snap) => {
+    // Block list
+    cleanups.push(
+      onSnapshot(collection(db, "users", user.uid, "blocks"), (snap) => {
         const s = new Set<string>();
         snap.forEach((d) => s.add(d.id));
         setBlockedUids(s);
-      });
-      cleanups.push(unsubBlocks);
-    });
+      })
+    );
 
     return () => {
-      unsubAuth();
       cleanups.forEach((fn) => fn());
     };
-  }, [router]);
+  }, [initialized, user]);
 
   // Merge sources into friends
   useEffect(() => {
@@ -604,17 +612,16 @@ export default function FriendsScreen() {
 
   // --- Logout handler (footer button) ---
   const handleLogout = async () => {
-    if (loggingOut) return;
-    try {
-      setLoggingOut(true);
-      await signOut(auth);
-      router.dismissAll?.();
-      router.replace("/");
-    } catch {
-      setLoggingOut(false);
-      Alert.alert("Error", "Failed to log out. Please try again.");
-    }
-  };
+  if (loggingOut) return;
+  try {
+    setLoggingOut(true);
+    await signOut(auth); // _layout.tsx will see user=null and route to "/"
+    // No manual routing needed; component will unmount shortly.
+  } catch (e) {
+    setLoggingOut(false);
+    Alert.alert("Error", "Failed to log out. Please try again.");
+  }
+};
 
   // Handlers: Friend Groups
   const openCreateGroup = () => {
