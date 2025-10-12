@@ -95,7 +95,7 @@ export default function SignUp() {
         createdAt: serverTimestamp(),
       });
 
-      router.replace("/notifications-permission");
+      router.replace("/home");
     } catch (e: any) {
       setError(friendlyError(e?.code, e?.message));
     } finally {

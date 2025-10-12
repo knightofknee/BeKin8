@@ -37,7 +37,7 @@ import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { registerAndSaveExpoToken } from '../lib/push';
+import { syncPushTokenIfGranted } from '@/lib/push';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -221,6 +221,11 @@ export default function HomeScreen() {
     return () => unsub();
   }, [todayStart, windowEnd]);
 
+  useEffect(() => {
+  // Safe: only runs if permission is already granted; never shows a prompt
+  syncPushTokenIfGranted();
+}, []);
+
   // keep details modal live
   useEffect(() => {
     if (!selectedBeacon) return;
@@ -250,11 +255,6 @@ export default function HomeScreen() {
     });
     return () => unsub();
   }, [selectedBeacon?.id]);
-
-  // register the device’s push token (safe if it runs multiple times)
-  useEffect(() => {
-    registerAndSaveExpoToken();
-  }, []);
 
   // Chips for the next 7 days (for Options Modal)
   const next7Days = useMemo(() => {

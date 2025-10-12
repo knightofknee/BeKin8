@@ -1,5 +1,5 @@
 // app/index.tsx
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -18,7 +18,7 @@ import { Link, Stack } from "expo-router";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { registerAndSaveExpoToken } from "../lib/push";
+import { initNotifications, syncPushTokenIfGranted } from "../lib/push";
 
 const colors = {
   primary: "#2F6FED",
@@ -43,6 +43,10 @@ export default function Index() {
   const [emailFocused, setEmailFocused] = useState(false);
   const [pwFocused, setPwFocused] = useState(false);
 
+  useEffect(() => {
+  initNotifications();
+}, []);
+
   const handleLogin = async () => {
     setError(null);
     if (!email || !password) {
@@ -50,10 +54,11 @@ export default function Index() {
       return;
     }
     try {
+      Keyboard.dismiss();
       setSubmitting(true);
       await signInWithEmailAndPassword(auth, email.trim(), password);
       // Let the gate redirect to /home. Do optional post-login work:
-      await registerAndSaveExpoToken();
+      await syncPushTokenIfGranted();
     } catch (e: any) {
       const code = e?.code || "";
       let msg = "Login failed. Please try again.";
@@ -187,6 +192,12 @@ export default function Index() {
               </View>
             </View>
           </TouchableWithoutFeedback>
+          {submitting && (
+            <View style={styles.blocker} pointerEvents="auto">
+              <ActivityIndicator size="large" />
+              <Text style={{ marginTop: 8, color: colors.subtle }}>Signing you in…</Text>
+            </View>
+          )}
         </SafeAreaView>
       </KeyboardAvoidingView>
     </>
@@ -265,5 +276,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#d7e4ff",
     bottom: -40,
     left: -30,
+  },
+  blocker: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

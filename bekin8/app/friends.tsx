@@ -9,6 +9,7 @@ import {
   FlatList,
   Alert,
   Pressable,
+  Linking,
 } from "react-native";
 import { signOut } from "firebase/auth";
 import { useRouter } from "expo-router";
@@ -36,6 +37,16 @@ import FriendsList from "@/components/FriendsList";
 import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEditor";
 import BottomBar from "@/components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
+
+import * as Notifications from "expo-notifications";
+
+// 🔔 Push helpers (new)
+import {
+  ensurePushPermissionsAndToken,
+  subscribeToFriendNotifications,
+  unsubscribeFromFriendNotifications,
+  syncPushTokenIfGranted,
+} from "../lib/push";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBar
@@ -80,6 +91,19 @@ export default function FriendsScreen() {
 
   // NEW: my blocked users set
   const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
+
+  // Prevent double-toggles per-UID
+  const togglingRef = useRef<Set<string>>(new Set());
+
+  // Simple yes/no helper for native confirm
+  function confirmAsync(title: string, message: string, okText = "Allow", cancelText = "Not now"): Promise<boolean> {
+    return new Promise((resolve) => {
+      Alert.alert(title, message, [
+        { text: cancelText, style: "cancel", onPress: () => resolve(false) },
+        { text: okText, onPress: () => resolve(true) },
+      ]);
+    });
+  }
 
   const showMessage = (text: string, type: "error" | "success") => {
     setMessage({ text, type });
@@ -165,6 +189,9 @@ export default function FriendsScreen() {
 
     // One-time per mount post-auth task
     fetchCurrentUsername();
+
+    // Optional: keep token fresh silently if already granted (no prompt)
+    syncPushTokenIfGranted().catch(() => {});
 
     // Incoming pending
     {
@@ -381,12 +408,13 @@ export default function FriendsScreen() {
       const targetUid = targetDoc.id;
       const targetUsername = (targetDoc.data() as any)?.username || input;
 
-      if (targetUid === me.uid) return showMessage("You can’t add yourself.", "error");
+      const meUid = me.uid;
+      if (targetUid === meUid) return showMessage("You can’t add yourself.", "error");
 
       // Prevent re-sending: check edges already accepted
       const qEdges = query(
         collection(db, "FriendEdges"),
-        where("uids", "array-contains", me.uid),
+        where("uids", "array-contains", meUid),
         where("state", "==", "accepted")
       );
       const edgesSnap = await getDocs(qEdges);
@@ -398,8 +426,8 @@ export default function FriendsScreen() {
       if (alreadyFriends) return showMessage("Already friends.", "success");
 
       // Prevent duplicates in requests
-      const outId = requestIdFor(me.uid, targetUid);
-      const inId = requestIdFor(targetUid, me.uid);
+      const outId = requestIdFor(meUid, targetUid);
+      const inId = requestIdFor(targetUid, meUid);
       const existingOut = await getDoc(doc(db, "FriendRequests", outId));
       const existingIn = await getDoc(doc(db, "FriendRequests", inId));
 
@@ -417,13 +445,13 @@ export default function FriendsScreen() {
       }
 
       // Create outgoing request
-      const myProfileSnap = await getDoc(doc(db, "Profiles", me.uid));
+      const myProfileSnap = await getDoc(doc(db, "Profiles", meUid));
       const myUsername = (myProfileSnap.data() as any)?.username || "";
 
       await setDoc(
         doc(db, "FriendRequests", outId),
         {
-          senderUid: me.uid,
+          senderUid: meUid,
           receiverUid: targetUid,
           status: "pending",
           createdAt: serverTimestamp(),
@@ -612,39 +640,115 @@ export default function FriendsScreen() {
 
   // --- Logout handler (footer button) ---
   const handleLogout = async () => {
-  if (loggingOut) return;
-  try {
-    setLoggingOut(true);
-    await signOut(auth); // _layout.tsx will see user=null and route to "/"
-    // No manual routing needed; component will unmount shortly.
-  } catch (e) {
-    setLoggingOut(false);
-    Alert.alert("Error", "Failed to log out. Please try again.");
-  }
-};
-
-  // Handlers: Friend Groups
-  const openCreateGroup = () => {
-    setEditingGroup(null);
-    setGroupEditorOpen(true);
-  };
-
-  const openEditGroup = (g: FriendGroup) => {
-    setEditingGroup(g);
-    setGroupEditorOpen(true);
-  };
-
-  const onSavedGroup = (g: FriendGroup) => {
-    // No-op; realtime subscription updates the list. This keeps state simple.
-    showMessage(editingGroup ? "Group updated!" : "Group created!", "success");
-  };
-
-  const onDeletedGroup = (groupId: string) => {
-    showMessage("Group deleted.", "success");
+    if (loggingOut) return;
+    try {
+      setLoggingOut(true);
+      await signOut(auth); // _layout.tsx will see user=null and route to "/"
+      // No manual routing needed; component will unmount shortly.
+    } catch (e) {
+      setLoggingOut(false);
+      Alert.alert("Error", "Failed to log out. Please try again.");
+    }
   };
 
   // NEW: filter out blocked users from the displayed list
   const visibleFriends = friends.filter((f) => !(f.uid && blockedUids.has(f.uid)));
+
+  // --- Notify toggle handler with clean permission flow ---
+  const handleToggleNotify = async (friendUid: string, nextValue: boolean) => {
+    const me = auth.currentUser;
+    if (!me || !friendUid) return;
+
+    if (togglingRef.current.has(friendUid)) return;
+    togglingRef.current.add(friendUid);
+
+    try {
+      if (nextValue) {
+        // 1) Probe current status WITHOUT prompting
+        const perm = await Notifications.getPermissionsAsync();
+        const grantedNow = !!perm.granted;
+
+        if (!grantedNow) {
+          if (perm.canAskAgain) {
+            // 2) Ask in-app first
+            const ok = await confirmAsync(
+              "Enable notifications?",
+              "Turn on notifications to get alerts when this friend lights a beacon."
+            );
+            if (!ok) return; // user declined our in-app ask
+
+            // 3) Trigger the iOS system prompt
+            const req = await Notifications.requestPermissionsAsync();
+            if (!req.granted) {
+              Alert.alert("Notifications Off", "You can enable notifications later from this screen.");
+              return;
+            }
+          } else {
+            // Already denied at OS level; offer Settings shortcut
+            Alert.alert(
+              "Notifications Off",
+              "To enable notifications, allow them in iOS Settings.",
+              [
+                { text: "Cancel", style: "cancel" },
+                { text: "Open Settings", onPress: () => Linking.openSettings?.() }
+              ]
+            );
+            return;
+          }
+        }
+
+        // 4) We have permission now — BEST‑EFFORT token sync (do not block on failure)
+        try {
+          await syncPushTokenIfGranted();
+        } catch (e) {
+          console.warn("syncPushTokenIfGranted failed (best‑effort)", e);
+        }
+
+        // 5) Persist ON + subscribe
+        await setDoc(
+          doc(db, "users", me.uid, "friends", friendUid),
+          { notify: true, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+        try {
+          await subscribeToFriendNotifications(friendUid);
+        } catch (e) {
+          // Non-fatal: backend fanout also honors users/{uid}/friends/{friendUid}.notify===true
+          console.warn("subscribeToFriendNotifications failed (best‑effort)", e);
+        }
+        setNotifyByUid((prev) => ({ ...prev, [friendUid]: true }));
+      } else {
+        // Turning OFF: optimistic local OFF, persist, and try to unsubscribe.
+        const prevVal = notifyByUid[friendUid];
+        setNotifyByUid((prev) => ({ ...prev, [friendUid]: false }));
+
+        try {
+          // Persist OFF first
+          await setDoc(
+            doc(db, "users", me.uid, "friends", friendUid),
+            { notify: false, updatedAt: serverTimestamp() },
+            { merge: true }
+          );
+        } catch (e) {
+          // If write failed, roll back UI and surface error
+          setNotifyByUid((prev) => ({ ...prev, [friendUid]: prevVal }));
+          throw e;
+        }
+
+        // Best-effort unsubscribe of the subscription doc; do not block or roll back UI
+        try {
+          await unsubscribeFromFriendNotifications(friendUid);
+        } catch (e) {
+          console.warn("unsubscribeFromFriendNotifications failed (best‑effort)", e);
+        }
+      }
+    } catch (e: any) {
+      console.error("onToggleNotify failed", e);
+      showMessage(e?.message || "Couldn't update notifications.", "error");
+    } finally {
+      togglingRef.current.delete(friendUid);
+    }
+  };
 
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
   return (
@@ -661,21 +765,9 @@ export default function FriendsScreen() {
             onRemove={() => confirmRemove(item)}
             onBlock={() => confirmBlock(item)} // NEW
             notify={!!(item.uid && notifyByUid[item.uid])}
-            onToggleNotify={async (v) => {
-              const me = auth.currentUser;
-              if (!me || !item.uid) return;
-              try {
-                // Optimistic local update
-                setNotifyByUid((prev) => ({ ...prev, [item.uid!]: v }));
-                await setDoc(
-                  doc(db, "users", me.uid, "friends", item.uid),
-                  { notify: v, updatedAt: serverTimestamp() },
-                  { merge: true }
-                );
-              } catch (e) {
-                // Roll back on failure
-                setNotifyByUid((prev) => ({ ...prev, [item.uid!]: !v }));
-              }
+            onToggleNotify={(v) => {
+              if (!item.uid) return;
+              handleToggleNotify(item.uid, v);
             }}
           />
         )}
@@ -703,7 +795,7 @@ export default function FriendsScreen() {
             <View style={styles.card}>
               <View style={styles.groupsHeaderRow}>
                 <Text style={styles.sectionTitle}>My Friend Groups</Text>
-                <Pressable onPress={openCreateGroup} hitSlop={10} style={styles.plusBtn}>
+                <Pressable onPress={() => { setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={styles.plusBtn}>
                   <Text style={styles.plusBtnText}>＋</Text>
                 </Pressable>
               </View>
@@ -715,7 +807,7 @@ export default function FriendsScreen() {
                   {groups.map((g) => (
                     <Pressable
                       key={g.id}
-                      onPress={() => openEditGroup(g)}
+                      onPress={() => { setEditingGroup(g); setGroupEditorOpen(true); }}
                       style={styles.groupRow}
                     >
                       <View style={styles.groupAvatar}>
@@ -789,8 +881,8 @@ export default function FriendsScreen() {
         visible={groupEditorOpen}
         group={editingGroup}
         onClose={() => setGroupEditorOpen(false)}
-        onSaved={onSavedGroup}
-        onDeleted={onDeletedGroup}
+        onSaved={() => showMessage(editingGroup ? "Group updated!" : "Group created!", "success")}
+        onDeleted={() => showMessage("Group deleted.", "success")}
       />
       <BottomBar />
     </View>
@@ -799,7 +891,7 @@ export default function FriendsScreen() {
 
 const styles = StyleSheet.create({
   headerWrap: { rowGap: 14 },
-  header: { fontSize: 28, fontWeight: "800", color: colors.text, textAlign: 'center' },
+  header: { fontSize: 28, fontWeight: "800", color: colors.text, textAlign: "center" },
   card: {
     backgroundColor: colors.card,
     borderRadius: 16,
