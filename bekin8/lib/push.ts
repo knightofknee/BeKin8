@@ -60,6 +60,8 @@ export async function ensurePushPermissionsAndToken(): Promise<{
   const user = auth.currentUser;
   if (user && token) {
     const installationId = await getInstallationId();
+
+    // 1) Canonical: per-installation token (multi-device safe)
     await setDoc(
       doc(db, "users", user.uid, "pushTokens", installationId),
       {
@@ -69,6 +71,27 @@ export async function ensurePushPermissionsAndToken(): Promise<{
         updatedAt: serverTimestamp(),
         appVersion: Constants.expoConfig?.version ?? null,
         build: Constants.expoConfig?.ios?.buildNumber ?? null,
+      },
+      { merge: true }
+    );
+
+    // 2) Legacy/back-compat single-token fields so existing Functions can find it
+    await setDoc(
+      doc(db, "Profiles", user.uid),
+      {
+        expoPushToken: token,
+        expoPlatform: Platform.OS,
+        expoUpdatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await setDoc(
+      doc(db, "users", user.uid),
+      {
+        expoPushToken: token,
+        expoPlatform: Platform.OS,
+        expoUpdatedAt: serverTimestamp(),
       },
       { merge: true }
     );
@@ -125,11 +148,14 @@ async function getExpoPushToken(): Promise<string | undefined> {
   // Since SDK 49+, supplying projectId is safest for EAS builds.
   // It auto-resolves for classic projects; otherwise add your EAS projectId to app config if needed.
   const owner = Constants.expoConfig?.owner;
-const slug  = Constants.expoConfig?.slug;
+  const slug  = Constants.expoConfig?.slug;
 
-const projectId: string | undefined =
-  Constants.expoConfig?.extra?.eas?.projectId ??
-  (owner && slug ? `${owner}/${slug}` : undefined);
+  // Prefer EAS projectId when available (dev client / production builds)
+  const projectId: string | undefined =
+    // SDK 50+: easConfig is the canonical place
+    (Constants as any).easConfig?.projectId
+    ?? Constants.expoConfig?.extra?.eas?.projectId
+    ?? (owner && slug ? `${owner}/${slug}` : undefined);
 
   const tok = await Notifications.getExpoPushTokenAsync(
     projectId ? { projectId } : undefined
