@@ -1,5 +1,5 @@
 // app/_layout.tsx
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect } from "react";
 import { Slot, usePathname, useRouter } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
@@ -9,12 +9,9 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 /** Routes that are accessible when NOT signed in */
 const PUBLIC_ROUTES = new Set<string>([
-  "/",          // login
-  "/signup",    // create account
-  // add others if you have them:
-  // "/forgot-password",
-  // "/privacy",
-  // "/legal",
+  "/",        // login
+  "/signup",  // create account
+  // add others if needed: "/forgot-password", "/privacy", "/legal",
 ]);
 
 function Gate() {
@@ -26,12 +23,10 @@ function Gate() {
     if (!initialized) return;
 
     if (user) {
-      // Signed-in users shouldn't sit on login/signup
       if (pathname === "/" || pathname === "/signup") {
         router.replace("/home");
       }
     } else {
-      // Signed-out users must stay on public routes
       if (!PUBLIC_ROUTES.has(pathname)) {
         router.replace("/");
       }
@@ -41,20 +36,29 @@ function Gate() {
   }, [initialized, user, pathname]);
 
   if (!initialized) {
+    // ✅ White background while loading so no black flash
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#fff" }}>
         <ActivityIndicator />
       </View>
     );
   }
 
-  return <Slot />;
+  return (
+    // ✅ Force white behind every screen but keep your existing transitions
+    <View style={{ flex: 1, backgroundColor: "#fff" }}>
+      <Slot />
+    </View>
+  );
 }
 
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <Gate />
+      {/* ✅ Outer white in case Gate ever renders nothing briefly */}
+      <View style={{ flex: 1, backgroundColor: "#fff" }}>
+        <Gate />
+      </View>
     </AuthProvider>
   );
 }

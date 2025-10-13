@@ -161,7 +161,7 @@ export default function CreatePostScreen() {
   const bottomPadding = BOTTOM_BAR_HEIGHT + insets.bottom + 16;
 
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.select({ ios: 'padding', android: undefined })}

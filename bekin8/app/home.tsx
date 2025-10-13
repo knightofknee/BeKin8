@@ -572,7 +572,7 @@ export default function HomeScreen() {
 
   return (
     <>
-      <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }} edges={['top', 'left', 'right']}>
         <View style={styles.page}>
           <View style={styles.beaconsWrap}>
             <FriendsBeaconsList onSelect={setSelectedBeacon} />
