@@ -5,6 +5,8 @@ node_modules/
 
 .env
 
+google-services.json
+
 .DS_Store
 **/.DS_Store
 
@@ -42,3 +44,4 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
+google-services.json

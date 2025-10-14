@@ -16,21 +16,22 @@
       }
     },
     "android": {
+      "package": "com.waldgrave.bekin",
+      "googleServicesFile": "./google-services.json",
+      "permissions": ["POST_NOTIFICATIONS"],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true
+        "foregroundImage": "./assets/adaptive-icon-foreground.png",
+        "backgroundColor": "#FFFFFF"
+      }
     },
+    "edgeToEdgeEnabled": true,
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      [
-        "expo-notifications"
-      ],
+      ["expo-notifications"],
       "expo-router",
       [
         "expo-splash-screen",
