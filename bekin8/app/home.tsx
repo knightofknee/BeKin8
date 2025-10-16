@@ -37,7 +37,7 @@ import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { syncPushTokenIfGranted } from '@/lib/push';
+import { syncPushTokenIfGranted } from '../lib/push';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -139,8 +139,8 @@ export default function HomeScreen() {
     const unsub = onSnapshot(
       qMine,
       (snap) => {
-        let activeDoc: { id: string; data: any } | null = null;
-        let plannedSoonest: { id: string; data: any; start: Date } | null = null;
+        let activeDoc: { id: string; data: any } | undefined;
+        let plannedSoonest: { id: string; data: any; start: Date } | undefined;
 
         snap.forEach((d) => {
           const data: any = d.data();

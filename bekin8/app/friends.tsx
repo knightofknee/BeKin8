@@ -8,8 +8,8 @@ import {
   View,
   FlatList,
   Alert,
-  Pressable,
   Linking,
+  Pressable,
 } from "react-native";
 import { signOut } from "firebase/auth";
 import { useRouter } from "expo-router";
@@ -104,6 +104,7 @@ export default function FriendsScreen() {
       ]);
     });
   }
+
 
   const showMessage = (text: string, type: "error" | "success") => {
     setMessage({ text, type });
@@ -673,7 +674,7 @@ export default function FriendsScreen() {
             // 2) Ask in-app first
             const ok = await confirmAsync(
               "Enable notifications?",
-              "Turn on notifications to get alerts when this friend lights a beacon."
+              "Turn on notifications to get alerts when this friend lights a beacon. You will not receive any other notifications from Bekin. If you decline the following prompt, you have to go into settings to turn on notifications.",
             );
             if (!ok) return; // user declined our in-app ask
 
@@ -684,15 +685,28 @@ export default function FriendsScreen() {
               return;
             }
           } else {
-            // Already denied at OS level; offer Settings shortcut
-            Alert.alert(
-              "Notifications Off",
-              "To enable notifications, allow them in iOS Settings.",
-              [
-                { text: "Cancel", style: "cancel" },
-                { text: "Open Settings", onPress: () => Linking.openSettings?.() }
-              ]
-            );
+            // Already denied at OS level; iOS will not show the system prompt again.
+            // Keep everything in‑app (no Settings deep-link). Inform the user and stop.
+            await new Promise<void>((resolve) => {
+              Alert.alert(
+                "Notifications Off",
+                Platform.OS === "ios"
+                  ? "To enable, open Settings → BeKin → Notifications and turn on Allow Notifications."
+                  : "To enable, open Settings → Apps → BeKin → Notifications and turn them on.",
+                [
+                  { text: "Cancel", style: "cancel", onPress: () => resolve() },
+                  {
+                    text: "Open Settings",
+                    onPress: async () => {
+                      try {
+                        await Linking.openSettings();
+                      } catch {}
+                      resolve();
+                    },
+                  },
+                ]
+              );
+            });
             return;
           }
         }

@@ -7,7 +7,7 @@ node_modules/
 
 google-services.json
 
-functions/lib/
+lib/
 
 .DS_Store
 **/.DS_Store

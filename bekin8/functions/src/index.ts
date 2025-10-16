@@ -71,17 +71,51 @@ async function recipientWantsNotify(recipientUid: string, ownerUid: string): Pro
   return a || b;
 }
 
-/** intersection(allowedUids, subscribers/legacy-notify) */
+/** All accepted friend UIDs for an owner (from FriendEdges). */
+async function friendUidsOf(ownerUid: string): Promise<string[]> {
+  const qs = await db
+    .collection('FriendEdges')
+    .where('uids', 'array-contains', ownerUid)
+    .where('state', '==', 'accepted')
+    .get();
+
+  const out = new Set<string>();
+  qs.forEach((doc) => {
+    const data = doc.data() as any;
+    const uids: string[] = Array.isArray(data?.uids) ? data.uids : [];
+    const other = uids.find((u) => u !== ownerUid);
+    if (other) out.add(other);
+  });
+  return Array.from(out);
+}
+
+/** 
+ * Eligible = (allowedUids OR all accepted friends if none provided)
+ *            ∩ users who opted in (new subdoc OR legacy notify flag)
+ *            − ownerUid
+ */
 async function eligibleRecipients(allowed: string[] | undefined, ownerUid: string): Promise<string[]> {
-  const allowSet = new Set<string>((allowed || []).filter(Boolean));
-  if (allowSet.size === 0) return [];
+  // Normalize allowed list (remove falsy, remove owner)
+  const normalizedAllowed: string[] = Array.isArray(allowed)
+    ? allowed.filter((u): u is string => !!u).filter((u) => u !== ownerUid)
+    : [];
+
+  // If no allowed list, fall back to all accepted friends
+  const base: string[] = normalizedAllowed.length > 0
+    ? normalizedAllowed
+    : await friendUidsOf(ownerUid);
+
+  if (base.length === 0) return [];
+
+  const baseSet = new Set(base); // dedupe
   const out: string[] = [];
+
   await Promise.all(
-    Array.from(allowSet).map(async (uid) => {
-      if (uid === ownerUid) return;
+    Array.from(baseSet).map(async (uid) => {
       if (await recipientWantsNotify(uid, ownerUid)) out.push(uid);
     })
   );
+
   return out;
 }
 

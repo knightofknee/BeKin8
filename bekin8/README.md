@@ -94,3 +94,10 @@ notis then profis
 
 
 &^^^^ future calendar has days of the week you can tap to light on, with different fire options
+
+
+bugs:
+- flashes red when beacons arent loaded yet
+
+
+^^^ choose your own beacon, maybe animations?

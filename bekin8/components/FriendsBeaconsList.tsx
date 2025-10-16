@@ -8,7 +8,6 @@ import {
   getDoc,
   onSnapshot,
   query,
-  Timestamp,
   where,
 } from 'firebase/firestore';
 
@@ -52,7 +51,8 @@ function getMillis(v: any): number {
   if (v instanceof Date) return v.getTime();
   if (typeof v.toMillis === 'function') return v.toMillis();
   if (typeof v.toDate === 'function') return v.toDate().getTime();
-  if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
+  if (typeof v?.seconds === 'number')
+    return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
   return 0;
 }
 const asStringArray = (v: any): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
@@ -88,54 +88,93 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const groupMembersCacheRef = useRef<Record<string, Set<string> | null | undefined>>({});
   const groupFetchInFlightRef = useRef<Set<string>>(new Set());
 
-  // window
+  // readiness flags (prevents early "No beacons" flash)
+  const [friendsListReady, setFriendsListReady] = useState(false);
+  const [edgesReady, setEdgesReady] = useState(false);
+  const [beaconsReady, setBeaconsReady] = useState(false);
+  // delay empty-state text to avoid flash
+  const [emptyReady, setEmptyReady] = useState(false);
+
+  // window (kept for future filter logic if needed)
   const todayStart = useMemo(() => startOfDay(new Date()), []);
   const windowEnd = useMemo(() => endOfNextSixDays(todayStart), [todayStart]);
 
   // --- “peek 4th card” measurement & overlay state ---
   const [firstCardH, setFirstCardH] = useState<number | null>(null);
+  // dynamic container measurements (to scale list height by device)
+  const [containerH, setContainerH] = useState<number | null>(null);
+  const [headerH, setHeaderH] = useState<number>(0);
   const [showMoreHint, setShowMoreHint] = useState(false);
 
   const listMaxHeight = useMemo(() => {
     if (!firstCardH) return undefined;
-    // 3 cards + gaps between them (2 gaps at 10px) + a ~35% peek of the 4th card
-    const gaps = 2 * 10;
-    return Math.round(firstCardH * 3 + gaps + firstCardH * 0.35);
-  }, [firstCardH]);
+    const gap = 10;
+
+    if (containerH && containerH > 0) {
+      const available = Math.max(containerH - headerH - 12, 0);
+      const perRow = firstCardH + gap;
+      const rowsThatFit = Math.max(3, Math.min(6, Math.floor((available + gap) / perRow)));
+      const visibleRows = Math.min(beacons.length, rowsThatFit);
+      const gapsPx = Math.max(visibleRows - 1, 0) * gap;
+      const peek = beacons.length > visibleRows ? Math.round(firstCardH * 0.5) : 0;
+      return Math.round(firstCardH * visibleRows + gapsPx + peek);
+    }
+
+    const visibleRows = Math.min(beacons.length, 4);
+    const gapsPx = Math.max(visibleRows - 1, 0) * gap;
+    const peek = beacons.length > visibleRows ? Math.round(firstCardH * 0.5) : 0;
+    return Math.round(firstCardH * visibleRows + gapsPx + peek);
+  }, [firstCardH, beacons.length, containerH, headerH]);
 
   useEffect(() => {
-    setShowMoreHint(beacons.length > 3); // enable hint when there’s more than 3
-  }, [beacons.length]);
+    if (!firstCardH) { setShowMoreHint(false); return; }
+    const gap = 10;
+    let visibleRows = 4;
+    if (containerH && containerH > 0) {
+      const available = Math.max(containerH - headerH - 12, 0);
+      const perRow = firstCardH + gap;
+      visibleRows = Math.max(3, Math.min(6, Math.floor((available + gap) / perRow)));
+    }
+    setShowMoreHint(beacons.length > visibleRows);
+  }, [beacons.length, firstCardH, containerH, headerH]);
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (!showMoreHint) return;
     const y = e.nativeEvent.contentOffset.y;
-    if (y > 6) setShowMoreHint(false); // hide once the user scrolls a tad
+    if (y > 6) setShowMoreHint(false);
   };
 
   // subscribe: friend lists (subcollection + FriendEdges)
   useEffect(() => {
     const me = auth.currentUser;
     if (!me) {
-      setFriendUids([]); return;
+      setFriendUids([]);
+      setFriendsListReady(true);
+      setEdgesReady(true);
+      return;
     }
 
     const unsubs: (() => void)[] = [];
 
     unsubs.push(
-      onSnapshot(collection(db, 'users', me.uid, 'friends'), (snap) => {
-        const uids = new Set<string>();
-        snap.forEach((d) => {
-          const f: any = d.data();
-          if (typeof f?.uid === 'string') {
-            uids.add(f.uid);
-            if (typeof f?.username === 'string' && f.username.trim()) {
-              nameCacheRef.current[f.uid] = f.username.trim();
+      onSnapshot(
+        collection(db, 'users', me.uid, 'friends'),
+        (snap) => {
+          const uids = new Set<string>();
+          snap.forEach((d) => {
+            const f: any = d.data();
+            if (typeof f?.uid === 'string') {
+              uids.add(f.uid);
+              if (typeof f?.username === 'string' && f.username.trim()) {
+                nameCacheRef.current[f.uid] = f.username.trim();
+              }
             }
-          }
-        });
-        setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
-      })
+          });
+          setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
+          setFriendsListReady(true);
+        },
+        () => setFriendsListReady(true) // on error, mark ready to avoid perpetual loading
+      )
     );
 
     unsubs.push(
@@ -150,7 +189,9 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
             if (other) uids.add(other);
           });
           setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
-        }
+          setEdgesReady(true);
+        },
+        () => setEdgesReady(true)
       )
     );
 
@@ -160,8 +201,6 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   // --- compute and set visible beacons from docStore + caches ---
   const computeAndSet = () => {
     const store = docStoreRef.current;
-    const startMs = todayStart.getTime();
-    const endMs = windowEnd.getTime();
 
     type Candidate = FriendBeacon & { _createdMs: number };
     const candidates: Candidate[] = [];
@@ -170,7 +209,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
     store.forEach((data: any, id: string) => {
       const stMillis = getMillis(data?.startAt);
-      if (!stMillis || stMillis < startMs || stMillis > endMs) return;
+      if (!stMillis) return;
 
       const ownerUid = String(data.ownerUid ?? '');
       if (!ownerUid || (meUid && ownerUid === meUid)) return; // never show my own
@@ -255,7 +294,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       }
     }
 
-    // fetch any unknown groups (lazy, cached)
+    // fetch any unknown groups (lazy, cached), then recompute
     if (groupsToFetch.size) {
       const toFetch = Array.from(groupsToFetch).filter((gid) => !groupFetchInFlightRef.current.has(gid));
       if (toFetch.length) {
@@ -266,21 +305,20 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
               const snap = await getDoc(doc(db, 'FriendGroups', gid));
               if (snap.exists()) {
                 const data: any = snap.data();
-                const members = Array.isArray(data?.memberUids) ? data.memberUids.filter((x: any) => typeof x === 'string') : [];
+                const members = Array.isArray(data?.memberUids)
+                  ? data.memberUids.filter((x: any) => typeof x === 'string')
+                  : [];
                 groupMembersCacheRef.current[gid] = new Set(members);
               } else {
-                // not found / not allowed — mark as empty (no one sees)
                 groupMembersCacheRef.current[gid] = new Set<string>();
               }
             } catch {
-              // on error, mark as empty so we don't refetch immediately
               groupMembersCacheRef.current[gid] = new Set<string>();
             } finally {
               groupFetchInFlightRef.current.delete(gid);
             }
           })
         ).then(() => {
-          // recompute once memberships are known
           computeAndSet();
         });
       }
@@ -295,6 +333,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       beaconUnsubsRef.current = [];
       docStoreRef.current.clear();
       setBeacons([]);
+      setBeaconsReady(true);
       return;
     }
 
@@ -305,6 +344,18 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
     const unsubs: (() => void)[] = [];
     const uids = Array.from(new Set(friendUids)).filter(Boolean);
+
+    // If there are no friends yet, we’re "ready" with an empty list.
+    if (uids.length === 0) {
+      setBeacons([]);
+      setBeaconsReady(true);
+      return () => {};
+    }
+
+    // we expect at least one snapshot; hold off on empty-state copy until one arrives
+    setBeaconsReady(false);
+
+    let firstApplied = false;
     const applySnapshot = (snap: any) => {
       const store = docStoreRef.current;
       snap.docChanges().forEach((chg: any) => {
@@ -313,12 +364,22 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         else store.set(id, chg.doc.data());
       });
       computeAndSet();
+      if (!firstApplied) {
+        firstApplied = true;
+        setBeaconsReady(true);
+      }
     };
 
     for (let i = 0; i < uids.length; i += 10) {
       const batch = uids.slice(i, i + 10);
       const qOwners = query(collection(db, 'Beacons'), where('ownerUid', 'in', batch));
-      unsubs.push(onSnapshot(qOwners, applySnapshot, (e) => console.warn('owners onSnapshot error:', e)));
+      unsubs.push(
+        onSnapshot(
+          qOwners,
+          applySnapshot,
+          () => { /* even on error, avoid deadlock */ setBeaconsReady(true); }
+        )
+      );
     }
     beaconUnsubsRef.current = unsubs;
 
@@ -368,17 +429,42 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
     );
   };
 
-  const listHasOverflow = beacons.length > 3;
+  const listHasOverflow = useMemo(() => {
+    if (!firstCardH) return false;
+    const gap = 10;
+    let visibleRows = 4;
+    if (containerH && containerH > 0) {
+      const available = Math.max(containerH - headerH - 12, 0);
+      const perRow = firstCardH + gap;
+      visibleRows = Math.max(3, Math.min(6, Math.floor((available + gap) / perRow)));
+    }
+    return beacons.length > visibleRows;
+  }, [beacons.length, firstCardH, containerH, headerH]);
+  const uiReady = friendsListReady && edgesReady && beaconsReady;
+
+  // Debounce the empty-state so "No friend beacons..." doesn't flash
+  useEffect(() => {
+    if (!uiReady) {
+      setEmptyReady(false);
+      return;
+    }
+    if (beacons.length > 0) {
+      setEmptyReady(false);
+      return;
+    }
+    const t = setTimeout(() => setEmptyReady(true), 250);
+    return () => clearTimeout(t);
+  }, [uiReady, beacons.length]);
 
   return (
-    <View style={styles.friendsSection}>
-      {beacons.length > 0 ? (
+    <View style={styles.friendsSection} onLayout={(e) => setContainerH(e.nativeEvent.layout.height)}>
+      {/* Hide ALL copy until ready */}
+      {!uiReady ? null : beacons.length > 0 ? (
         <>
-          <Text style={styles.friendActiveHeader}>
+          <Text style={styles.friendActiveHeader} onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}>
             {beacons.length} beacon{beacons.length !== 1 ? 's' : ''} from friends
           </Text>
 
-          {/* Wrapper that enforces a max height to “peek” the 4th card */}
           <View
             style={[
               styles.peekWrapper,
@@ -395,11 +481,9 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
               {beacons.map((b, i) => (
                 <FriendBeaconItem key={b.id} beacon={b} index={i} />
               ))}
-              {/* bottom padding so the last item isn't flush */}
               <View style={{ height: 8 }} />
             </ScrollView>
 
-            {/* “Scroll for more” overlay */}
             {listHasOverflow && showMoreHint && (
               <Pressable style={styles.moreOverlay}>
                 <View style={styles.morePill}>
@@ -410,7 +494,9 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
           </View>
         </>
       ) : (
-        <Text style={styles.friendInactive}>No friend beacons today or upcoming</Text>
+        emptyReady ? (
+          <Text style={styles.friendInactive}>No friend beacons today or upcoming</Text>
+        ) : null
       )}
     </View>
   );
@@ -429,7 +515,6 @@ const styles = StyleSheet.create({
     textAlign: 'center'
   },
 
-  // wrapper that allows peeking the 4th card
   peekWrapper: {
     position: 'relative',
     borderRadius: 12,
@@ -473,7 +558,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 
-  // Bottom overlay to hint overflow
   moreOverlay: {
     position: 'absolute',
     left: 0,

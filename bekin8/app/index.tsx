@@ -164,6 +164,7 @@ export default function Index() {
                   </View>
                 </View>
 
+
                 <Pressable
                   onPress={handleLogin}
                   disabled={submitting}
@@ -181,6 +182,13 @@ export default function Index() {
                     <Text style={styles.primaryBtnText}>Enter</Text>
                   )}
                 </Pressable>
+
+                {/* Forgot password link (moved below Enter) */}
+                <View style={{ alignItems: "center", marginTop: 10 }}>
+                  <Link href="/forgot-password" style={styles.link}>
+                    Forgot password?
+                  </Link>
+                </View>
 
                 <View style={styles.bottomRow}>
                   <Text style={{ color: colors.subtle }}>New here?</Text>
