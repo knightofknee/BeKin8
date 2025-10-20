@@ -179,6 +179,7 @@ export default function CreatePostScreen() {
               value={title}
               onChangeText={setTitle}
               placeholder="Title"
+              placeholderTextColor="#6B7280"
               style={styles.input}
               returnKeyType="next"
               onFocus={() => setKeyboardVisible(true)}
@@ -191,6 +192,7 @@ export default function CreatePostScreen() {
               value={link}
               onChangeText={setLink}
               placeholder="Link (optional)"
+              placeholderTextColor="#6B7280"
               style={styles.input}
               autoCapitalize="none"
               keyboardType="url"
@@ -205,6 +207,8 @@ export default function CreatePostScreen() {
               value={content}
               onChangeText={setContent}
               placeholder="Content"
+              placeholderTextColor="#6B7280"
+              numberOfLines={12}
               style={styles.textarea}
               multiline
               textAlignVertical="top"
@@ -263,6 +267,7 @@ const styles = StyleSheet.create({
     borderColor: '#ccc',
     borderRadius: 10,
     padding: 12,
+    paddingTop: 12,
     fontSize: 16,
     backgroundColor: 'white',
   },

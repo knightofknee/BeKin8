@@ -38,6 +38,7 @@ interface Post {
   authorUid: string;
   authorUsername: string;
   content: string;
+  title?: string;
   createdAt: Date;
   url?: string;
 }
@@ -224,6 +225,7 @@ export default function Feed() {
             authorUid: au.uid,
             authorUsername: au.username,
             content: data.content ?? '',
+            title: data.title ?? '',
             createdAt,
             url: data.url ?? data.link ?? data.href ?? undefined,
           });
@@ -369,6 +371,12 @@ export default function Feed() {
                 </Pressable>
               </View>
 
+              {item.title ? (
+                <Text style={styles.postTitle} numberOfLines={2}>
+                  {item.title}
+                </Text>
+              ) : null}
+
               {item.url ? (
                 <Pressable
                   onPress={() =>
@@ -484,6 +492,12 @@ const styles = StyleSheet.create({
   menuDots: { fontSize: 18, color: '#6b7280' },
 
   postAuthor: { fontWeight: 'bold', marginBottom: 4, color: '#111827' },
+  postTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 6,
+  },
   postLink: { color: '#2F6FED', textDecorationLine: 'underline', fontWeight: '600' },
   postContent: { marginBottom: 8, color: '#111827', marginTop: 4 },
   postDate: { fontSize: 12, color: '#555', textAlign: 'right' },

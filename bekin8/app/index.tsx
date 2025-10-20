@@ -1,7 +1,10 @@
 // app/index.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
+  Dimensions,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -31,9 +34,15 @@ const colors = {
 };
 
 const TOP_OFFSET = 64; // consistent “reach-friendly” offset
+const BOTTOM_GAP = 28; // desired minimal space between keyboard and card
 
 export default function Index() {
   const insets = useSafeAreaInsets();
+
+  const shift = useRef(new Animated.Value(0)).current;
+  const cardRef = useRef<View>(null);
+  const kbHeightRef = useRef(0);
+  const keyboardVisibleRef = useRef(false);      // <-- lock while keyboard is up
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -44,8 +53,72 @@ export default function Index() {
   const [pwFocused, setPwFocused] = useState(false);
 
   useEffect(() => {
-  initNotifications();
-}, []);
+    initNotifications();
+  }, []);
+
+  const recomputeShift = (kbHeight: number, duration?: number) => {
+    const winH = Dimensions.get("window").height;
+    const keyboardTop = winH - kbHeight;
+
+    if (cardRef.current && "measureInWindow" in cardRef.current) {
+      // @ts-ignore measureInWindow exists at runtime
+      cardRef.current.measureInWindow((_x: number, y: number, _w: number, h: number) => {
+        const bottom = y + h;
+        const needed = Math.max(0, bottom - keyboardTop + BOTTOM_GAP);
+        Animated.timing(shift, {
+          toValue: -needed,
+          duration: duration ?? 160,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      });
+    }
+  };
+
+  useEffect(() => {
+    const onShow = (e: any) => {
+      const kb = e?.endCoordinates?.height ?? 0;
+      kbHeightRef.current = kb;
+
+      // If the keyboard is already visible, DO NOTHING (prevents bob on field switch)
+      if (keyboardVisibleRef.current) return;
+
+      keyboardVisibleRef.current = true;
+      // First appearance only: animate to the correct offset
+      recomputeShift(kb, e?.duration);
+    };
+
+    // While keyboard is up, iOS may emit tiny frame changes; ignore them entirely
+    const onChangeFrame = (e: any) => {
+      kbHeightRef.current = e?.endCoordinates?.height ?? 0;
+      // intentionally no recompute while visible
+    };
+
+    const onHide = (e: any) => {
+      keyboardVisibleRef.current = false;
+      kbHeightRef.current = 0;
+      Animated.timing(shift, {
+        toValue: 0,
+        duration: e?.duration ?? 160,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    };
+
+    const subs = [
+      Platform.OS === "ios"
+        ? Keyboard.addListener("keyboardWillShow", onShow)
+        : Keyboard.addListener("keyboardDidShow", onShow),
+      Platform.OS === "ios"
+        ? Keyboard.addListener("keyboardWillChangeFrame", onChangeFrame)
+        : Keyboard.addListener("keyboardDidChangeFrame", onChangeFrame),
+      Platform.OS === "ios"
+        ? Keyboard.addListener("keyboardWillHide", onHide)
+        : Keyboard.addListener("keyboardDidHide", onHide),
+    ];
+
+    return () => subs.forEach((s) => s.remove());
+  }, [recomputeShift, shift]);
 
   const handleLogin = async () => {
     setError(null);
@@ -57,7 +130,6 @@ export default function Index() {
       Keyboard.dismiss();
       setSubmitting(true);
       await signInWithEmailAndPassword(auth, email.trim(), password);
-      // Let the gate redirect to /home. Do optional post-login work:
       await syncPushTokenIfGranted();
     } catch (e: any) {
       const code = e?.code || "";
@@ -84,12 +156,17 @@ export default function Index() {
 
       <KeyboardAvoidingView
         style={{ flex: 1, backgroundColor: colors.bg }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={undefined}
       >
         <StatusBar barStyle="dark-content" />
         <SafeAreaView style={{ flex: 1 }}>
           <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-            <View style={[styles.container, { paddingTop: insets.top + TOP_OFFSET }]}>
+            <Animated.View
+              style={[
+                styles.container,
+                { paddingTop: insets.top + TOP_OFFSET, transform: [{ translateY: shift }] },
+              ]}
+            >
               {/* decorative soft circles */}
               <View style={styles.blobA} />
               <View style={styles.blobB} />
@@ -106,7 +183,7 @@ export default function Index() {
               </View>
 
               {/* card */}
-              <View style={styles.card}>
+              <View ref={cardRef} style={styles.card}>
                 {error ? <Text style={styles.error}>{error}</Text> : null}
 
                 <View style={styles.inputGroup}>
@@ -126,7 +203,7 @@ export default function Index() {
                     value={email}
                     editable={!submitting}
                     onChangeText={setEmail}
-                    onFocus={() => setEmailFocused(true)}
+                    onFocus={() => { setEmailFocused(true); /* no recompute on focus */ }}
                     onBlur={() => setEmailFocused(false)}
                     returnKeyType="next"
                     blurOnSubmit
@@ -151,7 +228,7 @@ export default function Index() {
                       value={password}
                       editable={!submitting}
                       onChangeText={setPassword}
-                      onFocus={() => setPwFocused(true)}
+                      onFocus={() => { setPwFocused(true); /* no recompute on focus */ }}
                       onBlur={() => setPwFocused(false)}
                       textContentType="password"
                       autoComplete="password"
@@ -163,7 +240,6 @@ export default function Index() {
                     </Pressable>
                   </View>
                 </View>
-
 
                 <Pressable
                   onPress={handleLogin}
@@ -183,7 +259,6 @@ export default function Index() {
                   )}
                 </Pressable>
 
-                {/* Forgot password link (moved below Enter) */}
                 <View style={{ alignItems: "center", marginTop: 10 }}>
                   <Link href="/forgot-password" style={styles.link}>
                     Forgot password?
@@ -192,13 +267,12 @@ export default function Index() {
 
                 <View style={styles.bottomRow}>
                   <Text style={{ color: colors.subtle }}>New here?</Text>
-                  {/* This now works because /signup is a PUBLIC_ROUTE in the gate */}
                   <Link href="/signup" style={styles.link}>
                     Create an account
                   </Link>
                 </View>
               </View>
-            </View>
+            </Animated.View>
           </TouchableWithoutFeedback>
           {submitting && (
             <View style={styles.blocker} pointerEvents="auto">
@@ -286,13 +360,13 @@ const styles = StyleSheet.create({
     left: -30,
   },
   blocker: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: 'rgba(255,255,255,0.98)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "rgba(255,255,255,0.98)",
+    alignItems: "center",
+    justifyContent: "center",
   },
 });
