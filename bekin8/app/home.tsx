@@ -222,9 +222,26 @@ export default function HomeScreen() {
   }, [todayStart, windowEnd]);
 
   useEffect(() => {
-  // Safe: only runs if permission is already granted; never shows a prompt
-  syncPushTokenIfGranted();
-}, []);
+    // Silent refresh: only saves if permission already granted.
+    syncPushTokenIfGranted();
+  }, []);
+
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', () => {}); // no-op to keep imports happy
+    const onFocus = () => {
+      // If the user has since granted permission in Settings, this will update the token.
+      syncPushTokenIfGranted();
+    };
+    const appStateHandler = ({ type }: any) => {
+      if (type === 'active') onFocus();
+    };
+    const AppState = require('react-native').AppState;
+    const subState = AppState.addEventListener('change', appStateHandler);
+    return () => {
+      sub.remove();
+      subState.remove();
+    };
+  }, []);
 
   // keep details modal live
   useEffect(() => {

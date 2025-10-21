@@ -71,21 +71,24 @@ async function recipientWantsNotify(recipientUid: string, ownerUid: string): Pro
   return a || b;
 }
 
-/** All accepted friend UIDs for an owner (from FriendEdges). */
+/** All friend UIDs for an owner (from FriendEdges, regardless of state). */
 async function friendUidsOf(ownerUid: string): Promise<string[]> {
+  // Some documents use `state: 'accepted'`, others have no state at all.
+  // Query only by membership and validate client-side.
   const qs = await db
     .collection('FriendEdges')
     .where('uids', 'array-contains', ownerUid)
-    .where('state', '==', 'accepted')
     .get();
 
   const out = new Set<string>();
   qs.forEach((doc) => {
     const data = doc.data() as any;
     const uids: string[] = Array.isArray(data?.uids) ? data.uids : [];
-    const other = uids.find((u) => u !== ownerUid);
-    if (other) out.add(other);
+    if (uids.length !== 2) return;
+    const other = uids[0] === ownerUid ? uids[1] : uids[0];
+    if (other && other !== ownerUid) out.add(other);
   });
+
   return Array.from(out);
 }
 
@@ -132,16 +135,24 @@ async function getPushTokensFromSubcollection(uid: string): Promise<string[]> {
   return Array.from(set);
 }
 
-/** Legacy fallbacks: Profiles/{uid}.expoPushToken and users/{uid}.expoPushToken */
+/** Legacy fallbacks: Profiles/{uid}.expoPushToken, users/{uid}.expoPushToken, users/{uid}.pushToken */
 async function getLegacySingleToken(uid: string): Promise<string[]> {
   const out: string[] = [];
-  const prof = await db.collection('Profiles').doc(uid).get();
-  const t1 = prof.exists ? (prof.data()?.expoPushToken as string | undefined) : undefined;
-  if (t1 && Expo.isExpoPushToken(t1)) out.push(t1);
 
-  const u = await db.collection('users').doc(uid).get();
-  const t2 = u.exists ? (u.data()?.expoPushToken as string | undefined) : undefined;
-  if (t2 && Expo.isExpoPushToken(t2)) out.push(t2);
+  // Profiles/{uid}.expoPushToken
+  const prof = await db.collection('Profiles').doc(uid).get();
+  const pTok = prof.exists ? (prof.data()?.expoPushToken as string | undefined) : undefined;
+  if (pTok && Expo.isExpoPushToken(pTok)) out.push(pTok);
+
+  // users/{uid}.expoPushToken and users/{uid}.pushToken (older)
+  const userDoc = await db.collection('users').doc(uid).get();
+  if (userDoc.exists) {
+    const u = userDoc.data() || {};
+    const uExpo = u.expoPushToken as string | undefined;
+    const uOld  = u.pushToken as string | undefined; // ← State A fallback
+    if (uExpo && Expo.isExpoPushToken(uExpo)) out.push(uExpo);
+    if (uOld  && Expo.isExpoPushToken(uOld))  out.push(uOld);
+  }
 
   return out;
 }
@@ -155,14 +166,43 @@ async function getAllExpoTokens(uid: string): Promise<string[]> {
   return Array.from(new Set([...multi, ...legacy]));
 }
 
-/** Remove a token from users/{uid}/pushTokens/* where it matches .token */
+/** Remove a token from users/{uid}/pushTokens/* and clear legacy single-token fields if they match. */
 async function removeTokenEverywhere(userUid: string, token: string) {
   const col = db.collection('users').doc(userUid).collection('pushTokens');
   const snaps = await col.get();
+
   const batch = db.batch();
+
+  // Delete any subcollection docs that hold this token
   snaps.forEach((docSnap) => {
     if ((docSnap.data() as any)?.token === token) batch.delete(docSnap.ref);
   });
+
+  // Clear legacy fields on users/{uid} if they equal this token
+  const userRef = db.collection('users').doc(userUid);
+  const userSnap = await userRef.get();
+  if (userSnap.exists) {
+    const u = userSnap.data() || {};
+    const userUpdates: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> = {};
+    if (u.expoPushToken === token) userUpdates['expoPushToken'] = FieldValue.delete();
+    if (u.pushToken === token)      userUpdates['pushToken'] = FieldValue.delete();
+    if (Object.keys(userUpdates).length > 0) {
+      batch.update(userRef, userUpdates);
+    }
+  }
+
+  // Clear legacy field on Profiles/{uid} if it equals this token
+  const profRef = db.collection('Profiles').doc(userUid);
+  const profSnap = await profRef.get();
+  if (profSnap.exists) {
+    const p = profSnap.data() || {};
+    const profUpdates: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> = {};
+    if (p.expoPushToken === token) profUpdates['expoPushToken'] = FieldValue.delete();
+    if (Object.keys(profUpdates).length > 0) {
+      batch.update(profRef, profUpdates);
+    }
+  }
+
   await batch.commit();
 }
 
@@ -213,6 +253,12 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   if (!ownerUid) return;
 
   const recipients = await eligibleRecipients(b.allowedUids, ownerUid);
+  logger.info('fanOut recipients', {
+    beaconId,
+    ownerUid,
+    allowedCount: Array.isArray(b.allowedUids) ? b.allowedUids.length : 0,
+    recipientCount: recipients.length,
+  });
   if (recipients.length === 0) return;
 
   const title = titleFor(b);

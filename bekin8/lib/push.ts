@@ -12,22 +12,40 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 
+/**
+ * NOTES:
+ * - Canonical write: users/{uid}/pushTokens/{installationId} { token, platform, ... }
+ * - Legacy mirrors (for current Functions/queries): users/{uid}.expoPushToken and Profiles/{uid}.expoPushToken
+ * - EXTRA legacy mirror for older data: users/{uid}.pushToken (temporary until server is fully normalized)
+ */
+
 // --- Public API ---
 /**
  * Call this once on app start (after React mounts).
  * - Sets foreground behavior.
- * - (Optional) attach listeners later if you want.
+ * - Ensures Android has a default notification channel so alerts show reliably.
  */
-export function initNotifications() {
+export async function initNotifications() {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,   // show alerts even in foreground on iOS
+      shouldShowAlert: true, // show alerts even in foreground on iOS
       shouldPlaySound: true,
       shouldSetBadge: false,
       shouldShowBanner: true,
       shouldShowList: true,
     }),
   });
+
+  // Android requires a channel for heads-up alerts with sound.
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "Default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      sound: "default",
+    });
+  }
 }
 
 /**
@@ -72,7 +90,10 @@ export async function ensurePushPermissionsAndToken(): Promise<{
         installationId,
         updatedAt: serverTimestamp(),
         appVersion: Constants.expoConfig?.version ?? null,
-        build: Constants.expoConfig?.ios?.buildNumber ?? null,
+        build:
+          (Platform.OS === "ios"
+            ? Constants.expoConfig?.ios?.buildNumber
+            : Constants.expoConfig?.android?.versionCode) ?? null,
       },
       { merge: true }
     );
@@ -91,9 +112,13 @@ export async function ensurePushPermissionsAndToken(): Promise<{
     await setDoc(
       doc(db, "users", user.uid),
       {
+        // modern legacy mirror (preferred)
         expoPushToken: token,
         expoPlatform: Platform.OS,
         expoUpdatedAt: serverTimestamp(),
+
+        // ultra-legacy mirror (temporary; covers old queries that expect `pushToken`)
+        pushToken: token,
       },
       { merge: true }
     );
@@ -149,15 +174,17 @@ export async function unsubscribeFromFriendNotifications(friendUid: string) {
 async function getExpoPushToken(): Promise<string | undefined> {
   // Since SDK 49+, supplying projectId is safest for EAS builds.
   // It auto-resolves for classic projects; otherwise add your EAS projectId to app config if needed.
-  const owner = Constants.expoConfig?.owner;
-  const slug  = Constants.expoConfig?.slug;
 
   // Prefer EAS projectId when available (dev client / production builds)
   const projectId: string | undefined =
     // SDK 50+: easConfig is the canonical place
-    (Constants as any).easConfig?.projectId
-    ?? Constants.expoConfig?.extra?.eas?.projectId
-    ?? (owner && slug ? `${owner}/${slug}` : undefined);
+    (Constants as any).easConfig?.projectId ??
+    // common pattern for passing via extra
+    Constants.expoConfig?.extra?.eas?.projectId ??
+    // fallback best effort (classic)
+    (Constants.expoConfig?.owner && Constants.expoConfig?.slug
+      ? `${Constants.expoConfig.owner}/${Constants.expoConfig.slug}`
+      : undefined);
 
   const tok = await Notifications.getExpoPushTokenAsync(
     projectId ? { projectId } : undefined
@@ -177,6 +204,6 @@ async function getInstallationId(): Promise<string> {
 
 export async function syncPushTokenIfGranted() {
   const status = (await Notifications.getPermissionsAsync()).status;
-  if (status !== "granted") return;          // no prompt here
-  await ensurePushPermissionsAndToken();     // saves/updates token for this device
+  if (status !== "granted") return; // no prompt here
+  await ensurePushPermissionsAndToken(); // saves/updates token for this device
 }

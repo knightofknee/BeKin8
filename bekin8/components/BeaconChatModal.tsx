@@ -75,7 +75,7 @@ export default function BeaconChatModal({
       return;
     }
     setLoadingChat(true);
-    const msgsRef = collection(db, 'beacons', beacon.id, 'messages');
+    const msgsRef = collection(db, 'Beacons', beacon.id, 'ChatMessages');
     const unsub = onSnapshot(query(msgsRef, orderBy('createdAt', 'asc'), limit(200)), (snap) => {
       const msgs: ChatMsg[] = [];
       snap.forEach((d) => {
@@ -103,7 +103,7 @@ export default function BeaconChatModal({
     if (!text) return;
     try {
       setChatInput('');
-      await addDoc(collection(db, 'beacons', beacon.id, 'messages'), {
+      await addDoc(collection(db, 'Beacons', beacon.id, 'ChatMessages'), {
         text,
         senderId: user.uid,
         senderName: meDisplayName,
