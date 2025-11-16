@@ -59,19 +59,40 @@ const asStringArray = (v: any): string[] => (Array.isArray(v) ? v.filter((x) => 
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 
-async function fetchProfileNames(uids: string[]) {
-  const results: Record<string, string> = {};
-  for (const uid of uids) {
-    try {
-      const snap = await getDoc(doc(db, 'Profiles', uid));
-      if (snap.exists()) {
-        const data: any = snap.data();
-        const uname = (data?.username || data?.displayName || '').toString().trim();
-        if (uname) results[uid] = uname;
-      }
-    } catch { /* ignore */ }
+// Prefer Profiles.displayName → Profiles.username → users.username
+async function fetchProfileNames(uids: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  if (!uids || uids.length === 0) return out;
+
+  // read Profiles in small chunks
+  const chunks: string[][] = [];
+  for (let i = 0; i < uids.length; i += 10) chunks.push(uids.slice(i, i + 10));
+
+  for (const ids of chunks) {
+    const reads = ids.map((uid) => getDoc(doc(db, "Profiles", uid)));
+    const snaps = await Promise.all(reads);
+    snaps.forEach((snap, idx) => {
+      const uid = ids[idx];
+      if (!snap.exists()) return;
+      const d: any = snap.data() || {};
+      const display = typeof d.displayName === "string" ? d.displayName.trim() : "";
+      const uname   = typeof d.username === "string" ? d.username.trim() : "";
+      out[uid] = display || uname || "";
+    });
   }
-  return results;
+
+  // backfill blanks from users/{uid}.username
+  const missing = uids.filter((uid) => !out[uid]);
+  for (const uid of missing) {
+    try {
+      const us = await getDoc(doc(db, "users", uid));
+      const ud = us.exists() ? (us.data() as any) : {};
+      const uname = typeof ud.username === "string" ? ud.username.trim() : "";
+      if (uname) out[uid] = uname;
+    } catch {}
+  }
+
+  return out;
 }
 
 export default function FriendsBeaconsList({ onSelect }: Props) {
@@ -83,6 +104,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const nameCacheRef = useRef<Record<string, string>>({});
   const beaconUnsubsRef = useRef<(() => void)[]>([]);
   const docStoreRef = useRef<Map<string, any>>(new Map());
+  const profilesFetchedRef = useRef<Set<string>>(new Set());
 
   // visibility group cache: groupId -> Set(memberUids)
   const groupMembersCacheRef = useRef<Record<string, Set<string> | null | undefined>>({});
@@ -179,7 +201,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
     unsubs.push(
       onSnapshot(
-        query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me.uid), where('state', '==', 'accepted')),
+        query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me.uid)),
         (snap) => {
           const uids = new Set<string>();
           snap.forEach((d) => {
@@ -204,11 +226,14 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
     type Candidate = FriendBeacon & { _createdMs: number };
     const candidates: Candidate[] = [];
-    const unknownUids = new Set<string>();
+    const toFetchProfiles = new Set<string>();
     const groupsToFetch = new Set<string>();
 
     store.forEach((data: any, id: string) => {
       const stMillis = getMillis(data?.startAt);
+      // Hide past beacons and clamp to our 7‑day window
+      if (stMillis < todayStart.getTime()) return;
+      // if (stMillis > windowEnd.getTime()) return;
       if (!stMillis) return;
 
       const ownerUid = String(data.ownerUid ?? '');
@@ -238,7 +263,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       }
       if (!canSee) return;
 
-      if (!nameCacheRef.current[ownerUid]) unknownUids.add(ownerUid);
+      if (!profilesFetchedRef.current.has(ownerUid)) toFetchProfiles.add(ownerUid);
 
       const ownerName: string =
         (typeof data.ownerName === 'string' && data.ownerName.trim()) ||
@@ -280,18 +305,17 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
     setBeacons(out);
 
-    // resolve unknown names
-    if (unknownUids.size) {
-      out.forEach((b) => {
-        if (b.displayName !== 'Friend') unknownUids.delete(b.ownerUid);
+    // Resolve names from Profiles for any owners we haven't fetched yet (override username cache)
+    if (toFetchProfiles.size) {
+      const list = Array.from(toFetchProfiles);
+      fetchProfileNames(list).then((map) => {
+        if (!map || Object.keys(map).length === 0) return;
+        // Overwrite cache entries with authoritative Profiles values
+        Object.assign(nameCacheRef.current, map);
+        list.forEach((uid) => profilesFetchedRef.current.add(uid));
+        // trigger re-render so FriendBeaconItem reads latest names from cache
+        setBeacons((prev) => (prev ? [...prev] : prev));
       });
-      if (unknownUids.size) {
-        fetchProfileNames(Array.from(unknownUids)).then((map) => {
-          if (!map || Object.keys(map).length === 0) return;
-          Object.assign(nameCacheRef.current, map);
-          setBeacons((prev) => (prev ? [...prev] : prev));
-        });
-      }
     }
 
     // fetch any unknown groups (lazy, cached), then recompute
@@ -392,6 +416,8 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   // UI bits
   const FriendBeaconItem = ({ beacon, index }: { beacon: FriendBeacon; index: number }) => {
     const isToday = sameDay(beacon.startAt, new Date());
+    // Prefer live cache (Profiles.displayName) over stamped/beacon ownerName
+    const ownerLabel = (nameCacheRef.current[beacon.ownerUid] || beacon.displayName || 'Friend').toString();
 
     return (
       <Pressable
@@ -412,11 +438,11 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         ]}
       >
         <View style={styles.avatar}>
-          <Text style={styles.avatarTxt}>{beacon.displayName?.[0]?.toUpperCase() || 'F'}</Text>
+          <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.beaconOwner} numberOfLines={1}>
-            {beacon.displayName}
+            {ownerLabel}
           </Text>
           <Text style={styles.beaconWhen} numberOfLines={1}>
             {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}

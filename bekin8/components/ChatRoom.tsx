@@ -65,13 +65,30 @@ function getMillis(v: any): number {
 }
 
 async function resolveMyName(uid: string): Promise<string> {
+  // Prefer Profiles.displayName (editable), then username, then auth/displayName, then email prefix.
   try {
-    const snap = await getDoc(doc(db, 'Profiles', uid));
-    const username = (snap.data() as any)?.username;
-    if (typeof username === 'string' && username.trim()) return username.trim();
-  } catch {}
-  const u = auth.currentUser;
-  return (u?.displayName || '').toString().trim() || 'Me';
+    const profSnap = await getDoc(doc(db, 'Profiles', uid));
+    const prof = profSnap.exists() ? (profSnap.data() as any) : {};
+    const display = typeof prof.displayName === 'string' ? prof.displayName.trim() : '';
+    if (display.length > 0) return display;
+
+    // Fallbacks for username
+    const userSnap = await getDoc(doc(db, 'users', uid));
+    const userDoc = userSnap.exists() ? (userSnap.data() as any) : {};
+    const unameProfiles = typeof prof.username === 'string' ? prof.username.trim() : '';
+    const unameUsers    = typeof userDoc.username === 'string' ? userDoc.username.trim() : '';
+    if (unameUsers) return unameUsers;
+    if (unameProfiles) return unameProfiles;
+
+    const authName = (auth.currentUser?.displayName || '').toString().trim();
+    if (authName) return authName;
+
+    const emailPrefix = (auth.currentUser?.email || '').split('@')[0] || '';
+    if (emailPrefix) return emailPrefix;
+  } catch {
+    // ignore and continue to final fallback
+  }
+  return 'Me';
 }
 
 const CHAT_ACCESSORY_ID = 'chatroom-accessory';

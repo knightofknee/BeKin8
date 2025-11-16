@@ -22,6 +22,7 @@ import {
   query,
   serverTimestamp,
   Timestamp,
+  getDoc,
   onSnapshot as onUserSnapshot,
 } from 'firebase/firestore';
 
@@ -57,6 +58,70 @@ export default function BeaconChatModal({
   const [chatInput, setChatInput] = useState('');
   const [meDisplayName, setMeDisplayName] = useState('Me');
 
+  const [nameCache, setNameCache] = useState<Record<string, { displayName?: string; username?: string }>>({});
+  const [collideUids, setCollideUids] = useState<Set<string>>(new Set());
+  async function resolveNames(uids: string[]) {
+    const updates: Record<string, { displayName?: string; username?: string }> = {};
+    for (const uid of uids) {
+      if (nameCache[uid]) continue;
+      try {
+        // Profiles first
+        const ps = await getDoc(doc(db, 'Profiles', uid));
+        if (ps.exists()) {
+          const d: any = ps.data() || {};
+          const displayName = (d.displayName || '').toString().trim();
+          const usernameProf = (d.username || '').toString().trim();
+          updates[uid] = { displayName: displayName || undefined, username: usernameProf || undefined };
+        } else {
+          updates[uid] = {};
+        }
+        // Backfill username from users/{uid} if missing
+        if (!updates[uid].username) {
+          const us = await getDoc(doc(db, 'users', uid));
+          if (us.exists()) {
+            const ud: any = us.data() || {};
+            const uname = (ud.username || '').toString().trim();
+            if (uname) updates[uid].username = uname;
+          }
+        }
+      } catch {
+        // ignore errors per-uid
+      }
+    }
+    if (Object.keys(updates).length) {
+      setNameCache((prev) => ({ ...prev, ...updates }));
+    }
+
+    // Recompute collisions across all known names in this chat
+    const byDisplay: Record<string, string[]> = {};
+    const all = { ...nameCache, ...updates } as Record<string, { displayName?: string; username?: string }>;
+    Object.entries(all).forEach(([uid, v]) => {
+      const dn = (v.displayName || '').trim();
+      if (!dn) return;
+      byDisplay[dn] = byDisplay[dn] || [];
+      byDisplay[dn].push(uid);
+    });
+    const newSet = new Set<string>();
+    Object.values(byDisplay).forEach((arr) => {
+      if (arr.length > 1) arr.forEach((u) => newSet.add(u));
+    });
+    setCollideUids(newSet);
+  }
+
+  function displayLabelFor(uid: string, stampedName?: string) {
+    const entry = nameCache[uid] || {};
+    const dn = (entry.displayName || '').trim();
+    const un = (entry.username || '').trim();
+    // Base label preference: displayName → stampedName → username → 'Friend'
+    const base = dn || (stampedName || '').trim() || un || 'Friend';
+    if (dn && collideUids.has(uid)) {
+      // Disambiguate when two+ users share the same displayName
+      const at = un ? ` · @${un}` : '';
+      return dn + at;
+    }
+    return base;
+  }
+
   // My display name
   useEffect(() => {
     const user = auth.currentUser;
@@ -89,6 +154,8 @@ export default function BeaconChatModal({
           expireAt: data.expireAt,
         });
       });
+      const uniqueIds = Array.from(new Set(msgs.map((m) => m.senderId)));
+      resolveNames(uniqueIds);
       setChatMessages(msgs);
       setLoadingChat(false);
     });
@@ -158,7 +225,7 @@ export default function BeaconChatModal({
               contentContainerStyle={{ paddingVertical: 6 }}
               renderItem={({ item }) => (
                 <View style={styles.msgBubble}>
-                  <Text style={styles.msgSender}>{item.senderName}</Text>
+                  <Text style={styles.msgSender}>{displayLabelFor(item.senderId, item.senderName)}</Text>
                   <Text style={styles.msgText}>{item.text}</Text>
                   <Text style={styles.msgTime}>
                     {item.createdAt?.toDate

@@ -261,8 +261,16 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   });
   if (recipients.length === 0) return;
 
-  const title = titleFor(b);
   const body = summarize(b);
+
+  // Prefer Profiles.displayName at send time for the title
+  let ownerDisplay = (b.ownerName || "").toString().trim();
+  try {
+    const profSnap = await db.collection("Profiles").doc(ownerUid).get();
+    const dn = profSnap.exists ? (profSnap.data() as any)?.displayName : undefined;
+    if (typeof dn === "string" && dn.trim().length > 0) ownerDisplay = dn.trim();
+  } catch {}
+  const title = ownerDisplay ? `${ownerDisplay} lit a beacon` : "A friend lit a beacon";
 
   for (const recipientUid of recipients) {
     const tokens = await getAllExpoTokens(recipientUid);

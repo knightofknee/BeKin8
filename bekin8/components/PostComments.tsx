@@ -69,9 +69,28 @@ function getMillis(v: any): number {
 
 async function resolveMyName(uid: string): Promise<string> {
   try {
-    const snap = await getDoc(doc(db, 'Profiles', uid));
-    const username = (snap.data() as any)?.username;
-    if (typeof username === 'string' && username.trim()) return username.trim();
+    // Prefer editable display name stored in Profiles
+    const profSnap = await getDoc(doc(db, 'Profiles', uid));
+    const prof: any = profSnap.exists() ? profSnap.data() : {};
+    const display = typeof prof.displayName === 'string' ? prof.displayName.trim() : '';
+    if (display) return display;
+
+    // Fallbacks to usernames (no case mangling)
+    const unameProfile = typeof prof.username === 'string' ? prof.username.trim() : '';
+    if (unameProfile) return unameProfile;
+
+    const userSnap = await getDoc(doc(db, 'users', uid));
+    const userDoc: any = userSnap.exists() ? userSnap.data() : {};
+    const unameUsers = typeof userDoc.username === 'string' ? userDoc.username.trim() : '';
+    if (unameUsers) return unameUsers;
+
+    // Local-only fallbacks if resolving self
+    if (auth.currentUser?.uid === uid) {
+      const authName = (auth.currentUser.displayName || '').trim();
+      if (authName) return authName;
+      const emailPrefix = (auth.currentUser.email || '').split('@')[0] || '';
+      if (emailPrefix) return emailPrefix;
+    }
   } catch {}
   return 'Me';
 }
@@ -87,6 +106,19 @@ export default function PostComments({ post, onClose }: Props) {
   const [sending, setSending] = useState(false);
 
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
+  const [postAuthorName, setPostAuthorName] = useState<string>(post.authorUsername);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const name = await resolveMyName(post.authorUid);
+        if (alive) setPostAuthorName(name);
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [post.authorUid]);
 
   const listRef = useRef<FlatList<Comment>>(null);
   const didInitialScrollRef = useRef(false);
@@ -261,11 +293,11 @@ export default function PostComments({ post, onClose }: Props) {
               <View style={styles.headerRow}>
                 <View style={styles.avatar}>
                   <Text style={styles.avatarTxt}>
-                    {(post.authorUsername?.[0] || 'F').toUpperCase()}
+                    {(postAuthorName?.[0] || 'F').toUpperCase()}
                   </Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.author}>{post.authorUsername}</Text>
+                  <Text style={styles.author}>{postAuthorName}</Text>
                   <Text style={styles.meta}>{post.createdAt.toLocaleString()}</Text>
                 </View>
                 <Pressable hitSlop={10} onPress={onClose}>

@@ -45,23 +45,47 @@ interface Post {
 
 const prefKey = () => `feed_showMine:${auth.currentUser?.uid ?? 'anon'}`;
 
-async function fetchUsernames(uids: string[]): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
+async function fetchUsernames(uids: string[]): Promise<{ names: Record<string, string>; usernames: Record<string, string> }> {
+  const names: Record<string, string> = {};
+  const usernames: Record<string, string> = {};
+  if (!uids || uids.length === 0) return { names, usernames };
+
+  // 1) Read Profiles first (prefer displayName, then username)
   await Promise.all(
     uids.map(async (uid) => {
       try {
         const snap = await getDoc(doc(db, 'Profiles', uid));
         if (snap.exists()) {
-          const data: any = snap.data();
-          const uname = (data?.username || data?.displayName || '').toString().trim();
-          if (uname) out[uid] = uname;
+          const data: any = snap.data() || {};
+          const display = (data?.displayName || '').toString().trim();
+          const uname   = (data?.username || '').toString().trim();
+          if (uname) usernames[uid] = uname;
+          const best = display || uname;
+          if (best) names[uid] = best;
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     })
   );
-  return out;
+
+  // 2) Backfill any missing from users/{uid}.username
+  const missing = uids.filter((uid) => !names[uid]);
+  await Promise.all(
+    missing.map(async (uid) => {
+      try {
+        const us = await getDoc(doc(db, 'users', uid));
+        if (us.exists()) {
+          const ud: any = us.data() || {};
+          const uname = (ud?.username || '').toString().trim();
+          if (uname) {
+            usernames[uid] = usernames[uid] || uname;
+            names[uid] = names[uid] || uname;
+          }
+        }
+      } catch { /* ignore */ }
+    })
+  );
+
+  return { names, usernames };
 }
 
 export default function Feed() {
@@ -137,12 +161,11 @@ export default function Feed() {
         console.error('Error fetching Friends doc:', err);
       }
 
-      // FriendEdges (accepted)
+      // FriendEdges (membership only, validate client-side)
       try {
         const qEdges = query(
           collection(db, 'FriendEdges'),
-          where('uids', 'array-contains', meUid),
-          where('state', '==', 'accepted')
+          where('uids', 'array-contains', meUid)
         );
         const edgeSnap = await getDocs(qEdges);
         edgeSnap.forEach((d) => {
@@ -175,9 +198,9 @@ export default function Feed() {
 
       // fill names
       const missingUids = authorUids.filter((u) => (u === meUid ? false : !friendMap.get(u)));
-      const fetched = await fetchUsernames([meUid, ...missingUids]);
-      const myUsername = fetched[meUid] || 'You';
-      Object.entries(fetched).forEach(([uid, uname]) => {
+      const { names: fetchedNames, usernames: fetchedUsernames } = await fetchUsernames([meUid, ...missingUids]);
+      const myUsername = fetchedNames[meUid] || friendMap.get(meUid) || 'You';
+      Object.entries(fetchedNames).forEach(([uid, uname]) => {
         if (uid !== meUid) friendMap.set(uid, uname || friendMap.get(uid) || '');
       });
 
@@ -242,7 +265,27 @@ export default function Feed() {
         (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
       );
 
-      setPosts(uniquePosts);
+      // Disambiguate same-name authors across DISTINCT users only
+      // Build a map: label -> Set of distinct author UIDs with that label
+      const labelToUids = new Map<string, Set<string>>();
+      uniquePosts.forEach((p) => {
+        const label = p.authorUsername; // this is the display label (displayName or username)
+        if (!labelToUids.has(label)) labelToUids.set(label, new Set());
+        labelToUids.get(label)!.add(p.authorUid);
+      });
+
+      const postsWithLabels = uniquePosts.map((p) => {
+        const labelSet = labelToUids.get(p.authorUsername);
+        const hasCollision = !!labelSet && labelSet.size > 1; // only collide if 2+ DISTINCT users share label
+        if (hasCollision) {
+          const at = fetchedUsernames[p.authorUid] ? ` · @${fetchedUsernames[p.authorUid]}` : '';
+          return { ...p, authorUsername: `${p.authorUsername}${at}` };
+        }
+        return p;
+      });
+
+      setPosts(postsWithLabels);
+      return;
     } catch (err) {
       console.error('loadFeed fatal error:', err);
       // we still drop the loader in finally
@@ -262,13 +305,19 @@ export default function Feed() {
     if (!me) return;
     const unsubA = onSnapshot(collection(db, 'users', me, 'friends'), () => loadFeed(), () => {});
     const unsubB = onSnapshot(
-      query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me), where('state', '==', 'accepted')),
+      query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me)),
       () => loadFeed(),
       () => {}
     );
-    return () => {
+    const unsubC = onSnapshot(
+      doc(db, 'Profiles', me),
+      () => loadFeed(),
+      () => {}
+    );
+    return () => {  
       unsubA();
       unsubB();
+      unsubC();
     };
   }, [loadFeed]);
 
