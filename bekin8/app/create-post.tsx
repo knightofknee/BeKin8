@@ -122,7 +122,7 @@ export default function CreatePostScreen() {
         orderBy('timestamp', 'asc')
       );
       const snap = await getDocs(qRef);
-      if (snap.size > 1) {
+      if (snap.size >= 2) {
         Alert.alert('Posting limit reached', 'You have already submitted 2 posts in the past week.');
         return;
       }

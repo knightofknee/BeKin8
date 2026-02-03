@@ -192,7 +192,7 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
         groupIds: selectedGroupIds,
         allowedUids,
         updatedAt: serverTimestamp(),
-        ...(beaconId ? {} : { createdAt: serverTimestamp(), isActive: true }),
+        ...(beaconId ? {} : { createdAt: serverTimestamp(), active: true }),
       };
 
       const ref = beaconId ? doc(db, "Beacons", beaconId) : doc(collection(db, "Beacons"));

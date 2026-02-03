@@ -244,7 +244,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       if (!active && !scheduled) return; // extinguished
 
       // --- visibility (default: visible to all friends if no groups set) ---
-      const groupIds = asStringArray(data?.visibilityGroups);
+      const groupIds = asStringArray(data?.groupIds);
       let canSee = true; // default allow when not set/empty
       if (groupIds.length > 0) {
         canSee = false; // tighten: must be in at least one group

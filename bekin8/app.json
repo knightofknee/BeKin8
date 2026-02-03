@@ -47,7 +47,7 @@
         }
       ],
       "expo-web-browser",
-      "expo-secure-store"
+      ["expo-secure-store", { "faceIDPermission": false }]
     ],
     "experiments": {
       "typedRoutes": true
