@@ -34,7 +34,10 @@
     },
     "plugins": [
       [
-        "expo-notifications"
+        "expo-notifications",
+        {
+          "mode": "production"
+        }
       ],
       "expo-router",
       [

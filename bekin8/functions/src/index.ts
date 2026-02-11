@@ -27,7 +27,7 @@ type Beacon = {
 };
 
 // ===== Expo client & constants =====
-const expo = new Expo({ useFcmV1: false });
+const expo = new Expo({ useFcmV1: true });
 const TICKET_TTL_HOURS = 48;
 
 // ===== Helpers: content =====
@@ -92,10 +92,22 @@ async function friendUidsOf(ownerUid: string): Promise<string[]> {
   return Array.from(out);
 }
 
-/** 
+/** Check if recipient has blocked the beacon owner. */
+async function recipientHasBlocked(recipientUid: string, ownerUid: string): Promise<boolean> {
+  const blockDoc = await db
+    .collection('users')
+    .doc(recipientUid)
+    .collection('blocks')
+    .doc(ownerUid)
+    .get();
+  return blockDoc.exists;
+}
+
+/**
  * Eligible = (allowedUids OR all accepted friends if none provided)
  *            ∩ users who opted in (new subdoc OR legacy notify flag)
  *            − ownerUid
+ *            − users who blocked ownerUid
  */
 async function eligibleRecipients(allowed: string[] | undefined, ownerUid: string): Promise<string[]> {
   // Normalize allowed list (remove falsy, remove owner)
@@ -115,7 +127,11 @@ async function eligibleRecipients(allowed: string[] | undefined, ownerUid: strin
 
   await Promise.all(
     Array.from(baseSet).map(async (uid) => {
-      if (await recipientWantsNotify(uid, ownerUid)) out.push(uid);
+      const [wants, blocked] = await Promise.all([
+        recipientWantsNotify(uid, ownerUid),
+        recipientHasBlocked(uid, ownerUid),
+      ]);
+      if (wants && !blocked) out.push(uid);
     })
   );
 
@@ -272,9 +288,15 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   } catch {}
   const title = ownerDisplay ? `${ownerDisplay} lit a beacon` : "A friend lit a beacon";
 
+  let totalTokens = 0;
+  let totalSent = 0;
+  let totalErrors = 0;
+
   for (const recipientUid of recipients) {
     const tokens = await getAllExpoTokens(recipientUid);
+    logger.info('tokens for recipient', { recipientUid, tokenCount: tokens.length, tokens });
     if (tokens.length === 0) continue;
+    totalTokens += tokens.length;
 
     const messages: ExpoPushMessage[] = tokens.map((token) => ({
       to: token,
@@ -289,10 +311,17 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
     for (const msgs of chunks) {
       try {
         const tickets = await expo.sendPushNotificationsAsync(msgs);
+        logger.info('Expo tickets', { recipientUid, tickets });
         // Align ticket to token (index matched)
         for (let i = 0; i < tickets.length; i++) {
           const t = tickets[i];
           const tok = msgs[i].to as string;
+          if (t.status === 'ok') {
+            totalSent++;
+          } else {
+            totalErrors++;
+            logger.error('Expo ticket error', { recipientUid, token: tok, ticket: t });
+          }
           await saveTickets([t], {
             subscriberUid: recipientUid,
             friendUid: ownerUid,
@@ -301,10 +330,13 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
           });
         }
       } catch (err) {
+        totalErrors++;
         logger.error('Expo send error', { recipientUid, ownerUid, beaconId, err });
       }
     }
   }
+
+  logger.info('fanOut complete', { beaconId, totalTokens, totalSent, totalErrors });
 }
 
 // ===== Triggers (v2) =====
@@ -317,7 +349,7 @@ export const onBeaconCreatedNotify = onDocumentCreated('Beacons/{beaconId}', asy
   await fanOutForBeacon(beaconId, b);
 });
 
-// 2) Existing beacon flipping inactive -> active
+// 2) Existing beacon flipping inactive -> active (also cleans up stale scheduled flag)
 export const onBeaconActivatedNotify = onDocumentUpdated('Beacons/{beaconId}', async (event) => {
   const before = (event.data?.before?.data() as Beacon | undefined) ?? undefined;
   const after = (event.data?.after?.data() as Beacon | undefined) ?? undefined;
@@ -325,9 +357,18 @@ export const onBeaconActivatedNotify = onDocumentUpdated('Beacons/{beaconId}', a
 
   const wasActive = before?.active === true;
   const nowActive = after.active === true;
+  const beaconId = event.params.beaconId as string;
+
+  // If beacon was just extinguished but scheduled is still true, fix it server-side.
+  // This handles old clients that set scheduled: true when turning off.
+  if (wasActive && !nowActive && (after as any).scheduled === true) {
+    logger.info('onBeaconActivatedNotify: fixing stale scheduled flag', { beaconId });
+    await db.collection('Beacons').doc(beaconId).update({ scheduled: false });
+    return;
+  }
+
   if (!(nowActive && !wasActive)) return;
 
-  const beaconId = event.params.beaconId as string;
   await fanOutForBeacon(beaconId, after);
 });
 

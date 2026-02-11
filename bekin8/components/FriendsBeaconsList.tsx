@@ -236,15 +236,19 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       // if (stMillis > windowEnd.getTime()) return;
       if (!stMillis) return;
 
+      // Hide expired beacons
+      const expMillis = getMillis(data?.expiresAt);
+      if (expMillis && expMillis < Date.now()) return;
+
       const ownerUid = String(data.ownerUid ?? '');
       if (!ownerUid || (meUid && ownerUid === meUid)) return; // never show my own
 
       const active = !!data?.active;
       const scheduled = data?.scheduled === true || data?.scheduled === 'true';
-      if (!active && !scheduled) return; // extinguished
+      if (!active) return; // only show lit beacons to friends
 
       // --- visibility (default: visible to all friends if no groups set) ---
-      const groupIds = asStringArray(data?.visibilityGroups);
+      const groupIds = asStringArray(data?.groupIds);
       let canSee = true; // default allow when not set/empty
       if (groupIds.length > 0) {
         canSee = false; // tighten: must be in at least one group

@@ -46,6 +46,7 @@ import {
   subscribeToFriendNotifications,
   unsubscribeFromFriendNotifications,
   syncPushTokenIfGranted,
+  removePushTokenForThisDevice,
 } from "../lib/push";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
@@ -592,6 +593,9 @@ export default function FriendsScreen() {
         await setDoc(doc(db, "Friends", me.uid), { friends: filtered }, { merge: true });
       }
 
+      // 4) Clean up notification subscription (best-effort)
+      try { await unsubscribeFromFriendNotifications(otherUid); } catch {}
+
       showMessage(`Removed ${friend.username}.`, "success");
     } catch (e) {
       console.error("removeFriend error", e);
@@ -619,6 +623,10 @@ export default function FriendsScreen() {
       await setDoc(doc(db, "users", me.uid, "blocks", friend.uid), {
         blockedAt: serverTimestamp(),
       });
+
+      // Clean up notification subscription (best-effort)
+      try { await unsubscribeFromFriendNotifications(friend.uid); } catch {}
+
       showMessage(`Blocked ${friend.username}.`, "success");
     } catch (e) {
       console.error("blockFriend error", e);
@@ -644,6 +652,8 @@ export default function FriendsScreen() {
     if (loggingOut) return;
     try {
       setLoggingOut(true);
+      // Remove this device's push token before signing out (best-effort)
+      try { await removePushTokenForThisDevice(); } catch {}
       await signOut(auth); // _layout.tsx will see user=null and route to "/"
       // No manual routing needed; component will unmount shortly.
     } catch (e) {

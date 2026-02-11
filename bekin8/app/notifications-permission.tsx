@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, ActivityIndicator, Alert, Platform }
 import * as Notifications from "expo-notifications";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { ensurePushPermissionsAndToken } from "../lib/push";
 
 const colors = {
   primary: "#2F6FED",
@@ -19,19 +20,12 @@ export default function NotificationsPermission() {
   const request = async () => {
     try {
       setBusy(true);
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== "granted") {
+      const { granted, token } = await ensurePushPermissionsAndToken();
+      if (!granted) {
         Alert.alert("Permission declined", "You can enable notifications later in Settings.");
         return;
       }
-      // iOS needs projectId configured in app.json for getExpoPushTokenAsync
-      const token = (await Notifications.getExpoPushTokenAsync()).data;
-      const uid = auth.currentUser?.uid;
-      if (uid) {
-        // Your rules allow user to manage their own doc in PushTokens/{uid}
-        await setDoc(doc(db, "PushTokens", uid), { uid, token, updatedAt: serverTimestamp() });
-      }
-      Alert.alert("Enabled", "We’ll notify you about friends, beacons, and requests.");
+      Alert.alert("Enabled", "We'll notify you about friends, beacons, and requests.");
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "Failed to enable notifications.");
     } finally {

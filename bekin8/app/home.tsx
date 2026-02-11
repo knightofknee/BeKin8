@@ -380,7 +380,7 @@ export default function HomeScreen() {
             if (isLit && myActiveBeacon) {
               await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
                 active: false,
-                scheduled: true,
+                scheduled: false,
                 updatedAt: serverTimestamp(),
               });
 
@@ -467,7 +467,9 @@ export default function HomeScreen() {
 
     try {
       const base = startOfDay(new Date());
-      const sd = startOfDay(new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset));
+      const d = new Date(base);
+      d.setDate(base.getDate() + dayOffset);
+      const sd = startOfDay(d);
       const ed = endOfDay(sd);
 
       const beaconsRef = collection(db, 'Beacons');
