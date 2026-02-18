@@ -27,7 +27,7 @@ type Beacon = {
 };
 
 // ===== Expo client & constants =====
-const expo = new Expo({ useFcmV1: false });
+const expo = new Expo({ useFcmV1: true });
 const TICKET_TTL_HOURS = 48;
 
 // ===== Helpers: content =====
@@ -276,32 +276,25 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
     const tokens = await getAllExpoTokens(recipientUid);
     if (tokens.length === 0) continue;
 
-    const messages: ExpoPushMessage[] = tokens.map((token) => ({
-      to: token,
-      title,
-      body,
-      sound: 'default',
-      priority: 'high',
-      data: { type: 'beacon', beaconId, ownerUid },
-    }));
-
-    const chunks = expo.chunkPushNotifications(messages);
-    for (const msgs of chunks) {
+    // Send to each token individually so one bad token can't block others
+    for (const token of tokens) {
       try {
-        const tickets = await expo.sendPushNotificationsAsync(msgs);
-        // Align ticket to token (index matched)
-        for (let i = 0; i < tickets.length; i++) {
-          const t = tickets[i];
-          const tok = msgs[i].to as string;
-          await saveTickets([t], {
-            subscriberUid: recipientUid,
-            friendUid: ownerUid,
-            token: tok,
-            beaconId,
-          });
-        }
+        const tickets = await expo.sendPushNotificationsAsync([{
+          to: token,
+          title,
+          body,
+          sound: 'default',
+          priority: 'high',
+          data: { type: 'beacon', beaconId, ownerUid },
+        }]);
+        await saveTickets(tickets, {
+          subscriberUid: recipientUid,
+          friendUid: ownerUid,
+          token,
+          beaconId,
+        });
       } catch (err) {
-        logger.error('Expo send error', { recipientUid, ownerUid, beaconId, err });
+        logger.error('Expo send error', { recipientUid, ownerUid, beaconId, token, err });
       }
     }
   }
@@ -398,6 +391,124 @@ export const checkExpoReceipts = onSchedule('every 15 minutes', async () => {
     }
   }
 });
+
+// ===== 4) Comment notification: new chat message on a beacon =====
+
+type ChatMessage = {
+  text?: string;
+  authorUid?: string;
+  authorName?: string;
+  type?: 'user' | 'system';
+  subtype?: string;
+};
+
+/** Check if user has opted into comment notifications globally. */
+async function wantsCommentNotify(uid: string): Promise<boolean> {
+  const snap = await db.collection('users').doc(uid).get();
+  return snap.exists ? !!(snap.data() as any)?.commentNotify : false;
+}
+
+/** Get UIDs who RSVP'd ("I'm in") on a beacon. */
+async function getRsvpUids(beaconId: string): Promise<string[]> {
+  const qs = await db
+    .collection('Beacons')
+    .doc(beaconId)
+    .collection('ChatMessages')
+    .where('type', '==', 'system')
+    .where('subtype', '==', 'im-in')
+    .get();
+
+  const uids = new Set<string>();
+  qs.forEach((d) => {
+    const actorUid = (d.data() as any)?.actorUid;
+    if (typeof actorUid === 'string' && actorUid) uids.add(actorUid);
+  });
+  return Array.from(uids);
+}
+
+export const onBeaconCommentNotify = onDocumentCreated(
+  'Beacons/{beaconId}/ChatMessages/{messageId}',
+  async (event) => {
+    const msg = (event.data?.data() as ChatMessage | undefined) ?? undefined;
+    if (!msg) return;
+
+    // Only notify on regular user messages, not system messages (like "I'm in")
+    if (msg.type === 'system') return;
+
+    const authorUid = msg.authorUid;
+    if (!authorUid) return;
+
+    const beaconId = event.params.beaconId as string;
+
+    // Get beacon to find owner
+    const beaconSnap = await db.collection('Beacons').doc(beaconId).get();
+    if (!beaconSnap.exists) return;
+    const beacon = beaconSnap.data() as Beacon;
+    const ownerUid = beacon.ownerUid;
+
+    // Collect candidate recipients: owner + all RSVP'd users, minus the author
+    const rsvpUids = await getRsvpUids(beaconId);
+    const candidateSet = new Set(rsvpUids);
+    if (ownerUid) candidateSet.add(ownerUid);
+    candidateSet.delete(authorUid); // don't notify the author
+
+    if (candidateSet.size === 0) return;
+
+    // Filter to those who have commentNotify enabled
+    const candidates = Array.from(candidateSet);
+    const recipients: string[] = [];
+    await Promise.all(
+      candidates.map(async (uid) => {
+        if (await wantsCommentNotify(uid)) recipients.push(uid);
+      })
+    );
+
+    if (recipients.length === 0) return;
+
+    logger.info('commentNotify fanOut', {
+      beaconId,
+      authorUid,
+      recipientCount: recipients.length,
+    });
+
+    const authorName = msg.authorName || 'Someone';
+    const body = (msg.text || '').toString().slice(0, 200) || 'New comment';
+    const title = `${authorName} commented on a beacon`;
+
+    for (const recipientUid of recipients) {
+      const tokens = await getAllExpoTokens(recipientUid);
+      if (tokens.length === 0) continue;
+
+      const messages: ExpoPushMessage[] = tokens.map((token) => ({
+        to: token,
+        title,
+        body,
+        sound: 'default',
+        priority: 'high',
+        data: { type: 'beacon_comment', beaconId, authorUid },
+      }));
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const msgs of chunks) {
+        try {
+          const tickets = await expo.sendPushNotificationsAsync(msgs);
+          for (let i = 0; i < tickets.length; i++) {
+            const t = tickets[i];
+            const tok = msgs[i].to as string;
+            await saveTickets([t], {
+              subscriberUid: recipientUid,
+              friendUid: authorUid,
+              token: tok,
+              beaconId,
+            });
+          }
+        } catch (err) {
+          logger.error('Comment notify send error', { recipientUid, authorUid, beaconId, err });
+        }
+      }
+    }
+  }
+);
 
 // Keep callable export (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';

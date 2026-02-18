@@ -596,7 +596,7 @@ export default function HomeScreen() {
           </View>
 
           <View style={styles.controls}>
-            <View style={styles.myBeaconRow}>
+            <View style={styles.myBeaconColumn}>
               <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
                 <Text style={styles.beaconIcon}>{isLit ? '🔥' : '🪵'}</Text>
               </TouchableOpacity>
@@ -609,8 +609,16 @@ export default function HomeScreen() {
                 >
                   <Text style={styles.myChatBtnTxt}>Open my beacon details</Text>
                 </TouchableOpacity>
-              ) : null}
+              ) : (
+                <Text style={styles.logHint}>Tap the logs to light your Beacon</Text>
+              )}
             </View>
+
+            {isLit && myActiveBeacon ? (
+              <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+            ) : (
+              <Text style={[styles.statusActive, { opacity: 0 }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+            )}
 
             <Pressable
               onPress={openOptions}
@@ -628,11 +636,7 @@ export default function HomeScreen() {
               <Text style={styles.optionsCtaChevron}>›</Text>
             </Pressable>
 
-            {isLit && myActiveBeacon ? (
-              <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
-            ) : (
-              <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
-            )}
+            <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
           </View>
         </View>
 
@@ -806,27 +810,36 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     marginBottom: 72, // lift above BottomBar
   },
-  myBeaconRow: {
-    flexDirection: 'row',
+  myBeaconColumn: {
     alignItems: 'center',
-    gap: 12,
     marginBottom: 8,
   },
   beaconContainer: {
-    marginBottom: 8,
+    alignItems: 'center',
   },
   beaconIcon: {
     fontSize: 64,
+  },
+  logHint: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 4,
+    minHeight: 34,
   },
   myChatBtn: {
     borderWidth: 1,
     borderColor: '#E5E7EB',
     backgroundColor: '#F3F4F6',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 10,
+    marginTop: 4,
+    minHeight: 34,
+    justifyContent: 'center',
   },
-  myChatBtnTxt: { fontWeight: '700', color: '#0B1426' },
+  myChatBtnTxt: { fontWeight: '700', color: '#0B1426', textAlign: 'center' },
 
   status: { fontSize: 16, color: '#555' },
   statusActive: { fontSize: 18, fontWeight: '600', color: 'green', marginBottom: 12 },

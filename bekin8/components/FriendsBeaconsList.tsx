@@ -521,7 +521,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         </>
       ) : (
         emptyReady ? (
-          <Text style={styles.friendInactive}>No friend beacons today or upcoming</Text>
+          <Text style={styles.friendInactive}>No friend beacons lit</Text>
         ) : null
       )}
     </View>
@@ -580,8 +580,9 @@ const styles = StyleSheet.create({
   friendInactive: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#f00',
+    color: '#0B1426',
     marginTop: 16,
+    textAlign: 'center',
   },
 
   moreOverlay: {
