@@ -616,6 +616,12 @@ export default function HomeScreen() {
               )}
             </View>
 
+            {isLit && myActiveBeacon ? (
+              <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+            ) : (
+              <Text style={[styles.statusActive, { opacity: 0 }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+            )}
+
             <Pressable
               onPress={openOptions}
               hitSlop={8}
@@ -632,11 +638,7 @@ export default function HomeScreen() {
               <Text style={styles.optionsCtaChevron}>›</Text>
             </Pressable>
 
-            {isLit && myActiveBeacon ? (
-              <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
-            ) : (
-              <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
-            )}
+            <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
           </View>
         </View>
 

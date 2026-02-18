@@ -525,7 +525,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         </>
       ) : (
         emptyReady ? (
-          <Text style={styles.friendInactive}>No friend beacons today or upcoming</Text>
+          <Text style={styles.friendInactive}>No friend beacons lit</Text>
         ) : null
       )}
     </View>

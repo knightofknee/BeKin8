@@ -27,7 +27,7 @@ type Beacon = {
 };
 
 // ===== Expo client & constants =====
-const expo = new Expo({ useFcmV1: false });
+const expo = new Expo({ useFcmV1: true });
 const TICKET_TTL_HOURS = 48;
 
 // ===== Helpers: content =====
@@ -276,32 +276,25 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
     const tokens = await getAllExpoTokens(recipientUid);
     if (tokens.length === 0) continue;
 
-    const messages: ExpoPushMessage[] = tokens.map((token) => ({
-      to: token,
-      title,
-      body,
-      sound: 'default',
-      priority: 'high',
-      data: { type: 'beacon', beaconId, ownerUid },
-    }));
-
-    const chunks = expo.chunkPushNotifications(messages);
-    for (const msgs of chunks) {
+    // Send to each token individually so one bad token can't block others
+    for (const token of tokens) {
       try {
-        const tickets = await expo.sendPushNotificationsAsync(msgs);
-        // Align ticket to token (index matched)
-        for (let i = 0; i < tickets.length; i++) {
-          const t = tickets[i];
-          const tok = msgs[i].to as string;
-          await saveTickets([t], {
-            subscriberUid: recipientUid,
-            friendUid: ownerUid,
-            token: tok,
-            beaconId,
-          });
-        }
+        const tickets = await expo.sendPushNotificationsAsync([{
+          to: token,
+          title,
+          body,
+          sound: 'default',
+          priority: 'high',
+          data: { type: 'beacon', beaconId, ownerUid },
+        }]);
+        await saveTickets(tickets, {
+          subscriberUid: recipientUid,
+          friendUid: ownerUid,
+          token,
+          beaconId,
+        });
       } catch (err) {
-        logger.error('Expo send error', { recipientUid, ownerUid, beaconId, err });
+        logger.error('Expo send error', { recipientUid, ownerUid, beaconId, token, err });
       }
     }
   }
