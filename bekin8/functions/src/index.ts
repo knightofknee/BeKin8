@@ -27,7 +27,7 @@ type Beacon = {
 };
 
 // ===== Expo client & constants =====
-const expo = new Expo({ useFcmV1: true });
+const expo = new Expo({ useFcmV1: false });
 const TICKET_TTL_HOURS = 48;
 
 // ===== Helpers: content =====
@@ -92,22 +92,10 @@ async function friendUidsOf(ownerUid: string): Promise<string[]> {
   return Array.from(out);
 }
 
-/** Check if recipient has blocked the beacon owner. */
-async function recipientHasBlocked(recipientUid: string, ownerUid: string): Promise<boolean> {
-  const blockDoc = await db
-    .collection('users')
-    .doc(recipientUid)
-    .collection('blocks')
-    .doc(ownerUid)
-    .get();
-  return blockDoc.exists;
-}
-
-/**
+/** 
  * Eligible = (allowedUids OR all accepted friends if none provided)
  *            ∩ users who opted in (new subdoc OR legacy notify flag)
  *            − ownerUid
- *            − users who blocked ownerUid
  */
 async function eligibleRecipients(allowed: string[] | undefined, ownerUid: string): Promise<string[]> {
   // Normalize allowed list (remove falsy, remove owner)
@@ -127,11 +115,7 @@ async function eligibleRecipients(allowed: string[] | undefined, ownerUid: strin
 
   await Promise.all(
     Array.from(baseSet).map(async (uid) => {
-      const [wants, blocked] = await Promise.all([
-        recipientWantsNotify(uid, ownerUid),
-        recipientHasBlocked(uid, ownerUid),
-      ]);
-      if (wants && !blocked) out.push(uid);
+      if (await recipientWantsNotify(uid, ownerUid)) out.push(uid);
     })
   );
 
@@ -288,15 +272,9 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   } catch {}
   const title = ownerDisplay ? `${ownerDisplay} lit a beacon` : "A friend lit a beacon";
 
-  let totalTokens = 0;
-  let totalSent = 0;
-  let totalErrors = 0;
-
   for (const recipientUid of recipients) {
     const tokens = await getAllExpoTokens(recipientUid);
-    logger.info('tokens for recipient', { recipientUid, tokenCount: tokens.length, tokens });
     if (tokens.length === 0) continue;
-    totalTokens += tokens.length;
 
     const messages: ExpoPushMessage[] = tokens.map((token) => ({
       to: token,
@@ -311,17 +289,10 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
     for (const msgs of chunks) {
       try {
         const tickets = await expo.sendPushNotificationsAsync(msgs);
-        logger.info('Expo tickets', { recipientUid, tickets });
         // Align ticket to token (index matched)
         for (let i = 0; i < tickets.length; i++) {
           const t = tickets[i];
           const tok = msgs[i].to as string;
-          if (t.status === 'ok') {
-            totalSent++;
-          } else {
-            totalErrors++;
-            logger.error('Expo ticket error', { recipientUid, token: tok, ticket: t });
-          }
           await saveTickets([t], {
             subscriberUid: recipientUid,
             friendUid: ownerUid,
@@ -330,13 +301,10 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
           });
         }
       } catch (err) {
-        totalErrors++;
         logger.error('Expo send error', { recipientUid, ownerUid, beaconId, err });
       }
     }
   }
-
-  logger.info('fanOut complete', { beaconId, totalTokens, totalSent, totalErrors });
 }
 
 // ===== Triggers (v2) =====
@@ -349,7 +317,7 @@ export const onBeaconCreatedNotify = onDocumentCreated('Beacons/{beaconId}', asy
   await fanOutForBeacon(beaconId, b);
 });
 
-// 2) Existing beacon flipping inactive -> active (also cleans up stale scheduled flag)
+// 2) Existing beacon flipping inactive -> active
 export const onBeaconActivatedNotify = onDocumentUpdated('Beacons/{beaconId}', async (event) => {
   const before = (event.data?.before?.data() as Beacon | undefined) ?? undefined;
   const after = (event.data?.after?.data() as Beacon | undefined) ?? undefined;
@@ -357,18 +325,9 @@ export const onBeaconActivatedNotify = onDocumentUpdated('Beacons/{beaconId}', a
 
   const wasActive = before?.active === true;
   const nowActive = after.active === true;
-  const beaconId = event.params.beaconId as string;
-
-  // If beacon was just extinguished but scheduled is still true, fix it server-side.
-  // This handles old clients that set scheduled: true when turning off.
-  if (wasActive && !nowActive && (after as any).scheduled === true) {
-    logger.info('onBeaconActivatedNotify: fixing stale scheduled flag', { beaconId });
-    await db.collection('Beacons').doc(beaconId).update({ scheduled: false });
-    return;
-  }
-
   if (!(nowActive && !wasActive)) return;
 
+  const beaconId = event.params.beaconId as string;
   await fanOutForBeacon(beaconId, after);
 });
 
@@ -439,6 +398,124 @@ export const checkExpoReceipts = onSchedule('every 15 minutes', async () => {
     }
   }
 });
+
+// ===== 4) Comment notification: new chat message on a beacon =====
+
+type ChatMessage = {
+  text?: string;
+  authorUid?: string;
+  authorName?: string;
+  type?: 'user' | 'system';
+  subtype?: string;
+};
+
+/** Check if user has opted into comment notifications globally. */
+async function wantsCommentNotify(uid: string): Promise<boolean> {
+  const snap = await db.collection('users').doc(uid).get();
+  return snap.exists ? !!(snap.data() as any)?.commentNotify : false;
+}
+
+/** Get UIDs who RSVP'd ("I'm in") on a beacon. */
+async function getRsvpUids(beaconId: string): Promise<string[]> {
+  const qs = await db
+    .collection('Beacons')
+    .doc(beaconId)
+    .collection('ChatMessages')
+    .where('type', '==', 'system')
+    .where('subtype', '==', 'im-in')
+    .get();
+
+  const uids = new Set<string>();
+  qs.forEach((d) => {
+    const actorUid = (d.data() as any)?.actorUid;
+    if (typeof actorUid === 'string' && actorUid) uids.add(actorUid);
+  });
+  return Array.from(uids);
+}
+
+export const onBeaconCommentNotify = onDocumentCreated(
+  'Beacons/{beaconId}/ChatMessages/{messageId}',
+  async (event) => {
+    const msg = (event.data?.data() as ChatMessage | undefined) ?? undefined;
+    if (!msg) return;
+
+    // Only notify on regular user messages, not system messages (like "I'm in")
+    if (msg.type === 'system') return;
+
+    const authorUid = msg.authorUid;
+    if (!authorUid) return;
+
+    const beaconId = event.params.beaconId as string;
+
+    // Get beacon to find owner
+    const beaconSnap = await db.collection('Beacons').doc(beaconId).get();
+    if (!beaconSnap.exists) return;
+    const beacon = beaconSnap.data() as Beacon;
+    const ownerUid = beacon.ownerUid;
+
+    // Collect candidate recipients: owner + all RSVP'd users, minus the author
+    const rsvpUids = await getRsvpUids(beaconId);
+    const candidateSet = new Set(rsvpUids);
+    if (ownerUid) candidateSet.add(ownerUid);
+    candidateSet.delete(authorUid); // don't notify the author
+
+    if (candidateSet.size === 0) return;
+
+    // Filter to those who have commentNotify enabled
+    const candidates = Array.from(candidateSet);
+    const recipients: string[] = [];
+    await Promise.all(
+      candidates.map(async (uid) => {
+        if (await wantsCommentNotify(uid)) recipients.push(uid);
+      })
+    );
+
+    if (recipients.length === 0) return;
+
+    logger.info('commentNotify fanOut', {
+      beaconId,
+      authorUid,
+      recipientCount: recipients.length,
+    });
+
+    const authorName = msg.authorName || 'Someone';
+    const body = (msg.text || '').toString().slice(0, 200) || 'New comment';
+    const title = `${authorName} commented on a beacon`;
+
+    for (const recipientUid of recipients) {
+      const tokens = await getAllExpoTokens(recipientUid);
+      if (tokens.length === 0) continue;
+
+      const messages: ExpoPushMessage[] = tokens.map((token) => ({
+        to: token,
+        title,
+        body,
+        sound: 'default',
+        priority: 'high',
+        data: { type: 'beacon_comment', beaconId, authorUid },
+      }));
+
+      const chunks = expo.chunkPushNotifications(messages);
+      for (const msgs of chunks) {
+        try {
+          const tickets = await expo.sendPushNotificationsAsync(msgs);
+          for (let i = 0; i < tickets.length; i++) {
+            const t = tickets[i];
+            const tok = msgs[i].to as string;
+            await saveTickets([t], {
+              subscriberUid: recipientUid,
+              friendUid: authorUid,
+              token: tok,
+              beaconId,
+            });
+          }
+        } catch (err) {
+          logger.error('Comment notify send error', { recipientUid, authorUid, beaconId, err });
+        }
+      }
+    }
+  }
+);
 
 // Keep callable export (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';

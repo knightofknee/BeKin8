@@ -104,6 +104,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
 
   const [startLabel, setStartLabel] = useState<string>('');
+  const [ownerName, setOwnerName] = useState<string>('');
   const expiresAtRef = useRef<number | null>(null);
 
   const listRef = useRef<FlatList<ChatMessage>>(null);
@@ -159,11 +160,12 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     const ref = doc(db, 'Beacons', beaconId);
     const unsub = onSnapshot(
       ref,
-      (snap) => {
+      async (snap) => {
         setLoading(false);
         if (!snap.exists()) {
           expiresAtRef.current = null;
           setStartLabel('');
+          setOwnerName('');
           return;
         }
         const data: any = snap.data();
@@ -178,6 +180,21 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           );
         } else {
           setStartLabel('');
+        }
+
+        // Resolve owner display name
+        const oUid = data?.ownerUid;
+        if (typeof oUid === 'string' && oUid) {
+          try {
+            const profSnap = await getDoc(doc(db, 'Profiles', oUid));
+            const prof = profSnap.exists() ? (profSnap.data() as any) : {};
+            const dn = (prof.displayName || prof.username || '').toString().trim();
+            setOwnerName(dn || data?.ownerName || '');
+          } catch {
+            setOwnerName(data?.ownerName || '');
+          }
+        } else {
+          setOwnerName(data?.ownerName || '');
         }
       },
       () => setLoading(false)
@@ -379,25 +396,28 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
   const PanelBody = (
     <>
-      {(startLabel || true) && (
-        <View style={styles.slimHeader}>
-          <Text style={styles.slimDate}>{startLabel || 'Beacon'}</Text>
-
-          {iAmIn ? (
-            <View style={[styles.imInChip, styles.imInChipDone]}>
-              <Text style={[styles.imInText, styles.imInTextDone]}>✓ I’m in</Text>
-            </View>
-          ) : (
-            <Pressable
-              onPress={handleImIn}
-              style={({ pressed }) => [styles.imInChip, pressed && { opacity: 0.9 }]}
-              hitSlop={8}
-            >
-              <Text style={styles.imInText}>I’m in</Text>
-            </Pressable>
-          )}
+      <View style={styles.slimHeader}>
+        <View style={styles.headerLeft}>
+          <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
+            {ownerName ? `Beacon by ${ownerName}` : 'Beacon'}
+          </Text>
+          {!!startLabel && <Text style={styles.headerDate}>{startLabel}</Text>}
         </View>
-      )}
+
+        {iAmIn ? (
+          <View style={[styles.imInChip, styles.imInChipDone]}>
+            <Text style={[styles.imInText, styles.imInTextDone]}>✓ I'm in</Text>
+          </View>
+        ) : (
+          <Pressable
+            onPress={handleImIn}
+            style={({ pressed }) => [styles.imInChip, pressed && { opacity: 0.9 }]}
+            hitSlop={8}
+          >
+            <Text style={styles.imInText}>I'm in</Text>
+          </Pressable>
+        )}
+      </View>
 
       {canScrollUp && (
         <Pressable
@@ -600,15 +620,20 @@ const styles = StyleSheet.create({
   },
   cardWrap: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
   },
 
   wrap: {
     borderWidth: 1,
     borderColor: '#E5E7EB',
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
   },
 
@@ -616,21 +641,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
-    backgroundColor: '#FCFCFF',
+    backgroundColor: '#F8FAFF',
   },
-  slimDate: { fontSize: 12, color: '#475569', fontWeight: '700' },
+  headerLeft: {
+    flex: 1,
+    marginRight: 10,
+  },
+  headerTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0B1426',
+  },
+  headerDate: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 1,
+  },
 
   imInChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: '#2F6FED',
   },
-  imInText: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  imInText: { color: '#fff', fontWeight: '800', fontSize: 13 },
   imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
   imInTextDone: { color: '#065F46' },
 
@@ -652,16 +690,16 @@ const styles = StyleSheet.create({
 
   bubble: {
     maxWidth: '78%',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
     borderWidth: 1,
   },
-  bubbleMine: { backgroundColor: '#EEF2FF', borderColor: '#C7DAFF' },
-  bubbleTheirs: { backgroundColor: '#F8FAFC', borderColor: '#E5E7EB' },
+  bubbleMine: { backgroundColor: '#EEF2FF', borderColor: '#D4DEFF' },
+  bubbleTheirs: { backgroundColor: '#FFFFFF', borderColor: '#E5E7EB' },
 
-  msgMeta: { fontSize: 11, color: '#64748B', marginBottom: 2 },
-  msgText: { color: '#0B1426', fontSize: 15, lineHeight: 20 },
+  msgMeta: { fontSize: 11, color: '#94A3B8', marginBottom: 3, fontWeight: '500' },
+  msgText: { color: '#0B1426', fontSize: 15, lineHeight: 21 },
 
   dotsOutside: {
     width: 28,
@@ -672,38 +710,47 @@ const styles = StyleSheet.create({
   },
   dots: { fontSize: 16, color: '#64748B' },
 
-  systemRow: { alignItems: 'center', paddingVertical: 2, alignSelf: 'center' },
-  systemText: { color: '#64748B', fontStyle: 'italic', fontSize: 12 },
+  systemRow: {
+    alignItems: 'center',
+    paddingVertical: 4,
+    alignSelf: 'center',
+    backgroundColor: '#F0F4FF',
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  systemText: { color: '#475569', fontWeight: '600', fontSize: 12 },
 
   inputRow: {
     flexDirection: 'row',
     gap: 8,
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
-    padding: 8,
-    backgroundColor: '#fff',
+    padding: 10,
+    backgroundColor: '#FAFBFF',
   },
   input: {
     flex: 1,
-    minHeight: 38,
+    minHeight: 40,
     maxHeight: 100,
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     textAlignVertical: 'top',
     color: '#0B1426',
+    backgroundColor: '#FFFFFF',
+    fontSize: 15,
   },
   sendBtn: {
     backgroundColor: '#2F6FED',
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendTxt: { color: '#fff', fontWeight: '800' },
+  sendTxt: { color: '#fff', fontWeight: '800', fontSize: 15 },
 
   menuBackdrop: {
     flex: 1,

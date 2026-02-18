@@ -584,8 +584,9 @@ const styles = StyleSheet.create({
   friendInactive: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#f00',
+    color: '#0B1426',
     marginTop: 16,
+    textAlign: 'center',
   },
 
   moreOverlay: {
