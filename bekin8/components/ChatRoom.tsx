@@ -111,7 +111,30 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   const pendingScrollRef = useRef(false);
   const didInitialScrollRef = useRef(false);
 
-  const [canScrollUp, setCanScrollUp] = useState(false);
+  // Scroll-to-top arrow (only when list is scrollable and user has scrolled down)
+  const [listViewportH, setListViewportH] = useState(0);
+  const [listContentH, setListContentH] = useState(0);
+  const [scrollY, setScrollY] = useState(0);
+
+  const isListScrollable = listContentH > listViewportH + 24;
+  const hasRealMessages = useMemo(() => messages.some((m) => m.type !== 'system'), [messages]);
+
+  const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    setScrollY(e.nativeEvent.contentOffset.y);
+  };
+
+  const scrollToTop = () => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  };
+
+  // Reset per-room scroll state so it doesn't carry over between different beacons
+  useEffect(() => {
+    setScrollY(0);
+    setListViewportH(0);
+    setListContentH(0);
+    pendingScrollRef.current = false;
+    didInitialScrollRef.current = false;
+  }, [beaconId]);
 
   // ---- Only-lift-by-overlap logic (iOS) ----
   const containerRef = useRef<View>(null);
@@ -234,7 +257,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: false });
         didInitialScrollRef.current = true;
-        setCanScrollUp(true);
       });
       return;
     }
@@ -242,7 +264,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });
         pendingScrollRef.current = false;
-        setCanScrollUp(true);
       });
     }
   }, [messages]);
@@ -359,14 +380,6 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     }
   };
 
-  const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const y = e.nativeEvent.contentOffset.y;
-    setCanScrollUp(y > 8);
-  };
-
-  const scrollToTop = () => {
-    listRef.current?.scrollToOffset({ offset: 0, animated: true });
-  };
 
   const ComposerRow = (
     <View style={styles.inputRow}>
@@ -399,7 +412,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       <View style={styles.slimHeader}>
         <View style={styles.headerLeft}>
           <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
-            {ownerName ? `Beacon by ${ownerName}` : 'Beacon'}
+            {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
           </Text>
           {!!startLabel && <Text style={styles.headerDate}>{startLabel}</Text>}
         </View>
@@ -419,78 +432,85 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         )}
       </View>
 
-      {canScrollUp && (
-        <Pressable
-          onPress={scrollToTop}
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.scrollTopBtn,
-            pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="Scroll to top"
-        >
-          <Text style={styles.scrollTopIcon}>↑</Text>
-        </Pressable>
-      )}
+      <View
+        style={styles.listArea}
+        onLayout={(e) => setListViewportH(e.nativeEvent.layout.height)}
+      >
+        {hasRealMessages && isListScrollable && scrollY > 24 && (
+          <Pressable
+            onPress={scrollToTop}
+            hitSlop={10}
+            style={({ pressed }) => [
+              styles.scrollTopBtn,
+              pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Jump to top"
+          >
+            <Text style={styles.scrollTopIcon}>↑</Text>
+          </Pressable>
+        )}
 
-      <FlatList
-        ref={listRef}
-        data={messages}
-        keyExtractor={(m) => m.id}
-        contentContainerStyle={{ padding: 8, gap: 8, paddingBottom: 8 }}
-        keyboardShouldPersistTaps="handled"
-        onScroll={onListScroll}
-        scrollEventThrottle={32}
-        renderItem={({ item }) => {
-          if (item.type === 'system') {
+        <FlatList
+          ref={listRef}
+          data={messages}
+          keyExtractor={(m) => m.id}
+          contentContainerStyle={{ padding: 8, gap: 8, paddingBottom: 8 }}
+          keyboardShouldPersistTaps="handled"
+          scrollEventThrottle={32}
+          onScroll={onListScroll}
+          onContentSizeChange={(_w, h) => setListContentH(h)}
+          style={{ flex: 1 }}
+          renderItem={({ item }) => {
+            if (item.type === 'system') {
+              return (
+                <View style={styles.systemRow}>
+                  <Text style={styles.systemText}>{item.text}</Text>
+                </View>
+              );
+            }
+
+            const mine = item.authorUid === me?.uid;
+
             return (
-              <View style={styles.systemRow}>
-                <Text style={styles.systemText}>{item.text}</Text>
+              <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
+                {!mine && (
+                  <Pressable
+                    onPress={() => openMenu(item)}
+                    hitSlop={8}
+                    style={[styles.dotsOutside, { marginRight: 6 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Message options"
+                  >
+                    <Text style={styles.dots}>⋯</Text>
+                  </Pressable>
+                )}
+
+                <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
+                  <Text style={styles.msgMeta} numberOfLines={1} ellipsizeMode="tail">
+                    {(item.authorName || (mine ? 'You' : 'Friend'))}
+                    {' • '}
+                    {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                  <Text style={styles.msgText}>{item.text}</Text>
+                </View>
+
+                {mine && (
+                  <Pressable
+                    onPress={() => openMenu(item)}
+                    hitSlop={8}
+                    style={[styles.dotsOutside, { marginLeft: 6 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Message options"
+                  >
+                    <Text style={styles.dots}>⋯</Text>
+                  </Pressable>
+                )}
               </View>
             );
-          }
-
-          const mine = item.authorUid === me?.uid;
-
-          return (
-            <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
-              {!mine && (
-                <Pressable
-                  onPress={() => openMenu(item)}
-                  hitSlop={8}
-                  style={[styles.dotsOutside, { marginRight: 6 }]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Message options"
-                >
-                  <Text style={styles.dots}>⋯</Text>
-                </Pressable>
-              )}
-
-              <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-                <Text style={styles.msgMeta} numberOfLines={1} ellipsizeMode="tail">
-                  {(item.authorName || (mine ? 'You' : 'Friend'))}
-                  {' • '}
-                  {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-                <Text style={styles.msgText}>{item.text}</Text>
-              </View>
-
-              {mine && (
-                <Pressable
-                  onPress={() => openMenu(item)}
-                  hitSlop={8}
-                  style={[styles.dotsOutside, { marginLeft: 6 }]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Message options"
-                >
-                  <Text style={styles.dots}>⋯</Text>
-                </Pressable>
-              )}
-            </View>
-          );
-        }}
-      />
+          }}
+        />
+      </View>
 
       {ComposerRow}
 
@@ -543,28 +563,20 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     return (
       <>
         <View style={styles.modalShim}>
+          {/* Backdrop tap closes */}
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+
           <View ref={containerRef} onLayout={onContainerLayout} style={[styles.cardWrap, translated]}>
-            <View style={[styles.wrap, { maxHeight }, style]}>{PanelBody}</View>
+            <View style={[styles.wrap, { height: maxHeight }, style]}>{PanelBody}</View>
           </View>
         </View>
-
-        {Platform.OS === 'ios' && (
-          <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
-            <View style={styles.iosAccessory}>
-              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
-                <Text style={styles.iosDoneText}>Done</Text>
-              </Pressable>
-            </View>
-          </InputAccessoryView>
-        )}
       </>
     );
   }
 
   if (loading) {
     return (
-      <View style={[styles.wrap, { maxHeight }]}>
+      <View style={[styles.wrap, { height: maxHeight }]}>
         <ActivityIndicator />
       </View>
     );
@@ -575,20 +587,10 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       <View
         ref={containerRef}
         onLayout={onContainerLayout}
-        style={[styles.wrap, { maxHeight }, style, translated]}
+        style={[styles.wrap, { height: maxHeight }, style, translated]}
       >
         {PanelBody}
       </View>
-
-      {Platform.OS === 'ios' && (
-        <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
-          <View style={styles.iosAccessory}>
-            <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
-              <Text style={styles.iosDoneText}>Done</Text>
-            </Pressable>
-          </View>
-        </InputAccessoryView>
-      )}
     </>
   );
 }
@@ -672,9 +674,13 @@ const styles = StyleSheet.create({
   imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
   imInTextDone: { color: '#065F46' },
 
+  listArea: {
+    flex: 1,
+    position: 'relative',
+  },
   scrollTopBtn: {
     position: 'absolute',
-    top: 6,
+    top: 10,
     alignSelf: 'center',
     zIndex: 5,
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
