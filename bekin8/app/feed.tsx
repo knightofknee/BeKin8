@@ -26,6 +26,7 @@ import {
   onSnapshot,
   addDoc,
   setDoc,
+  updateDoc,
   serverTimestamp,
 } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
@@ -41,6 +42,7 @@ interface Post {
   title?: string;
   createdAt: Date;
   url?: string;
+  commentsEnabled?: boolean; // undefined = enabled (default on)
 }
 
 const prefKey = () => `feed_showMine:${auth.currentUser?.uid ?? 'anon'}`;
@@ -251,6 +253,7 @@ export default function Feed() {
             title: data.title ?? '',
             createdAt,
             url: data.url ?? data.link ?? data.href ?? undefined,
+            commentsEnabled: data.commentsEnabled !== false, // default true
           });
         });
       });
@@ -330,38 +333,81 @@ export default function Feed() {
   }, [posts, showMine, blockedUids]);
 
   const handleReport = useCallback(
-    async (p: Post) => {
-      const me = auth.currentUser?.uid;
-      if (!me) return;
-      try {
-        await addDoc(collection(db, 'Reports'), {
-          targetType: 'post',
-          targetId: p.id,
-          targetOwnerUid: p.authorUid,
-          reporterUid: me,
-          createdAt: serverTimestamp(),
-          status: 'open',
-        });
-        Alert.alert('Thanks', 'We received your report.');
-      } catch (e: any) {
-        Alert.alert('Report failed', e?.message ?? 'Try again.');
-      }
+    (p: Post) => {
+      Alert.alert(
+        'Report post?',
+        'Are you sure you want to report this post?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Report',
+            style: 'destructive',
+            onPress: async () => {
+              const me = auth.currentUser?.uid;
+              if (!me) return;
+              try {
+                await addDoc(collection(db, 'Reports'), {
+                  targetType: 'post',
+                  targetId: p.id,
+                  targetOwnerUid: p.authorUid,
+                  reporterUid: me,
+                  createdAt: serverTimestamp(),
+                  status: 'open',
+                });
+                Alert.alert('Thanks', 'We received your report.');
+              } catch (e: any) {
+                Alert.alert('Report failed', e?.message ?? 'Try again.');
+              }
+            },
+          },
+        ]
+      );
     },
     []
   );
 
   const handleBlock = useCallback(
+    (p: Post) => {
+      Alert.alert(
+        'Block user?',
+        `You will no longer see posts from ${p.authorUsername}. Are you sure?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Block',
+            style: 'destructive',
+            onPress: async () => {
+              const me = auth.currentUser?.uid;
+              if (!me || p.authorUid === me) return;
+              try {
+                await setDoc(doc(db, 'users', me, 'blocks', p.authorUid), {
+                  blockedAt: serverTimestamp(),
+                });
+                Alert.alert('Blocked', 'You will no longer see this user\u2019s content.');
+              } catch (e: any) {
+                Alert.alert('Block failed', e?.message ?? 'Try again.');
+              }
+            },
+          },
+        ]
+      );
+    },
+    []
+  );
+
+  const handleToggleComments = useCallback(
     async (p: Post) => {
       const me = auth.currentUser?.uid;
-      if (!me) return;
-      if (p.authorUid === me) return;
+      if (!me || p.authorUid !== me) return;
+      const next = !(p.commentsEnabled !== false);
       try {
-        await setDoc(doc(db, 'users', me, 'blocks', p.authorUid), {
-          blockedAt: serverTimestamp(),
-        });
-        Alert.alert('Blocked', 'You will no longer see this user’s content.');
+        await updateDoc(doc(db, 'Posts', p.id), { commentsEnabled: next });
+        // Optimistically update local state
+        setPosts((prev) =>
+          prev.map((post) => post.id === p.id ? { ...post, commentsEnabled: next } : post)
+        );
       } catch (e: any) {
-        Alert.alert('Block failed', e?.message ?? 'Try again.');
+        Alert.alert('Failed', e?.message ?? 'Try again.');
       }
     },
     []
@@ -466,22 +512,43 @@ export default function Feed() {
       >
         <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
           <View style={styles.menuSheet}>
-            <Pressable
-              style={styles.menuRow}
-              onPress={() => {
-                if (menuFor) handleReport(menuFor);
-                setMenuFor(null);
-              }}
-            >
-              <Text style={styles.menuText}>Report</Text>
-            </Pressable>
+            {/* Turn comments on/off — only shown to post owner */}
+            {menuFor && menuFor.authorUid === auth.currentUser?.uid ? (
+              <Pressable
+                style={styles.menuRow}
+                onPress={() => {
+                  if (menuFor) handleToggleComments(menuFor);
+                  setMenuFor(null);
+                }}
+              >
+                <Text style={styles.menuText}>
+                  {menuFor.commentsEnabled !== false ? 'Turn off comments' : 'Turn on comments'}
+                </Text>
+              </Pressable>
+            ) : null}
 
+            {/* Report — confirm before acting */}
             {menuFor && menuFor.authorUid !== auth.currentUser?.uid ? (
               <Pressable
                 style={styles.menuRow}
                 onPress={() => {
-                  if (menuFor) handleBlock(menuFor);
+                  const p = menuFor;
                   setMenuFor(null);
+                  if (p) handleReport(p);
+                }}
+              >
+                <Text style={styles.menuText}>Report</Text>
+              </Pressable>
+            ) : null}
+
+            {/* Block — confirm before acting */}
+            {menuFor && menuFor.authorUid !== auth.currentUser?.uid ? (
+              <Pressable
+                style={styles.menuRow}
+                onPress={() => {
+                  const p = menuFor;
+                  setMenuFor(null);
+                  if (p) handleBlock(p);
                 }}
               >
                 <Text style={styles.menuText}>Block user</Text>

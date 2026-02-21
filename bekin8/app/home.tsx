@@ -16,6 +16,7 @@ import {
   InputAccessoryView,
   ScrollView,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import {
@@ -600,7 +601,15 @@ export default function HomeScreen() {
           <View style={styles.controls}>
             <View style={styles.myBeaconColumn}>
               <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
-                <Text style={styles.beaconIcon}>{isLit ? '🔥' : '🪵'}</Text>
+                {isLit ? (
+                  <Image
+                    source={require('../assets/images/beacon-fire.gif')}
+                    style={styles.beaconGif}
+                    contentFit="contain"
+                  />
+                ) : (
+                  <Text style={styles.beaconIcon}>🪵</Text>
+                )}
               </TouchableOpacity>
 
               {isLit && myActiveBeacon ? (
@@ -816,6 +825,10 @@ const styles = StyleSheet.create({
   },
   beaconIcon: {
     fontSize: 64,
+  },
+  beaconGif: {
+    width: 80,
+    height: 120,
   },
   logHint: {
     fontSize: 13,

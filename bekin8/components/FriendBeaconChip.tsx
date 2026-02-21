@@ -1,6 +1,7 @@
 // components/FriendBeaconChip.tsx
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { Image } from 'expo-image';
 import { Timestamp } from 'firebase/firestore';
 
 type Beacon = {
@@ -32,7 +33,15 @@ export default function FriendBeaconChip({ beacon }: { beacon: Beacon }) {
 
   return (
     <View style={[styles.chip, chipStyle]}>
-      <Text style={styles.chipIcon}>{icon}</Text>
+      {isToday ? (
+        <Image
+          source={require('../assets/images/beacon-fire.gif')}
+          style={styles.chipGif}
+          contentFit="contain"
+        />
+      ) : (
+        <Text style={styles.chipIcon}>{icon}</Text>
+      )}
       <Text style={styles.chipText} numberOfLines={1}>
         {beacon.displayName}
       </Text>
@@ -58,5 +67,6 @@ const styles = StyleSheet.create({
   chipToday: { backgroundColor: colors.chipTodayBg },
   chipFuture: { backgroundColor: colors.chipFutureBg },
   chipIcon: { fontSize: 14 },
+  chipGif: { width: 18, height: 24 },
   chipText: { maxWidth: 160, fontWeight: '600', fontSize: 14, color: colors.ink },
 });

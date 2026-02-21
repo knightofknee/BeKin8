@@ -348,36 +348,62 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     }
   };
 
-  const handleReport = async (msg: ChatMessage) => {
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-    try {
-      await addDoc(collection(db, 'Reports'), {
-        targetType: 'beacon_message',
-        beaconId,
-        messageId: msg.id,
-        messageAuthorUid: msg.authorUid || null,
-        reporterUid: uid,
-        createdAt: serverTimestamp(),
-        status: 'open',
-        snippet: String(msg.text || '').slice(0, 200),
-      });
-      Alert.alert('Thanks', 'We received your report.');
-    } catch (e: any) {
-      Alert.alert('Report failed', e?.message ?? 'Please try again.');
-    }
+  const handleReport = (msg: ChatMessage) => {
+    setMenuFor(null);
+    Alert.alert(
+      'Report message?',
+      'Are you sure you want to report this message?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Report',
+          style: 'destructive',
+          onPress: async () => {
+            const uid = auth.currentUser?.uid;
+            if (!uid) return;
+            try {
+              await addDoc(collection(db, 'Reports'), {
+                targetType: 'beacon_message',
+                beaconId,
+                messageId: msg.id,
+                messageAuthorUid: msg.authorUid || null,
+                reporterUid: uid,
+                createdAt: serverTimestamp(),
+                status: 'open',
+                snippet: String(msg.text || '').slice(0, 200),
+              });
+              Alert.alert('Thanks', 'We received your report.');
+            } catch (e: any) {
+              Alert.alert('Report failed', e?.message ?? 'Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
-  const handleDelete = async (msg: ChatMessage) => {
-    const uid = auth.currentUser?.uid;
-    if (!uid || msg.authorUid !== uid) return;
-    try {
-      await deleteDoc(doc(db, 'Beacons', beaconId, 'ChatMessages', msg.id));
-    } catch (e: any) {
-      Alert.alert('Delete failed', e?.message ?? 'Please try again.');
-    } finally {
-      setMenuFor(null);
-    }
+  const handleDelete = (msg: ChatMessage) => {
+    setMenuFor(null);
+    Alert.alert(
+      'Delete message?',
+      'Are you sure you want to delete this message?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            const uid = auth.currentUser?.uid;
+            if (!uid || msg.authorUid !== uid) return;
+            try {
+              await deleteDoc(doc(db, 'Beacons', beaconId, 'ChatMessages', msg.id));
+            } catch (e: any) {
+              Alert.alert('Delete failed', e?.message ?? 'Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
 
@@ -524,10 +550,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           <View style={styles.menuSheet}>
             <Pressable
               style={styles.menuItem}
-              onPress={() => {
-                if (menuFor) handleReport(menuFor);
-                setMenuFor(null);
-              }}
+              onPress={() => { if (menuFor) handleReport(menuFor); }}
             >
               <Text style={styles.menuText}>Report</Text>
             </Pressable>
@@ -537,9 +560,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
                 <View style={styles.menuDivider} />
                 <Pressable
                   style={styles.menuItem}
-                  onPress={() => {
-                    if (menuFor) handleDelete(menuFor);
-                  }}
+                  onPress={() => { if (menuFor) handleDelete(menuFor); }}
                 >
                   <Text style={[styles.menuText, styles.menuTextDestructive]}>Delete message</Text>
                 </Pressable>
