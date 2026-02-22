@@ -1,10 +1,11 @@
 // app/create-post.tsx
-import React, { useEffect, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
-  Button,
+  TextInputProps,
+  Pressable,
   StyleSheet,
   Alert,
   KeyboardAvoidingView,
@@ -13,6 +14,7 @@ import {
   ActivityIndicator,
   InputAccessoryView,
   Keyboard,
+  Animated,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
@@ -23,28 +25,79 @@ import {
   query,
   where,
   orderBy,
-  getDoc,
-  doc,
 } from 'firebase/firestore';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAuth } from '../providers/AuthProvider';
 
 const BOTTOM_BAR_HEIGHT = 56;
-const ACCESSORY_ID = 'create-post-accessory';
+const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
+const ACCESSORY_ID_LINK  = 'create-post-accessory-link';
+const ACCESSORY_ID_BODY  = 'create-post-accessory-body';
 
+const BLUE = '#2F6FED';
+
+// ─── Floating-label field ───────────────────────────────────────────────────
+type FloatFieldProps = TextInputProps & {
+  label: string;
+  value: string;
+  accessoryID?: string;
+  fieldStyle?: object;
+};
+
+function FloatField({ label, value, accessoryID, fieldStyle, ...rest }: FloatFieldProps) {
+  const [focused, setFocused] = useState(false);
+  const anim = useRef(new Animated.Value(value ? 1 : 0)).current;
+
+  const floated = focused || !!value;
+
+  useEffect(() => {
+    Animated.timing(anim, {
+      toValue: floated ? 1 : 0,
+      duration: 160,
+      useNativeDriver: false,
+    }).start();
+  }, [floated]);
+
+  const labelTop  = anim.interpolate({ inputRange: [0, 1], outputRange: [14, 6] });
+  const labelSize = anim.interpolate({ inputRange: [0, 1], outputRange: [16, 11] });
+  const labelColor = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#9CA3AF', focused ? BLUE : '#6B7280'],
+  });
+  const borderColor = focused ? BLUE : '#D1D5DB';
+
+  return (
+    <View style={[styles.floatWrap, { borderColor }, fieldStyle]}>
+      <Animated.Text
+        style={[styles.floatLabel, { top: labelTop, fontSize: labelSize, color: labelColor }]}
+        numberOfLines={1}
+      >
+        {label}
+      </Animated.Text>
+      <TextInput
+        {...rest}
+        value={value}
+        style={[styles.floatInput, rest.multiline && styles.floatInputMulti]}
+        placeholderTextColor="transparent"
+        inputAccessoryViewID={Platform.OS === 'ios' ? accessoryID : undefined}
+        onFocus={(e) => { setFocused(true); rest.onFocus?.(e); }}
+        onBlur={(e)  => { setFocused(false); rest.onBlur?.(e); }}
+      />
+    </View>
+  );
+}
+
+// ─── Screen ─────────────────────────────────────────────────────────────────
 export default function CreatePostScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { profile, profileLoaded } = useAuth();
 
-  const [username, setUsername] = useState('');
-  const [loadingUser, setLoadingUser] = useState(true);
-  const [title, setTitle] = useState('');
-  const [link, setLink] = useState('');
-  const [content, setContent] = useState('');
+  const [title, setTitle]         = useState('');
+  const [link, setLink]           = useState('');
+  const [content, setContent]     = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-
-  const visibilityTimeout = useRef<NodeJS.Timeout | null>(null);
 
   const wordCount = useMemo(
     () => (content.trim().length ? content.trim().split(/\s+/).length : 0),
@@ -52,61 +105,33 @@ export default function CreatePostScreen() {
   );
   const isCharLimitExceeded = content.length > 10000;
 
-  // keyboard visibility tracking (prevents Done bar when keyboard isn't actually shown)
-  useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', () => {
-      if (visibilityTimeout.current) clearTimeout(visibilityTimeout.current);
-      visibilityTimeout.current = setTimeout(() => setKeyboardVisible(true), 40);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      if (visibilityTimeout.current) clearTimeout(visibilityTimeout.current);
-      visibilityTimeout.current = setTimeout(() => setKeyboardVisible(false), 40);
-    });
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-      if (visibilityTimeout.current) clearTimeout(visibilityTimeout.current);
-    };
-  }, []);
+  // word-count colour: grey → amber → red
+  const counterColor =
+    wordCount > 950 ? '#EF4444' :
+    wordCount > 800 ? '#F59E0B' :
+    '#9CA3AF';
 
   useEffect(() => {
-    const user = auth.currentUser;
-    if (!user) {
-      router.replace('/');
-      return;
-    }
-    (async () => {
-      try {
-        const snap = await getDoc(doc(db, 'Profiles', user.uid));
-        if (snap.exists()) setUsername((snap.data() as any).username ?? '');
-      } catch (e) {
-        console.error('Error fetching profile:', e);
-      } finally {
-        setLoadingUser(false);
-      }
-    })();
+    if (!auth.currentUser) router.replace('/');
   }, [router]);
+
 
   const handleSubmit = async () => {
     if (submitting) return;
-
     const user = auth.currentUser;
     if (!user) {
       Alert.alert('Not signed in', 'Please sign in to create a post.');
       router.replace('/');
       return;
     }
-
     if (!title.trim() || !content.trim()) {
       Alert.alert('Missing fields', 'Title and content are required.');
       return;
     }
-
     if (wordCount > 1000) {
       Alert.alert('Limit exceeded', 'Please limit your post to 1000 words.');
       return;
     }
-
     if (isCharLimitExceeded) {
       Alert.alert('Character limit exceeded', 'Max ~10,000 characters.');
       return;
@@ -123,22 +148,20 @@ export default function CreatePostScreen() {
       );
       const snap = await getDocs(qRef);
       if (snap.size > 1) {
-        Alert.alert('Posting limit reached', 'You have already submitted 2 posts in the past week.');
+        Alert.alert('Posting limit reached', 'You can submit 2 posts per week.');
         return;
       }
-
       const tags = (content.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
       await addDoc(collection(db, 'Posts'), {
         title: title.trim(),
         link: link.trim() || null,
         content,
         author: user.uid,
-        authorName: username || null,
+        authorName: profile?.username || null,
         timestamp: Date.now(),
         tags,
       });
-
-      Alert.alert('Success', 'Your post has been created.');
+      Alert.alert('Posted!', 'Your post is live.');
       router.push('/feed');
     } catch (e: any) {
       console.error('Error adding post:', e);
@@ -148,154 +171,200 @@ export default function CreatePostScreen() {
     }
   };
 
-  if (loadingUser) {
+  if (!profileLoaded) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator />
-        <Text>Loading…</Text>
+        <ActivityIndicator color={BLUE} />
       </View>
     );
   }
 
-  // Keep this a touch bigger than the bar + safe inset so the button never gets overlapped
   const bottomPadding = BOTTOM_BAR_HEIGHT + insets.bottom + 16;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }} edges={['top', 'left', 'right']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.select({ ios: 'padding', android: undefined })}
-      >
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
+    <>
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'left', 'right']}>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.select({ ios: 'padding', android: undefined })}
         >
-          <Text style={styles.h1}>Create Post</Text>
-          <Text style={styles.subtleCenter}>You are limited to 2 posts in the past week.</Text>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
+          >
+            {/* Header */}
+            <Text style={styles.h1}>New Post</Text>
+            <Text style={styles.rateNote}>You are limited to 1 post every other day max. Share what you care about.</Text>
 
-          <View style={[styles.form, { flex: 1 }]}>
-            {/* TITLE */}
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Title"
-              placeholderTextColor="#6B7280"
-              style={styles.input}
-              returnKeyType="next"
-              onFocus={() => setKeyboardVisible(true)}
-              onBlur={() => setKeyboardVisible(false)}
-              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
-            />
+            <View style={[styles.form, { flex: 1 }]}>
+              <FloatField
+                label="Title"
+                value={title}
+                onChangeText={setTitle}
+                returnKeyType="next"
+                maxLength={150}
+                accessoryID={ACCESSORY_ID_TITLE}
+              />
 
-            {/* LINK */}
-            <TextInput
-              value={link}
-              onChangeText={setLink}
-              placeholder="Link (optional)"
-              placeholderTextColor="#6B7280"
-              style={styles.input}
-              autoCapitalize="none"
-              keyboardType="url"
-              returnKeyType="next"
-              onFocus={() => setKeyboardVisible(true)}
-              onBlur={() => setKeyboardVisible(false)}
-              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
-            />
+              <FloatField
+                label="Link  (optional)"
+                value={link}
+                onChangeText={setLink}
+                autoCapitalize="none"
+                keyboardType="url"
+                returnKeyType="next"
+                maxLength={500}
+                accessoryID={ACCESSORY_ID_LINK}
+              />
 
-            {/* CONTENT */}
-            <TextInput
-              value={content}
-              onChangeText={setContent}
-              placeholder="Content"
-              placeholderTextColor="#6B7280"
-              numberOfLines={12}
-              style={styles.textarea}
-              multiline
-              textAlignVertical="top"
-              autoCorrect
-              autoCapitalize="sentences"
-              returnKeyType="done"
-              blurOnSubmit={false}
-              onFocus={() => setKeyboardVisible(true)}
-              onBlur={() => setKeyboardVisible(false)}
-              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
-            />
+              <FloatField
+                label="Content"
+                value={content}
+                onChangeText={setContent}
+                multiline
+                textAlignVertical="top"
+                autoCorrect
+                autoCapitalize="sentences"
+                returnKeyType="done"
+                blurOnSubmit={false}
+                accessoryID={ACCESSORY_ID_BODY}
+                fieldStyle={{ flex: 1, minHeight: 260 }}
+              />
 
-            <View style={styles.counterRow}>
-              <Text style={styles.counterText}>{wordCount}/1000 words</Text>
-              {isCharLimitExceeded && (
-                <Text style={styles.counterExceeded}>Character limit exceeded!</Text>
-              )}
-            </View>
+              {/* word counter */}
+              <View style={styles.counterRow}>
+                <Text style={[styles.counterText, { color: counterColor }]}>
+                  {wordCount} / 1000 words
+                </Text>
+                {isCharLimitExceeded && (
+                  <Text style={styles.counterExceeded}>Character limit exceeded</Text>
+                )}
+              </View>
 
-            <View style={[styles.submitButton, { marginBottom: 12 }]}>
-              <Button
-                title={submitting ? 'Submitting…' : 'Submit'}
+              {/* Submit */}
+              <Pressable
                 onPress={handleSubmit}
                 disabled={submitting}
-              />
+                style={({ pressed }) => [
+                  styles.submitBtn,
+                  pressed && { opacity: 0.88 },
+                  submitting && { opacity: 0.6 },
+                ]}
+              >
+                {submitting
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.submitTxt}>Post</Text>
+                }
+              </Pressable>
             </View>
-          </View>
-        </ScrollView>
+          </ScrollView>
 
-        <BottomBar />
-      </KeyboardAvoidingView>
+          <BottomBar />
+        </KeyboardAvoidingView>
+      </SafeAreaView>
 
-      {/* iOS Done bar for ALL fields — only when keyboard is visible */}
-      {Platform.OS === 'ios' && keyboardVisible && (
-        <InputAccessoryView nativeID={ACCESSORY_ID}>
-          <View style={styles.iosAccessory}>
-            <Button title="Done" color="#007AFF" onPress={() => Keyboard.dismiss()} />
-          </View>
-        </InputAccessoryView>
+      {/* iOS Done bar — one per field */}
+      {Platform.OS === 'ios' && (
+        <>
+          <InputAccessoryView nativeID={ACCESSORY_ID_TITLE}>
+            <View style={styles.iosAccessory}>
+              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
+                <Text style={styles.iosDone}>Done</Text>
+              </Pressable>
+            </View>
+          </InputAccessoryView>
+          <InputAccessoryView nativeID={ACCESSORY_ID_LINK}>
+            <View style={styles.iosAccessory}>
+              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
+                <Text style={styles.iosDone}>Done</Text>
+              </Pressable>
+            </View>
+          </InputAccessoryView>
+          <InputAccessoryView nativeID={ACCESSORY_ID_BODY}>
+            <View style={styles.iosAccessory}>
+              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
+                <Text style={styles.iosDone}>Done</Text>
+              </Pressable>
+            </View>
+          </InputAccessoryView>
+        </>
       )}
-    </SafeAreaView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  container:   { padding: 20 },
+  centered:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  h1: { fontSize: 28, fontWeight: '700', textAlign: 'center', marginVertical: 8 },
-  subtleCenter: { textAlign: 'center', opacity: 0.8, marginBottom: 12 },
+  h1:          { fontSize: 26, fontWeight: '700', color: '#111827', marginBottom: 4, textAlign: 'center' },
+  rateNote:    { fontSize: 13, color: '#9CA3AF', marginBottom: 20, textAlign: 'center' },
 
-  form: { gap: 12, marginBottom: 0 },
+  form:        { gap: 16 },
 
-  input: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
-    padding: 12,
-    paddingTop: 12,
+  // ── floating label field ──
+  floatWrap: {
+    borderWidth: 1.5,
+    borderRadius: 12,
+    backgroundColor: '#FAFAFA',
+    paddingHorizontal: 14,
+    paddingTop: 22,
+    paddingBottom: 10,
+    position: 'relative',
+  },
+  floatLabel: {
+    position: 'absolute',
+    left: 14,
+    fontWeight: '500',
+  },
+  floatInput: {
     fontSize: 16,
-    backgroundColor: 'white',
+    color: '#111827',
+    padding: 0,
+    margin: 0,
+  },
+  floatInputMulti: {
+    minHeight: 200,
+    textAlignVertical: 'top',
   },
 
-  textarea: {
-    flex: 1,
-    minHeight: 320,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: 'white',
+  // ── counter ──
+  counterRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  counterText:     { fontSize: 12, fontWeight: '500' },
+  counterExceeded: { fontSize: 12, color: '#EF4444', fontWeight: '600' },
+
+  // ── submit ──
+  submitBtn: {
+    backgroundColor: BLUE,
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: 'center',
+    marginTop: 4,
+    shadowColor: BLUE,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  submitTxt: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 
-  counterRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  counterText: { fontSize: 12, opacity: 0.7 },
-  counterExceeded: { fontSize: 12, color: 'red' },
-
-  submitButton: { marginTop: 8 },
-
-  // iOS accessory (right-aligned Done)
+  // ── iOS accessory ──
   iosAccessory: {
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    backgroundColor: '#F9FAFB',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     alignItems: 'flex-end',
+  },
+  iosDone: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: BLUE,
   },
 });

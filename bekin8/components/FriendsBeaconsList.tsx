@@ -59,38 +59,29 @@ const asStringArray = (v: any): string[] => (Array.isArray(v) ? v.filter((x) => 
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 
-// Prefer Profiles.displayName → Profiles.username → users.username
+// Prefer Profiles.displayName → Profiles.username
 async function fetchProfileNames(uids: string[]): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   if (!uids || uids.length === 0) return out;
 
-  // read Profiles in small chunks
+  // read Profiles in parallel chunks of 10
   const chunks: string[][] = [];
   for (let i = 0; i < uids.length; i += 10) chunks.push(uids.slice(i, i + 10));
 
-  for (const ids of chunks) {
-    const reads = ids.map((uid) => getDoc(doc(db, "Profiles", uid)));
-    const snaps = await Promise.all(reads);
-    snaps.forEach((snap, idx) => {
-      const uid = ids[idx];
-      if (!snap.exists()) return;
-      const d: any = snap.data() || {};
-      const display = typeof d.displayName === "string" ? d.displayName.trim() : "";
-      const uname   = typeof d.username === "string" ? d.username.trim() : "";
-      out[uid] = display || uname || "";
-    });
-  }
-
-  // backfill blanks from users/{uid}.username
-  const missing = uids.filter((uid) => !out[uid]);
-  for (const uid of missing) {
-    try {
-      const us = await getDoc(doc(db, "users", uid));
-      const ud = us.exists() ? (us.data() as any) : {};
-      const uname = typeof ud.username === "string" ? ud.username.trim() : "";
-      if (uname) out[uid] = uname;
-    } catch {}
-  }
+  await Promise.all(
+    chunks.map(async (ids) => {
+      const reads = ids.map((uid) => getDoc(doc(db, "Profiles", uid)));
+      const snaps = await Promise.all(reads);
+      snaps.forEach((snap, idx) => {
+        const uid = ids[idx];
+        if (!snap.exists()) return;
+        const d: any = snap.data() || {};
+        const display = typeof d.displayName === "string" ? d.displayName.trim() : "";
+        const uname   = typeof d.username === "string" ? d.username.trim() : "";
+        out[uid] = display || uname || "";
+      });
+    })
+  );
 
   return out;
 }

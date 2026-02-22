@@ -53,11 +53,11 @@ const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBar
 
 export default function FriendsScreen() {
-  const { user, initialized } = useAuth();
+  const { user, initialized, profile, profileLoaded } = useAuth();
   const [notifyByUid, setNotifyByUid] = useState<Record<string, boolean>>({});
   const router = useRouter();
 
-  // Username state
+  // Username state — seeded from cached profile, editable locally
   const [usernameInput, setUsernameInput] = useState("");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
   const [busyUsername, setBusyUsername] = useState(false);
@@ -136,38 +136,35 @@ export default function FriendsScreen() {
     return out;
   };
 
-  const fetchCurrentUsername = async () => {
-    const user = auth.currentUser;
-    if (!user) return;
-    const profileRef = doc(db, "Profiles", user.uid);
-    const snap = await getDoc(profileRef);
-    if (snap.exists()) {
-      const u = (snap.data() as any)?.username;
-      if (typeof u === "string" && u.trim()) {
-        setCurrentUsername(u.trim());
-        setUsernameInput(u.trim());
-        nameCacheRef.current[user.uid] = u.trim();
-      } else {
-        setCurrentUsername(null);
-      }
+  // Seed username from cached profile
+  useEffect(() => {
+    if (!profileLoaded || !profile) return;
+    const u = profile.username;
+    if (u) {
+      setCurrentUsername(u);
+      setUsernameInput(u);
+      if (user?.uid) nameCacheRef.current[user.uid] = u;
     } else {
       setCurrentUsername(null);
     }
-  };
+  }, [profileLoaded]);
 
   const resolveUsernames = async (uids: string[]) => {
     const toFetch = uids.filter((u) => !nameCacheRef.current[u]);
-    for (const uid of toFetch) {
-      try {
-        const prof = await getDoc(doc(db, "Profiles", uid));
-        const uname =
-          (prof.exists() && (prof.data() as any)?.username) ||
-          (prof.exists() && (prof.data() as any)?.usernameLower);
-        if (uname) nameCacheRef.current[uid] = String(uname);
-      } catch {
-        // ignore
-      }
-    }
+    if (!toFetch.length) return;
+    await Promise.all(
+      toFetch.map(async (uid) => {
+        try {
+          const prof = await getDoc(doc(db, "Profiles", uid));
+          const uname =
+            (prof.exists() && (prof.data() as any)?.username) ||
+            (prof.exists() && (prof.data() as any)?.usernameLower);
+          if (uname) nameCacheRef.current[uid] = String(uname);
+        } catch {
+          // ignore
+        }
+      })
+    );
   };
 
   useEffect(() => {
@@ -194,8 +191,7 @@ export default function FriendsScreen() {
     // Logged in: set up all Firestore subscriptions.
     const cleanups: Array<() => void> = [];
 
-    // One-time per mount post-auth task
-    fetchCurrentUsername();
+    // username seeded from AuthProvider profile cache
 
     // Optional: keep token fresh silently if already granted (no prompt)
     syncPushTokenIfGranted().catch(() => {});
@@ -841,6 +837,14 @@ export default function FriendsScreen() {
   };
 
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
+  if (!profileLoaded) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg }}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <FlatList

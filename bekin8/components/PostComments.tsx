@@ -98,10 +98,22 @@ export default function PostComments({ post, onClose }: Props) {
   const [sending, setSending] = useState(false);
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
   const [postAuthorName, setPostAuthorName] = useState<string>(post.authorUsername);
+  const [authorCommentsEnabled, setAuthorCommentsEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
     let alive = true;
     resolveMyName(post.authorUid).then((n) => { if (alive) setPostAuthorName(n); }).catch(() => {});
+    // Fetch the post author's global comments setting from their Profile
+    getDoc(doc(db, 'Profiles', post.authorUid)).then((snap) => {
+      if (!alive) return;
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        // commentsEnabled defaults to false in settings, so undefined means false
+        setAuthorCommentsEnabled(data.commentsEnabled === true);
+      } else {
+        setAuthorCommentsEnabled(false);
+      }
+    }).catch(() => { if (alive) setAuthorCommentsEnabled(false); });
     return () => { alive = false; };
   }, [post.authorUid]);
 
@@ -255,18 +267,23 @@ export default function PostComments({ post, onClose }: Props) {
     }
   };
 
-  const commentsOn = post.commentsEnabled !== false;
+  // Comments are on only if: per-post flag is enabled AND author's global setting allows comments
+  // authorCommentsEnabled=null means still loading — show composer optimistically if per-post is enabled
+  const commentsOn = post.commentsEnabled !== false && (authorCommentsEnabled === null || authorCommentsEnabled === true);
 
   return (
     <>
-      {/* Full-screen backdrop — tap to close */}
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      {/* Full-screen backdrop — tap outside card to close */}
+      <Pressable style={[StyleSheet.absoluteFill, styles.backdrop]} onPress={onClose} />
 
-      <KeyboardAvoidingView
-        style={styles.sheet}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={0}
-      >
+      {/* Floating card — centered like ChatRoom */}
+      <View style={styles.cardOuter} pointerEvents="box-none">
+        <View style={styles.card}>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+        >
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
@@ -283,110 +300,122 @@ export default function PostComments({ post, onClose }: Props) {
           </Pressable>
         </View>
 
-        {/* Comment thread */}
-        <View
-          style={styles.listArea}
-          onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
-        >
-          {loading ? (
-            <View style={styles.loading}><ActivityIndicator /></View>
-          ) : (
-            <>
-              {showScrollTop && (
-                <Pressable
-                  onPress={scrollToTop}
-                  hitSlop={10}
-                  style={({ pressed }) => [styles.scrollTopBtn, pressed && { opacity: 0.85 }]}
-                >
-                  <Text style={styles.scrollTopIcon}>↑</Text>
-                </Pressable>
-              )}
-              {comments.length === 0 && (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>No comments yet. Be the first!</Text>
-                </View>
-              )}
-              <FlatList
-                ref={listRef}
-                data={comments}
-                keyExtractor={(c) => c.id}
-                style={{ flex: 1 }}
-                contentContainerStyle={{ padding: 12, gap: 8, paddingBottom: 8 }}
-                keyboardShouldPersistTaps="handled"
-                scrollEventThrottle={32}
-                onScroll={onListScroll}
-                onContentSizeChange={onContentSizeChange}
-                onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
-                renderItem={({ item }) => {
-                  const mine = item.authorUid === me?.uid;
-                  const deleted = item.deleted === true;
-                  return (
-                    <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
-                      {!mine && (
-                        <Pressable
-                          onPress={() => requestMenu(item)}
-                          hitSlop={8}
-                          style={[styles.dotsOutside, { marginRight: 6 }]}
-                        >
-                          <Text style={styles.dots}>⋯</Text>
-                        </Pressable>
-                      )}
-                      <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs, deleted && styles.bubbleDeleted]}>
-                        <Text style={[styles.msgMeta, deleted && styles.deletedMeta]} numberOfLines={1}>
-                          {deleted ? 'Deleted' : (item.authorName || (mine ? 'You' : 'Friend'))}
-                          {!deleted && ` · ${item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
-                        </Text>
-                        <Text style={[styles.msgText, deleted && styles.deletedText]}>
-                          {deleted ? '[deleted]' : item.text}
-                        </Text>
-                      </View>
-                      {mine && !deleted && (
-                        <Pressable
-                          onPress={() => requestMenu(item)}
-                          hitSlop={8}
-                          style={[styles.dotsOutside, { marginLeft: 6 }]}
-                        >
-                          <Text style={styles.dots}>⋯</Text>
-                        </Pressable>
-                      )}
-                    </View>
-                  );
-                }}
-              />
-            </>
-          )}
-        </View>
-
-        {/* Composer or disabled banner */}
+        {/* Comment thread — hidden entirely when comments are off */}
         {commentsOn ? (
-          <View style={styles.inputRow}>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              placeholder="Add a comment…"
-              placeholderTextColor="#9CA3AF"
-              style={styles.input}
-              multiline
-              inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
-              blurOnSubmit={false}
-              returnKeyType="send"
-              onSubmitEditing={handleSend}
-              onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
-            />
-            <Pressable
-              onPress={handleSend}
-              disabled={!canSend}
-              style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+          <>
+            <View
+              style={styles.listArea}
+              onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
             >
-              {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
-            </Pressable>
-          </View>
+              {loading ? (
+                <View style={styles.loading}><ActivityIndicator /></View>
+              ) : (
+                <>
+                  {showScrollTop && (
+                    <Pressable
+                      onPress={scrollToTop}
+                      hitSlop={10}
+                      style={({ pressed }) => [styles.scrollTopBtn, pressed && { opacity: 0.85 }]}
+                    >
+                      <Text style={styles.scrollTopIcon}>↑</Text>
+                    </Pressable>
+                  )}
+                  {comments.length === 0 && (
+                    <View style={styles.emptyWrap}>
+                      <Text style={styles.emptyText}>No comments yet. Be the first!</Text>
+                    </View>
+                  )}
+                  <FlatList
+                    ref={listRef}
+                    data={comments}
+                    keyExtractor={(c) => c.id}
+                    style={{ flex: 1 }}
+                    contentContainerStyle={{ padding: 12, gap: 8, paddingBottom: 8 }}
+                    keyboardShouldPersistTaps="handled"
+                    scrollEventThrottle={32}
+                    onScroll={onListScroll}
+                    onContentSizeChange={onContentSizeChange}
+                    onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
+                    renderItem={({ item }) => {
+                      const mine = item.authorUid === me?.uid;
+                      const deleted = item.deleted === true;
+                      return (
+                        <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
+                          {!mine && (
+                            <Pressable
+                              onPress={() => requestMenu(item)}
+                              hitSlop={8}
+                              style={[styles.dotsOutside, { marginRight: 6 }]}
+                            >
+                              <Text style={styles.dots}>⋯</Text>
+                            </Pressable>
+                          )}
+                          <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs, deleted && styles.bubbleDeleted]}>
+                            <Text style={[styles.msgMeta, deleted && styles.deletedMeta]} numberOfLines={1}>
+                              {deleted ? 'Deleted' : (item.authorName || (mine ? 'You' : 'Friend'))}
+                              {!deleted && (() => {
+                                const d = item.createdAt;
+                                const now = new Date();
+                                const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+                                const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                return ' · ' + (isToday ? time : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time);
+                              })()}
+                            </Text>
+                            <Text style={[styles.msgText, deleted && styles.deletedText]}>
+                              {deleted ? '[deleted]' : item.text}
+                            </Text>
+                          </View>
+                          {mine && !deleted && (
+                            <Pressable
+                              onPress={() => requestMenu(item)}
+                              hitSlop={8}
+                              style={[styles.dotsOutside, { marginLeft: 6 }]}
+                            >
+                              <Text style={styles.dots}>⋯</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      );
+                    }}
+                  />
+                </>
+              )}
+            </View>
+
+            {/* Composer */}
+            <View style={styles.inputRow}>
+              <TextInput
+                value={text}
+                onChangeText={setText}
+                placeholder="Add a comment…"
+                placeholderTextColor="#9CA3AF"
+                style={styles.input}
+                multiline
+                inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
+                blurOnSubmit={false}
+                returnKeyType="send"
+                onSubmitEditing={handleSend}
+                onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
+              />
+              <Pressable
+                onPress={handleSend}
+                disabled={!canSend}
+                style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+              >
+                {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
+              </Pressable>
+            </View>
+          </>
         ) : (
-          <View style={styles.commentsOffBanner}>
+          /* Comments are off — hide thread, show banner only */
+          <View style={styles.commentsOffWrap}>
+            <Text style={styles.commentsOffIcon}>💬</Text>
             <Text style={styles.commentsOffText}>Comments are turned off</Text>
           </View>
         )}
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+        </View>{/* end card */}
+      </View>{/* end cardOuter */}
 
       {/* Android menu sheet */}
       {menuFor && Platform.OS !== 'ios' && (
@@ -425,23 +454,27 @@ export default function PostComments({ post, onClose }: Props) {
 }
 
 const styles = StyleSheet.create({
-  sheet: {
+  backdrop: {
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  cardOuter: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: '70%',
+    top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center',
+    padding: 16,
+  },
+  card: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderTopWidth: 1,
-    borderColor: '#E5E7EB',
+    borderRadius: 16,
     overflow: 'hidden',
+    height: 480,
     shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: -4 },
-    elevation: 10,
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
 
   header: {
@@ -452,6 +485,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#F8FAFF',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
   },
   headerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 },
   avatar: {
@@ -517,11 +552,12 @@ const styles = StyleSheet.create({
   },
   sendTxt: { color: '#fff', fontWeight: '800', fontSize: 15 },
 
-  commentsOffBanner: {
-    borderTopWidth: 1, borderTopColor: '#E5E7EB',
-    paddingVertical: 14, alignItems: 'center', backgroundColor: '#FAFBFF',
+  commentsOffWrap: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 32, gap: 10,
   },
-  commentsOffText: { color: '#9CA3AF', fontSize: 14, fontStyle: 'italic' },
+  commentsOffIcon: { fontSize: 36 },
+  commentsOffText: { color: '#9CA3AF', fontSize: 15, fontStyle: 'italic' },
 
   menuBackdrop: {
     ...StyleSheet.absoluteFillObject,

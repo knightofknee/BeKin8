@@ -24,7 +24,6 @@ import {
   arrayUnion,
   collection,
   doc,
-  getDoc,
   getDocs,
   onSnapshot,
   query,
@@ -39,6 +38,7 @@ import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsLi
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted } from '../lib/push';
+import { useAuth } from '../providers/AuthProvider';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -73,18 +73,6 @@ const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 const MSG_ACCESSORY_ID = 'beacon-msg-accessory';
 const IOS_ACCESSORY_HEIGHT = 48;
 
-async function resolveMyOwnerName(user: { uid: string; displayName?: string | null }) {
-  let ownerName = (user.displayName || '').toString().trim();
-  try {
-    const p = await getDoc(doc(db, 'Profiles', user.uid));
-    const u = (p.data() as any)?.username;
-    if (typeof u === 'string' && u.trim()) ownerName = u.trim();
-  } catch {
-    // ignore
-  }
-  return ownerName || null;
-}
-
 // --- Friend groups ---
 type FriendGroup = {
   id: string;
@@ -94,6 +82,7 @@ type FriendGroup = {
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { profile } = useAuth();
 
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
@@ -228,7 +217,6 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    const sub = Keyboard.addListener('keyboardDidShow', () => {}); // no-op to keep imports happy
     const onFocus = () => {
       // If the user has since granted permission in Settings, this will update the token.
       syncPushTokenIfGranted();
@@ -239,7 +227,6 @@ export default function HomeScreen() {
     const AppState = require('react-native').AppState;
     const subState = AppState.addEventListener('change', appStateHandler);
     return () => {
-      sub.remove();
       subState.remove();
     };
   }, []);
@@ -418,7 +405,7 @@ export default function HomeScreen() {
                 });
               allowedUids = Array.from(new Set(allowedUids));
 
-              const ownerName = await resolveMyOwnerName(user);
+              const ownerName = profile?.displayName || profile?.username || null;
               await addDoc(beaconsRef, {
                 ownerUid: user.uid,
                 ownerName,
@@ -474,7 +461,7 @@ export default function HomeScreen() {
       const ed = endOfDay(sd);
 
       const beaconsRef = collection(db, 'Beacons');
-      const ownerName = await resolveMyOwnerName(user);
+      const ownerName = profile?.displayName || profile?.username || null;
 
       const meUid = user.uid;
       let allowedUids: string[] = [meUid];
@@ -564,7 +551,7 @@ export default function HomeScreen() {
         updatedAt: serverTimestamp(),
       });
 
-      const name = await resolveMyOwnerName(user);
+      const name = profile?.displayName || profile?.username || null;
       await addDoc(collection(db, 'Beacons', b.id, 'ChatMessages'), {
         type: 'system',
         text: `${name || 'Someone'} is in`,

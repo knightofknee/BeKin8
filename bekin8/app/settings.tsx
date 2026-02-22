@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput } from "react-native";
+import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput, Switch } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
@@ -7,6 +7,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { doc, getDoc, setDoc, serverTimestamp, deleteField } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import BottomBar from "../components/BottomBar";
+import { useAuth } from "../providers/AuthProvider";
 
 const colors = {
   primary: "#2F6FED",
@@ -19,6 +20,7 @@ const colors = {
 };
 
 export default function SettingsScreen() {
+  const { profile, profileLoaded, updateProfile } = useAuth();
   const [busy, setBusy] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [displayName, setDisplayName] = useState("");
@@ -26,62 +28,44 @@ export default function SettingsScreen() {
   const [savingName, setSavingName] = useState(false);
   const [attemptedSave, setAttemptedSave] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
-  const [currentDisplayName, setCurrentDisplayName] = useState<string>("");
+  const [commentsEnabled, setCommentsEnabled] = useState(false);
+  const [commentsBusy, setCommentsBusy] = useState(false);
   const router = useRouter();
   const functions = getFunctions();
 
-  const resolveEffectiveName = async (uid: string) => {
-    // Load from Profiles first
-    const profSnap = await getDoc(doc(db, "Profiles", uid));
-    const profile = profSnap.exists() ? (profSnap.data() as any) : {};
-    const profileDisplay = (typeof profile.displayName === "string" ? profile.displayName.trim() : "") || "";
+  // Seed local state from cached profile once available
+  React.useEffect(() => {
+    if (profile) {
+      setCommentsEnabled(profile.commentsEnabled);
+    }
+  }, [profileLoaded]);
 
-    // Remove helper suffixes like "(edit name in settings)" from the Auth displayName fallback only
-    const cleanAuth = (s?: string | null) => {
-      if (!s) return "";
-      return s.replace(/\s*\(.*?\)\s*$/i, "").trim();
-    };
+  const currentDisplayName = profile
+    ? (profile.displayName || profile.username)
+    : "";
 
-    // Resolve username from all known places
-    const userSnap = await getDoc(doc(db, "users", uid));
-    const userDoc = userSnap.exists() ? (userSnap.data() as any) : {};
-    const uname =
-      (typeof userDoc.username === "string" && userDoc.username.trim().length > 0
-        ? userDoc.username.trim()
-        : undefined) ??
-      (typeof profile.username === "string" && profile.username.trim().length > 0
-        ? profile.username.trim()
-        : undefined) ??
-      (typeof auth.currentUser?.displayName === "string" && cleanAuth(auth.currentUser.displayName).length > 0
-        ? cleanAuth(auth.currentUser.displayName)
-        : undefined) ??
-      ((auth.currentUser?.email || "").split("@")[0] || undefined);
-
-    const effectiveForEditor = profileDisplay.length > 0 ? profileDisplay : (uname || "");
-    return { profileDisplay, uname: uname || "", effectiveForEditor };
+  const startEditDisplayName = () => {
+    setEditingName(true);
+    setSavingName(false);
+    setNameError(null);
+    const effective = profile ? (profile.displayName || profile.username) : "";
+    setDisplayName(effective);
+    setInitialDisplayName(effective);
   };
 
-  React.useEffect(() => {
+  const handleToggleComments = async (val: boolean) => {
     const uid = auth.currentUser?.uid;
-    if (!uid) return;
-    resolveEffectiveName(uid).then(({ profileDisplay, uname }) => {
-      setCurrentDisplayName(profileDisplay.length > 0 ? profileDisplay : uname);
-    }).catch(() => {});
-  }, []);
-
-  const startEditDisplayName = async () => {
+    if (!uid || commentsBusy) return;
+    setCommentsEnabled(val);
+    updateProfile({ commentsEnabled: val });
+    setCommentsBusy(true);
     try {
-      setEditingName(true);
-      setSavingName(false);
-      setNameError(null);
-      const uid = auth.currentUser?.uid;
-      if (!uid) { setNameError("You must be signed in."); return; }
-      const { effectiveForEditor, profileDisplay, uname } = await resolveEffectiveName(uid);
-      setDisplayName(effectiveForEditor);
-      setInitialDisplayName(effectiveForEditor);
-      setCurrentDisplayName(profileDisplay.length > 0 ? profileDisplay : uname);
+      await setDoc(doc(db, "Profiles", uid), { commentsEnabled: val, updatedAt: serverTimestamp() }, { merge: true });
     } catch {
-      setNameError("Failed to load current name.");
+      setCommentsEnabled(!val);
+      updateProfile({ commentsEnabled: !val });
+    } finally {
+      setCommentsBusy(false);
     }
   };
 
@@ -106,7 +90,7 @@ export default function SettingsScreen() {
         ? { displayName: deleteField(), updatedAt: serverTimestamp() }
         : { displayName: t, updatedAt: serverTimestamp() };
       await setDoc(doc(db, "Profiles", uid), payload, { merge: true });
-      setCurrentDisplayName(t.length === 0 ? "" : t);
+      updateProfile({ displayName: t });
       setInitialDisplayName(t);
       setEditingName(false);
       Alert.alert("Saved", t.length === 0 ? "Display name cleared. We'll show your username." : "Your display name was updated.");
@@ -142,6 +126,14 @@ export default function SettingsScreen() {
       setBusy(false);
     }
   };
+
+  if (!profileLoaded) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
 
   return (
     <>
@@ -195,6 +187,21 @@ export default function SettingsScreen() {
               </View>
             </View>
           )}
+
+          {/* Allow comments on my posts */}
+          <View style={[s.row, s.rowBetween]}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.link}>Allow comments on my posts</Text>
+              <Text style={s.subtle}>Let friends comment on your posts</Text>
+            </View>
+            <Switch
+              value={commentsEnabled}
+              onValueChange={handleToggleComments}
+              disabled={commentsBusy}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor="#fff"
+            />
+          </View>
 
           <View style={s.spacer} />
           {/* Bottom section */}

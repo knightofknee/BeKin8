@@ -516,7 +516,14 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
                   <Text style={styles.msgMeta} numberOfLines={1} ellipsizeMode="tail">
                     {(item.authorName || (mine ? 'You' : 'Friend'))}
                     {' • '}
-                    {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {(() => {
+                      const d = item.createdAt;
+                      const now = new Date();
+                      const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+                      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      if (isToday) return time;
+                      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
+                    })()}
                   </Text>
                   <Text style={styles.msgText}>{item.text}</Text>
                 </View>
