@@ -13,18 +13,26 @@ type RowProps = {
   // per-friend notification preference
   notify?: boolean;
   onToggleNotify?: (value: boolean) => void;
+  // profile navigation
+  onPressName?: () => void;
 };
 
-function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify }: RowProps) {
+function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName }: RowProps) {
   const disabled = busy || !item.uid;
 
   return (
     <View style={styles.row}>
-      <View style={styles.avatar}>
+      {/* Avatar — tappable to view profile */}
+      <Pressable
+        onPress={onPressName}
+        disabled={!onPressName}
+        hitSlop={4}
+        style={[styles.avatar, onPressName && styles.avatarTappable]}
+      >
         <Text style={{ color: "#fff", fontWeight: "800" }}>
           {item.username?.[0]?.toUpperCase() || "?"}
         </Text>
-      </View>
+      </Pressable>
 
       {/* Name */}
       <View style={{ flex: 1 }}>
@@ -86,6 +94,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
+  },
+  avatarTappable: {
+    opacity: 1, // keeps full color; slight scale effect comes from Pressable's pressed state
   },
   // circular icon button
   iconBtn: {

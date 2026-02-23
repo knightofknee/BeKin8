@@ -4,7 +4,6 @@ import {
   ActivityIndicator,
   Platform,
   StyleSheet,
-  Switch,
   Text,
   View,
   FlatList,
@@ -93,10 +92,6 @@ export default function FriendsScreen() {
   // NEW: my blocked users set
   const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
 
-  // Comment notification global consent
-  const [commentNotify, setCommentNotify] = useState(false);
-  const [commentNotifyBusy, setCommentNotifyBusy] = useState(false);
-  const [showCommentInfo, setShowCommentInfo] = useState(false);
 
   // Prevent double-toggles per-UID
   const togglingRef = useRef<Set<string>>(new Set());
@@ -294,15 +289,6 @@ export default function FriendsScreen() {
         const s = new Set<string>();
         snap.forEach((d) => s.add(d.id));
         setBlockedUids(s);
-      })
-    );
-
-    // Comment notification preference
-    cleanups.push(
-      onSnapshot(doc(db, "users", user.uid), (snap) => {
-        if (snap.exists()) {
-          setCommentNotify(!!(snap.data() as any)?.commentNotify);
-        }
       })
     );
 
@@ -666,67 +652,6 @@ export default function FriendsScreen() {
   // NEW: filter out blocked users from the displayed list
   const visibleFriends = friends.filter((f) => !(f.uid && blockedUids.has(f.uid)));
 
-  // --- Comment notification global toggle ---
-  const handleToggleCommentNotify = async (nextValue: boolean) => {
-    const me = auth.currentUser;
-    if (!me || commentNotifyBusy) return;
-
-    setCommentNotifyBusy(true);
-    try {
-      if (nextValue) {
-        // Check notification permissions
-        const perm = await Notifications.getPermissionsAsync();
-        if (!perm.granted) {
-          if (perm.canAskAgain) {
-            const ok = await confirmAsync(
-              "Enable notifications?",
-              "Turn on notifications to get alerts when someone comments on a beacon you're part of.",
-            );
-            if (!ok) return;
-            const req = await Notifications.requestPermissionsAsync();
-            if (!req.granted) {
-              Alert.alert("Notifications Off", "You can enable notifications later from this screen.");
-              return;
-            }
-          } else {
-            await new Promise<void>((resolve) => {
-              Alert.alert(
-                "Notifications Off",
-                Platform.OS === "ios"
-                  ? "To enable, open Settings \u2192 BeKin \u2192 Notifications and turn on Allow Notifications."
-                  : "To enable, open Settings \u2192 Apps \u2192 BeKin \u2192 Notifications and turn them on.",
-                [
-                  { text: "Cancel", style: "cancel", onPress: () => resolve() },
-                  {
-                    text: "Open Settings",
-                    onPress: async () => {
-                      try { await Linking.openSettings(); } catch {}
-                      resolve();
-                    },
-                  },
-                ]
-              );
-            });
-            return;
-          }
-        }
-
-        try { await syncPushTokenIfGranted(); } catch {}
-      }
-
-      await setDoc(
-        doc(db, "users", me.uid),
-        { commentNotify: nextValue },
-        { merge: true }
-      );
-    } catch (e: any) {
-      console.error("handleToggleCommentNotify failed", e);
-      showMessage(e?.message || "Couldn't update comment notifications.", "error");
-    } finally {
-      setCommentNotifyBusy(false);
-    }
-  };
-
   // --- Notify toggle handler with clean permission flow ---
   const handleToggleNotify = async (friendUid: string, nextValue: boolean) => {
     const me = auth.currentUser;
@@ -863,6 +788,7 @@ export default function FriendsScreen() {
               if (!item.uid) return;
               handleToggleNotify(item.uid, v);
             }}
+            onPressName={item.username ? () => router.push(`/profile/${item.username}`) : undefined}
           />
         )}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
@@ -931,36 +857,6 @@ export default function FriendsScreen() {
               onReject={rejectRequest}
               onCancel={cancelRequest}
             />
-
-            {/* Comment Notifications */}
-            <View style={styles.card}>
-              <View style={styles.commentNotifyRow}>
-                <View style={{ flex: 1 }}>
-                  <View style={styles.commentNotifyLabelRow}>
-                    <Text style={styles.commentNotifyLabel}>Comment Notifications</Text>
-                    <Pressable
-                      onPress={() => setShowCommentInfo(!showCommentInfo)}
-                      hitSlop={10}
-                      style={styles.infoBubble}
-                    >
-                      <Text style={styles.infoBubbleText}>i</Text>
-                    </Pressable>
-                  </View>
-                  {showCommentInfo && (
-                    <Text style={styles.commentNotifyHint}>
-                      You will only get notifications from beacons you have RSVP'd to.
-                    </Text>
-                  )}
-                </View>
-                <Switch
-                  value={commentNotify}
-                  onValueChange={handleToggleCommentNotify}
-                  disabled={commentNotifyBusy}
-                  trackColor={{ false: colors.border, true: colors.primary }}
-                  thumbColor="#fff"
-                />
-              </View>
-            </View>
 
             {/* Friends section title */}
             <View style={[styles.card, { marginBottom: 0 }]}>
@@ -1063,43 +959,6 @@ const styles = StyleSheet.create({
   groupName: { fontWeight: "800", color: colors.text },
   groupMeta: { color: colors.subtle, marginTop: 2, fontSize: 12 },
   groupEditHint: { color: colors.primary, fontWeight: "700" },
-
-  // Comment notifications
-  commentNotifyRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  commentNotifyLabelRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  commentNotifyLabel: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.text,
-  },
-  infoBubble: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: colors.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  infoBubbleText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: colors.subtle,
-  },
-  commentNotifyHint: {
-    marginTop: 4,
-    fontSize: 13,
-    color: colors.subtle,
-    lineHeight: 18,
-  },
 
   // Logout button
   logoutBtn: {

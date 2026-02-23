@@ -27,6 +27,7 @@ import {
   onSnapshot,
   addDoc,
   setDoc,
+  deleteDoc,
   updateDoc,
   serverTimestamp,
   DocumentSnapshot,
@@ -43,6 +44,7 @@ interface Post {
   id: string;
   authorUid: string;
   authorUsername: string;
+  authorUsernameSlug: string; // raw username for profile route
   content: string;
   title?: string;
   createdAt: Date;
@@ -81,9 +83,10 @@ export default function Feed() {
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
+  const [silencedPostIds, setSilencedPostIds] = useState<Set<string>>(new Set());
 
-  // cache: uid → { displayName/username, commentsEnabled }
-  const authorCache = useRef<Record<string, { label: string; commentsEnabled: boolean }>>({});
+  // cache: uid → { label (display name), username (slug for profile route), commentsEnabled }
+  const authorCache = useRef<Record<string, { label: string; username: string; commentsEnabled: boolean }>>({});
   // friend uid set
   const friendUids = useRef<Set<string>>(new Set());
   // oldest timestamp loaded so far (for pagination cursor)
@@ -112,6 +115,17 @@ export default function Feed() {
       const s = new Set<string>();
       snap.forEach((d) => s.add(d.id));
       setBlockedUids(s);
+    });
+  }, []);
+
+  // ── silenced posts (comment-on-comment notifications muted per post) ─────────
+  useEffect(() => {
+    const me = auth.currentUser?.uid;
+    if (!me) return;
+    return onSnapshot(collection(db, 'users', me, 'silencedPosts'), (snap) => {
+      const s = new Set<string>();
+      snap.forEach((d) => s.add(d.id));
+      setSilencedPostIds(s);
     });
   }, []);
 
@@ -155,10 +169,11 @@ export default function Feed() {
         try {
           const snap = await getDoc(doc(db, 'Profiles', uid));
           const data: any = snap.exists() ? snap.data() : {};
-          const label = (data.displayName || data.username || '').trim() || 'Friend';
-          authorCache.current[uid] = { label, commentsEnabled: data.commentsEnabled === true };
+          const username = (data.username || '').trim();
+          const label = (data.displayName || username || '').trim() || 'Friend';
+          authorCache.current[uid] = { label, username, commentsEnabled: data.commentsEnabled === true };
         } catch {
-          authorCache.current[uid] = { label: 'Friend', commentsEnabled: false };
+          authorCache.current[uid] = { label: 'Friend', username: '', commentsEnabled: false };
         }
       })
     );
@@ -191,7 +206,7 @@ export default function Feed() {
     results.forEach((res, idx) => {
       if (res.status !== 'fulfilled') return;
       const uid = uids[idx];
-      const author = authorCache.current[uid] ?? { label: 'Friend', commentsEnabled: false };
+      const author = authorCache.current[uid] ?? { label: 'Friend', username: '', commentsEnabled: false };
       res.value.docs.forEach((d) => {
         const data = d.data() as any;
         const rawTs = data.timestamp ?? data.createdAt;
@@ -199,6 +214,7 @@ export default function Feed() {
           id: d.id,
           authorUid: uid,
           authorUsername: author.label,
+          authorUsernameSlug: author.username,
           content: data.content ?? '',
           title: data.title ?? '',
           createdAt: toDate(rawTs),
@@ -338,6 +354,20 @@ export default function Feed() {
     } catch (e: any) { Alert.alert('Failed', e?.message ?? 'Try again.'); }
   }, []);
 
+  const handleToggleSilencePost = useCallback(async (p: Post) => {
+    const me = auth.currentUser?.uid;
+    if (!me) return;
+    const ref = doc(db, 'users', me, 'silencedPosts', p.id);
+    const isSilenced = silencedPostIds.has(p.id);
+    try {
+      if (isSilenced) {
+        await deleteDoc(ref);
+      } else {
+        await setDoc(ref, { silencedAt: serverTimestamp() });
+      }
+    } catch (e: any) { Alert.alert('Failed', e?.message ?? 'Try again.'); }
+  }, [silencedPostIds]);
+
   // ── render ──────────────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -385,7 +415,14 @@ export default function Feed() {
             return (
               <View style={styles.postContainer}>
                 <View style={styles.postHeaderRow}>
-                  <Text style={styles.postAuthor}>{item.authorUsername}</Text>
+                  <Pressable
+                    onPress={() => item.authorUsernameSlug && router.push(`/profile/${item.authorUsernameSlug}`)}
+                    disabled={!item.authorUsernameSlug}
+                  >
+                    <Text style={[styles.postAuthor, item.authorUsernameSlug && styles.postAuthorLink]}>
+                      {item.authorUsername}
+                    </Text>
+                  </Pressable>
                   <Pressable onPress={() => setMenuFor(item)} hitSlop={10} style={styles.menuBtn}>
                     <Text style={styles.menuDots}>⋯</Text>
                   </Pressable>
@@ -470,6 +507,14 @@ export default function Feed() {
               </Pressable>
             ) : null}
 
+            {menuFor?.authorUid !== auth.currentUser?.uid && (profile as any)?.commentOnCommentNotify ? (
+              <Pressable style={styles.menuRow} onPress={() => { const p = menuFor; setMenuFor(null); if (p) handleToggleSilencePost(p); }}>
+                <Text style={styles.menuText}>
+                  {menuFor && silencedPostIds.has(menuFor.id) ? 'Unsilence comment notifications' : 'Silence comment notifications'}
+                </Text>
+              </Pressable>
+            ) : null}
+
             <Pressable style={[styles.menuRow, styles.menuCancel]} onPress={() => setMenuFor(null)}>
               <Text style={styles.menuText}>Cancel</Text>
             </Pressable>
@@ -500,6 +545,7 @@ const styles = StyleSheet.create({
   menuDots: { fontSize: 18, color: '#6b7280' },
 
   postAuthor: { fontWeight: 'bold', marginBottom: 4, color: '#111827' },
+  postAuthorLink: { color: '#2F6FED' },
   postTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 6 },
   postLink: { color: '#2F6FED', textDecorationLine: 'underline', fontWeight: '600' },
   postContent: { marginBottom: 8, color: '#111827', marginTop: 4 },

@@ -2,7 +2,7 @@
   "name": "functions",
   "type": "module",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "lib/index.js",
   "scripts": {
@@ -11,8 +11,8 @@
     "deploy": "npm run build && firebase deploy --only functions"
   },
   "dependencies": {
-    "expo-server-sdk": "^4.0.0",
-    "firebase-admin": "^12.7.0",
+    "expo-server-sdk": "^6.0.0",
+    "firebase-admin": "^13.6.1",
     "firebase-functions": "^7.0.5"
   },
   "devDependencies": {

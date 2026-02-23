@@ -1,13 +1,57 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput, Switch } from "react-native";
+import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput, Switch, Platform, Linking } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Stack, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { doc, getDoc, setDoc, serverTimestamp, deleteField } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, setDoc, serverTimestamp, deleteField } from "firebase/firestore";
 import { signOut } from "firebase/auth";
+import * as Notifications from "expo-notifications";
 import BottomBar from "../components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
+import { syncPushTokenIfGranted } from "../lib/push";
+
+/** Returns true if notifications are (or become) granted. Shows OS prompt if needed. */
+async function ensureNotifyPermission(): Promise<boolean> {
+  const perm = await Notifications.getPermissionsAsync();
+  if (perm.granted) return true;
+
+  if (perm.canAskAgain) {
+    const ok = await new Promise<boolean>((resolve) =>
+      Alert.alert(
+        "Enable notifications?",
+        "Turn on notifications to receive alerts for comments.",
+        [
+          { text: "Not now", style: "cancel", onPress: () => resolve(false) },
+          { text: "Allow", onPress: () => resolve(true) },
+        ]
+      )
+    );
+    if (!ok) return false;
+    const req = await Notifications.requestPermissionsAsync();
+    if (!req.granted) {
+      Alert.alert("Notifications Off", "You can enable them later from Settings.");
+      return false;
+    }
+    try { await syncPushTokenIfGranted(); } catch {}
+    return true;
+  }
+
+  // Already permanently denied — direct to OS settings
+  await new Promise<void>((resolve) =>
+    Alert.alert(
+      "Notifications Off",
+      Platform.OS === "ios"
+        ? "Open Settings → BeKin → Notifications and turn on Allow Notifications."
+        : "Open Settings → Apps → BeKin → Notifications and turn them on.",
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve() },
+        { text: "Open Settings", onPress: async () => { try { await Linking.openSettings(); } catch {} resolve(); } },
+      ]
+    )
+  );
+  return false;
+}
 
 const colors = {
   primary: "#2F6FED",
@@ -30,6 +74,13 @@ export default function SettingsScreen() {
   const [nameError, setNameError] = useState<string | null>(null);
   const [commentsEnabled, setCommentsEnabled] = useState(false);
   const [commentsBusy, setCommentsBusy] = useState(false);
+  // Notification toggles
+  const [commentNotify, setCommentNotify] = useState(false);
+  const [commentNotifyBusy, setCommentNotifyBusy] = useState(false);
+  const [postCommentNotify, setPostCommentNotify] = useState(false);
+  const [postCommentNotifyBusy, setPostCommentNotifyBusy] = useState(false);
+  const [commentOnCommentNotify, setCommentOnCommentNotify] = useState(false);
+  const [commentOnCommentNotifyBusy, setCommentOnCommentNotifyBusy] = useState(false);
   const router = useRouter();
   const functions = getFunctions();
 
@@ -39,6 +90,25 @@ export default function SettingsScreen() {
       setCommentsEnabled(profile.commentsEnabled);
     }
   }, [profileLoaded]);
+
+  // Live listeners for notification prefs
+  React.useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    // RSVP comment notify lives on users/{uid}.commentNotify
+    const unsubUser = onSnapshot(doc(db, "users", uid), (snap) => {
+      if (snap.exists()) setCommentNotify(!!(snap.data() as any)?.commentNotify);
+    });
+    // Post-comment prefs live on Profiles/{uid}
+    const unsubProfile = onSnapshot(doc(db, "Profiles", uid), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data() as any;
+        setPostCommentNotify(!!d?.postCommentNotify);
+        setCommentOnCommentNotify(!!d?.commentOnCommentNotify);
+      }
+    });
+    return () => { unsubUser(); unsubProfile(); };
+  }, []);
 
   const currentDisplayName = profile
     ? (profile.displayName || profile.username)
@@ -66,6 +136,60 @@ export default function SettingsScreen() {
       updateProfile({ commentsEnabled: !val });
     } finally {
       setCommentsBusy(false);
+    }
+  };
+
+  const handleToggleCommentNotify = async (val: boolean) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || commentNotifyBusy) return;
+    if (val) {
+      const granted = await ensureNotifyPermission();
+      if (!granted) return; // don't flip the switch if they declined
+    }
+    setCommentNotify(val);
+    setCommentNotifyBusy(true);
+    try {
+      await setDoc(doc(db, "users", uid), { commentNotify: val }, { merge: true });
+    } catch {
+      setCommentNotify(!val);
+    } finally {
+      setCommentNotifyBusy(false);
+    }
+  };
+
+  const handleTogglePostCommentNotify = async (val: boolean) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || postCommentNotifyBusy) return;
+    if (val) {
+      const granted = await ensureNotifyPermission();
+      if (!granted) return; // don't flip the switch if they declined
+    }
+    setPostCommentNotify(val);
+    setPostCommentNotifyBusy(true);
+    try {
+      await setDoc(doc(db, "Profiles", uid), { postCommentNotify: val, updatedAt: serverTimestamp() }, { merge: true });
+    } catch {
+      setPostCommentNotify(!val);
+    } finally {
+      setPostCommentNotifyBusy(false);
+    }
+  };
+
+  const handleToggleCommentOnCommentNotify = async (val: boolean) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || commentOnCommentNotifyBusy) return;
+    if (val) {
+      const granted = await ensureNotifyPermission();
+      if (!granted) return;
+    }
+    setCommentOnCommentNotify(val);
+    setCommentOnCommentNotifyBusy(true);
+    try {
+      await setDoc(doc(db, "Profiles", uid), { commentOnCommentNotify: val, updatedAt: serverTimestamp() }, { merge: true });
+    } catch {
+      setCommentOnCommentNotify(!val);
+    } finally {
+      setCommentOnCommentNotifyBusy(false);
     }
   };
 
@@ -137,7 +261,6 @@ export default function SettingsScreen() {
 
   return (
     <>
-    <Stack.Screen options={{ animation: 'fade' }} />
       <SafeAreaView style={s.safe} edges={["top", "left", "right"]}>
         {/* Header */}
         <View style={s.header}>
@@ -198,6 +321,51 @@ export default function SettingsScreen() {
               value={commentsEnabled}
               onValueChange={handleToggleComments}
               disabled={commentsBusy}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          {/* Notify: comments on RSVP'd beacons */}
+          <View style={[s.row, s.rowBetween]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={s.link}>RSVP beacon comment notifications</Text>
+              <Text style={s.subtle}>Get notified when someone comments on a beacon you've RSVP'd to</Text>
+            </View>
+            <Switch
+              value={commentNotify}
+              onValueChange={handleToggleCommentNotify}
+              disabled={commentNotifyBusy}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          {/* Notify: comments on my own posts */}
+          <View style={[s.row, s.rowBetween]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={s.link}>Post comment notifications</Text>
+              <Text style={s.subtle}>Get notified when someone comments on your post</Text>
+            </View>
+            <Switch
+              value={postCommentNotify}
+              onValueChange={handleTogglePostCommentNotify}
+              disabled={postCommentNotifyBusy}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          {/* Notify: new comments on posts I've commented on */}
+          <View style={[s.row, s.rowBetween]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={s.link}>Comments on comments</Text>
+              <Text style={s.subtle}>Get notified when someone comments on a post you've commented on</Text>
+            </View>
+            <Switch
+              value={commentOnCommentNotify}
+              onValueChange={handleToggleCommentOnCommentNotify}
+              disabled={commentOnCommentNotifyBusy}
               trackColor={{ false: colors.border, true: colors.primary }}
               thumbColor="#fff"
             />

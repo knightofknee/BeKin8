@@ -27,7 +27,7 @@ type Beacon = {
 };
 
 // ===== Expo client & constants =====
-const expo = new Expo({ useFcmV1: true });
+const expo = new Expo();
 const TICKET_TTL_HOURS = 48;
 
 // ===== Helpers: content =====
@@ -402,10 +402,45 @@ type ChatMessage = {
   subtype?: string;
 };
 
-/** Check if user has opted into comment notifications globally. */
+/** RSVP comment notify: users/{uid}.commentNotify */
 async function wantsCommentNotify(uid: string): Promise<boolean> {
   const snap = await db.collection('users').doc(uid).get();
   return snap.exists ? !!(snap.data() as any)?.commentNotify : false;
+}
+
+/** Own-post comment notify: Profiles/{uid}.postCommentNotify */
+async function wantsPostCommentNotify(uid: string): Promise<boolean> {
+  const snap = await db.collection('Profiles').doc(uid).get();
+  return snap.exists ? !!(snap.data() as any)?.postCommentNotify : false;
+}
+
+/** Comments-on-comments notify: Profiles/{uid}.commentOnCommentNotify */
+async function wantsCommentOnCommentNotify(uid: string): Promise<boolean> {
+  const snap = await db.collection('Profiles').doc(uid).get();
+  return snap.exists ? !!(snap.data() as any)?.commentOnCommentNotify : false;
+}
+
+/** Check if user has silenced notifications for a specific post. */
+async function hasSilencedPost(uid: string, postId: string): Promise<boolean> {
+  const snap = await db.collection('users').doc(uid).collection('silencedPosts').doc(postId).get();
+  return snap.exists;
+}
+
+/** Get UIDs who have commented on a post (deduped, excludes deleted comments). */
+async function getCommentAuthorUids(postId: string): Promise<string[]> {
+  const qs = await db
+    .collection('Posts')
+    .doc(postId)
+    .collection('comments')
+    .get();
+  const uids = new Set<string>();
+  qs.forEach((d) => {
+    const data = d.data() as any;
+    if (data?.deleted === true) return;
+    const uid = typeof data?.authorUid === 'string' ? data.authorUid : null;
+    if (uid) uids.add(uid);
+  });
+  return Array.from(uids);
 }
 
 /** Get UIDs who RSVP'd ("I'm in") on a beacon. */
@@ -446,19 +481,22 @@ export const onBeaconCommentNotify = onDocumentCreated(
     const beacon = beaconSnap.data() as Beacon;
     const ownerUid = beacon.ownerUid;
 
-    // Collect candidate recipients: owner + all RSVP'd users, minus the author
+    // Collect candidate recipients, split by pref type
     const rsvpUids = await getRsvpUids(beaconId);
-    const candidateSet = new Set(rsvpUids);
-    if (ownerUid) candidateSet.add(ownerUid);
-    candidateSet.delete(authorUid); // don't notify the author
+    const rsvpSet = new Set(rsvpUids);
+    rsvpSet.delete(authorUid); // don't notify the author
 
-    if (candidateSet.size === 0) return;
-
-    // Filter to those who have commentNotify enabled
-    const candidates = Array.from(candidateSet);
     const recipients: string[] = [];
+
+    // Owner uses commentNotify pref (same as RSVP'd users — it's a beacon, not a post)
+    if (ownerUid && ownerUid !== authorUid) {
+      if (await wantsCommentNotify(ownerUid)) recipients.push(ownerUid);
+    }
+
+    // RSVP'd users (excluding owner, already handled) use commentNotify pref
+    const rsvpCandidates = Array.from(rsvpSet).filter((uid) => uid !== ownerUid);
     await Promise.all(
-      candidates.map(async (uid) => {
+      rsvpCandidates.map(async (uid) => {
         if (await wantsCommentNotify(uid)) recipients.push(uid);
       })
     );
@@ -504,6 +542,93 @@ export const onBeaconCommentNotify = onDocumentCreated(
           }
         } catch (err) {
           logger.error('Comment notify send error', { recipientUid, authorUid, beaconId, err });
+        }
+      }
+    }
+  }
+);
+
+// ===== 5) Post comment notifications =====
+
+type PostComment = {
+  text?: string;
+  authorUid?: string;
+  authorName?: string;
+  deleted?: boolean;
+};
+
+export const onPostCommentNotify = onDocumentCreated(
+  'Posts/{postId}/comments/{commentId}',
+  async (event) => {
+    const comment = (event.data?.data() as PostComment | undefined) ?? undefined;
+    if (!comment) return;
+    if (comment.deleted === true) return;
+
+    const authorUid = comment.authorUid;
+    if (!authorUid) return;
+
+    const postId = event.params.postId as string;
+
+    // Get post to find owner
+    const postSnap = await db.collection('Posts').doc(postId).get();
+    if (!postSnap.exists) return;
+    const postData = postSnap.data() as any;
+    const ownerUid: string | undefined = postData?.author || postData?.authorUid;
+
+    const recipients: string[] = [];
+
+    // 1) Post owner — uses postCommentNotify pref
+    if (ownerUid && ownerUid !== authorUid) {
+      if (await wantsPostCommentNotify(ownerUid)) recipients.push(ownerUid);
+    }
+
+    // 2) Prior commenters — uses commentOnCommentNotify pref, minus silenced
+    const commenterUids = await getCommentAuthorUids(postId);
+    const commenterCandidates = commenterUids.filter(
+      (uid) => uid !== authorUid && uid !== ownerUid // owner already handled
+    );
+    await Promise.all(
+      commenterCandidates.map(async (uid) => {
+        if (!await wantsCommentOnCommentNotify(uid)) return;
+        if (await hasSilencedPost(uid, postId)) return;
+        recipients.push(uid);
+      })
+    );
+
+    if (recipients.length === 0) return;
+
+    logger.info('postCommentNotify fanOut', {
+      postId,
+      authorUid,
+      recipientCount: recipients.length,
+    });
+
+    const authorName = comment.authorName || 'Someone';
+    const body = (comment.text || '').toString().slice(0, 200) || 'New comment';
+    const title = `${authorName} commented on a post`;
+
+    for (const recipientUid of recipients) {
+      const tokens = await getAllExpoTokens(recipientUid);
+      if (tokens.length === 0) continue;
+
+      for (const token of tokens) {
+        try {
+          const tickets = await expo.sendPushNotificationsAsync([{
+            to: token,
+            title,
+            body,
+            sound: 'default',
+            priority: 'high',
+            data: { type: 'post_comment', postId, authorUid },
+          }]);
+          await saveTickets(tickets, {
+            subscriberUid: recipientUid,
+            friendUid: authorUid,
+            token,
+            beaconId: postId, // reusing field for postId
+          });
+        } catch (err) {
+          logger.error('Post comment notify send error', { recipientUid, authorUid, postId, err });
         }
       }
     }

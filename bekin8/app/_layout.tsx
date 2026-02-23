@@ -1,6 +1,6 @@
 // app/_layout.tsx
 import React, { useEffect } from "react";
-import { Slot, usePathname, useRouter, useRootNavigationState } from "expo-router";
+import { Stack, usePathname, useRouter, useRootNavigationState } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
@@ -52,7 +52,7 @@ function Gate() {
   // keep a white root background; transitions still come from your screens
   return (
     <View style={{ flex: 1, backgroundColor: "#fff" }}>
-      <Slot />
+      <Stack screenOptions={{ headerShown: false, animation: 'none' }} />
     </View>
   );
 }
