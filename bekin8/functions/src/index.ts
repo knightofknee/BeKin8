@@ -637,3 +637,5 @@ export const onPostCommentNotify = onDocumentCreated(
 
 // Keep callable export (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';
+export { checkPostAllowed } from './checkPostAllowed.js';
+export { dailyBonusAccrual } from './dailyBonusAccrual.js';

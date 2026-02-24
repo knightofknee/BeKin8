@@ -18,14 +18,8 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
-import {
-  collection,
-  addDoc,
-  getDocs,
-  query,
-  where,
-  orderBy,
-} from 'firebase/firestore';
+import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../providers/AuthProvider';
@@ -36,6 +30,7 @@ const ACCESSORY_ID_LINK  = 'create-post-accessory-link';
 const ACCESSORY_ID_BODY  = 'create-post-accessory-body';
 
 const BLUE = '#2F6FED';
+const GRAY = '#9CA3AF';
 
 // ─── Floating-label field ───────────────────────────────────────────────────
 type FloatFieldProps = TextInputProps & {
@@ -94,10 +89,22 @@ export default function CreatePostScreen() {
   const insets = useSafeAreaInsets();
   const { profile, profileLoaded } = useAuth();
 
-  const [title, setTitle]         = useState('');
-  const [link, setLink]           = useState('');
-  const [content, setContent]     = useState('');
+  const [title, setTitle]           = useState('');
+  const [link, setLink]             = useState('');
+  const [content, setContent]       = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [bonusPosts, setBonusPosts] = useState<number>(3);
+  const [rateLimitInfo, setRateLimitInfo] = useState<{
+    limited: boolean;
+    availableDay: string;
+  } | null>(null);
+  const [checkingLimit, setCheckingLimit] = useState(true);
+
+  const functions = getFunctions();
+  const checkPostAllowed = httpsCallable<{ useBonus: boolean }, { allowed: boolean; reason?: string; availableDay?: string }>(
+    functions,
+    'checkPostAllowed'
+  );
 
   const wordCount = useMemo(
     () => (content.trim().length ? content.trim().split(/\s+/).length : 0),
@@ -109,69 +116,140 @@ export default function CreatePostScreen() {
   const counterColor =
     wordCount > 950 ? '#EF4444' :
     wordCount > 800 ? '#F59E0B' :
-    '#9CA3AF';
+    GRAY;
 
+  // ── Auth guard ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!auth.currentUser) router.replace('/');
   }, [router]);
 
+  // ── Live bonus-post count ─────────────────────────────────────────────────
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const unsub = onSnapshot(doc(db, 'users', uid), (snap) => {
+      if (snap.exists()) {
+        const val = (snap.data() as any)?.bonusPosts;
+        setBonusPosts(typeof val === 'number' ? val : 3);
+      }
+    });
+    return unsub;
+  }, []);
 
-  const handleSubmit = async () => {
-    if (submitting) return;
+  // ── Initial rate-limit check ──────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await checkPostAllowed({ useBonus: false });
+        if (cancelled) return;
+        const data = result.data;
+        if (!data.allowed && data.reason === 'rate_limited') {
+          setRateLimitInfo({ limited: true, availableDay: data.availableDay ?? 'Soon' });
+        } else {
+          setRateLimitInfo({ limited: false, availableDay: '' });
+        }
+      } catch {
+        if (!cancelled) setRateLimitInfo({ limited: false, availableDay: '' });
+      } finally {
+        if (!cancelled) setCheckingLimit(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Field validation (shared) ─────────────────────────────────────────────
+  const validateFields = (): boolean => {
+    if (!title.trim() || !content.trim()) {
+      Alert.alert('Missing fields', 'Title and content are required.');
+      return false;
+    }
+    if (wordCount > 1000) {
+      Alert.alert('Limit exceeded', 'Please limit your post to 1000 words.');
+      return false;
+    }
+    if (isCharLimitExceeded) {
+      Alert.alert('Character limit exceeded', 'Max ~10,000 characters.');
+      return false;
+    }
+    return true;
+  };
+
+  // ── Write post to Firestore ───────────────────────────────────────────────
+  const writePost = async () => {
     const user = auth.currentUser;
     if (!user) {
       Alert.alert('Not signed in', 'Please sign in to create a post.');
       router.replace('/');
       return;
     }
-    if (!title.trim() || !content.trim()) {
-      Alert.alert('Missing fields', 'Title and content are required.');
-      return;
-    }
-    if (wordCount > 1000) {
-      Alert.alert('Limit exceeded', 'Please limit your post to 1000 words.');
-      return;
-    }
-    if (isCharLimitExceeded) {
-      Alert.alert('Character limit exceeded', 'Max ~10,000 characters.');
-      return;
-    }
+    const tags = (content.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
+    await addDoc(collection(db, 'Posts'), {
+      title: title.trim(),
+      link: link.trim() || null,
+      content,
+      author: user.uid,
+      authorName: profile?.username || null,
+      timestamp: Date.now(),
+      tags,
+    });
+    Alert.alert('Posted!', 'Your post is live.');
+    router.push('/feed');
+  };
+
+  // ── Normal submit ─────────────────────────────────────────────────────────
+  const handleSubmit = async () => {
+    if (submitting) return;
+    if (!auth.currentUser) { router.replace('/'); return; }
+    if (!validateFields()) return;
 
     setSubmitting(true);
     try {
-      const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const qRef = query(
-        collection(db, 'Posts'),
-        where('author', '==', user.uid),
-        where('timestamp', '>=', oneWeekAgo),
-        orderBy('timestamp', 'asc')
-      );
-      const snap = await getDocs(qRef);
-      if (snap.size > 1) {
-        Alert.alert('Posting limit reached', 'You can submit 2 posts per week.');
+      const result = await checkPostAllowed({ useBonus: false });
+      const data = result.data;
+      if (!data.allowed) {
+        if (data.reason === 'daily_cap') {
+          Alert.alert('Daily limit reached', 'You can post up to 5 times per day.');
+        }
+        // rate_limited: UI already shows state — just return silently
         return;
       }
-      const tags = (content.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
-      await addDoc(collection(db, 'Posts'), {
-        title: title.trim(),
-        link: link.trim() || null,
-        content,
-        author: user.uid,
-        authorName: profile?.username || null,
-        timestamp: Date.now(),
-        tags,
-      });
-      Alert.alert('Posted!', 'Your post is live.');
-      router.push('/feed');
+      await writePost();
     } catch (e: any) {
-      console.error('Error adding post:', e);
       Alert.alert('Error', e?.message ?? 'Could not create post.');
     } finally {
       setSubmitting(false);
     }
   };
 
-  if (!profileLoaded) {
+  // ── Bonus submit ──────────────────────────────────────────────────────────
+  const handleBonusSubmit = async () => {
+    if (submitting) return;
+    if (!auth.currentUser) { router.replace('/'); return; }
+    if (!validateFields()) return;
+
+    setSubmitting(true);
+    try {
+      const result = await checkPostAllowed({ useBonus: true });
+      const data = result.data;
+      if (!data.allowed) {
+        if (data.reason === 'no_bonus') {
+          Alert.alert('No bonus posts', 'You have no bonus posts remaining.');
+        } else if (data.reason === 'daily_cap') {
+          Alert.alert('Daily limit reached', 'You can post up to 5 times per day.');
+        }
+        return;
+      }
+      await writePost();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not create post.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ── Loading states ────────────────────────────────────────────────────────
+  if (!profileLoaded || checkingLimit) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={BLUE} />
@@ -179,6 +257,8 @@ export default function CreatePostScreen() {
     );
   }
 
+  const isLimited = rateLimitInfo?.limited ?? false;
+  const availableDay = rateLimitInfo?.availableDay ?? '';
   const bottomPadding = BOTTOM_BAR_HEIGHT + insets.bottom + 16;
 
   return (
@@ -194,7 +274,9 @@ export default function CreatePostScreen() {
           >
             {/* Header */}
             <Text style={styles.h1}>New Post</Text>
-            <Text style={styles.rateNote}>You are limited to 1 post every other day max. Share what you care about.</Text>
+            <Text style={styles.rateNote}>
+              1 post per day max · Bank up to 10 bonus posts by taking days off
+            </Text>
 
             <View style={[styles.form, { flex: 1 }]}>
               <FloatField
@@ -241,21 +323,60 @@ export default function CreatePostScreen() {
                 )}
               </View>
 
-              {/* Submit */}
-              <Pressable
-                onPress={handleSubmit}
-                disabled={submitting}
-                style={({ pressed }) => [
-                  styles.submitBtn,
-                  pressed && { opacity: 0.88 },
-                  submitting && { opacity: 0.6 },
-                ]}
-              >
-                {submitting
-                  ? <ActivityIndicator color="#fff" />
-                  : <Text style={styles.submitTxt}>Post</Text>
-                }
-              </Pressable>
+              {/* Submit row */}
+              <View style={styles.submitRow}>
+                {/* Post button */}
+                <Pressable
+                  onPress={handleSubmit}
+                  disabled={submitting || isLimited}
+                  style={({ pressed }) => [
+                    styles.submitBtn,
+                    styles.submitBtnFlex,
+                    (submitting || isLimited) && styles.submitBtnDisabled,
+                    pressed && !isLimited && { opacity: 0.88 },
+                  ]}
+                >
+                  {submitting
+                    ? <ActivityIndicator color="#fff" />
+                    : <Text style={styles.submitTxt}>Post</Text>
+                  }
+                </Pressable>
+
+                {/* Bonus count badge */}
+                <View style={styles.bonusBadge}>
+                  <Text style={styles.bonusCount}>{bonusPosts}</Text>
+                  <Text style={styles.bonusLabel}>bonus</Text>
+                </View>
+              </View>
+
+              {/* Available day message when rate-limited */}
+              {isLimited && (
+                <Text style={styles.availableText}>
+                  Next free post available: {availableDay}
+                </Text>
+              )}
+
+              {/* Bonus post button — shown when rate-limited */}
+              {isLimited && (
+                <Pressable
+                  onPress={handleBonusSubmit}
+                  disabled={submitting || bonusPosts <= 0}
+                  style={({ pressed }) => [
+                    styles.bonusBtn,
+                    (submitting || bonusPosts <= 0) && styles.bonusBtnDisabled,
+                    pressed && bonusPosts > 0 && { opacity: 0.88 },
+                  ]}
+                >
+                  {submitting
+                    ? <ActivityIndicator color={BLUE} />
+                    : (
+                      <Text style={[styles.bonusBtnTxt, bonusPosts <= 0 && styles.bonusBtnTxtDisabled]}>
+                        Use Bonus Post
+                      </Text>
+                    )
+                  }
+                </Pressable>
+              )}
             </View>
           </ScrollView>
 
@@ -298,7 +419,7 @@ const styles = StyleSheet.create({
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   h1:          { fontSize: 26, fontWeight: '700', color: '#111827', marginBottom: 4, textAlign: 'center' },
-  rateNote:    { fontSize: 13, color: '#9CA3AF', marginBottom: 20, textAlign: 'center' },
+  rateNote:    { fontSize: 13, color: GRAY, marginBottom: 20, textAlign: 'center' },
 
   form:        { gap: 16 },
 
@@ -333,24 +454,82 @@ const styles = StyleSheet.create({
   counterText:     { fontSize: 12, fontWeight: '500' },
   counterExceeded: { fontSize: 12, color: '#EF4444', fontWeight: '600' },
 
-  // ── submit ──
+  // ── submit row ──
+  submitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 4,
+  },
+  submitBtnFlex: {
+    flex: 1,
+  },
   submitBtn: {
     backgroundColor: BLUE,
     borderRadius: 14,
     paddingVertical: 15,
     alignItems: 'center',
-    marginTop: 4,
     shadowColor: BLUE,
     shadowOpacity: 0.35,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
+  submitBtnDisabled: {
+    backgroundColor: '#D1D5DB',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   submitTxt: {
     color: '#fff',
     fontSize: 17,
     fontWeight: '700',
     letterSpacing: 0.3,
+  },
+
+  // ── bonus badge (always visible) ──
+  bonusBadge: {
+    alignItems: 'center',
+    minWidth: 44,
+  },
+  bonusCount: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: BLUE,
+    lineHeight: 22,
+  },
+  bonusLabel: {
+    fontSize: 11,
+    color: GRAY,
+    fontWeight: '500',
+  },
+
+  // ── available day message ──
+  availableText: {
+    fontSize: 13,
+    color: GRAY,
+    textAlign: 'center',
+    marginTop: -4,
+  },
+
+  // ── bonus post button ──
+  bonusBtn: {
+    borderWidth: 1.5,
+    borderColor: BLUE,
+    borderRadius: 14,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  bonusBtnDisabled: {
+    borderColor: '#D1D5DB',
+  },
+  bonusBtnTxt: {
+    color: BLUE,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  bonusBtnTxtDisabled: {
+    color: GRAY,
   },
 
   // ── iOS accessory ──
