@@ -652,6 +652,95 @@ export default function FriendsScreen() {
   // NEW: filter out blocked users from the displayed list
   const visibleFriends = friends.filter((f) => !(f.uid && blockedUids.has(f.uid)));
 
+  // "Add Brian" — first-friend suggestion (only shown when user has zero friends)
+  const [addingBrian, setAddingBrian] = useState(false);
+  const handleAddBrian = async () => {
+    const me = auth.currentUser;
+    if (!me) return showMessage("Please log in first.", "error");
+    if (!hasProfileUsername) return showMessage("Set a username first.", "error");
+
+    try {
+      setAddingBrian(true);
+
+      const profilesCol = collection(db, "Profiles");
+      let snap = await getDocs(query(profilesCol, where("usernameLower", "==", "brain")));
+      if (snap.empty) snap = await getDocs(query(profilesCol, where("username", "==", "brain")));
+      if (snap.empty) return showMessage("User not found.", "error");
+
+      const targetDoc = snap.docs[0];
+      const targetUid = targetDoc.id;
+      const targetUsername = (targetDoc.data() as any)?.username || "brain";
+      const meUid = me.uid;
+
+      if (targetUid === meUid) return; // user IS Brian
+
+      // Check if already friends
+      const qEdges = query(
+        collection(db, "FriendEdges"),
+        where("uids", "array-contains", meUid),
+        where("state", "==", "accepted")
+      );
+      const edgesSnap = await getDocs(qEdges);
+      const alreadyFriends = edgesSnap.docs.some((d) => {
+        const ed = d.data() as any;
+        const uids: string[] = Array.isArray(ed?.uids) ? ed.uids : [];
+        return uids.includes(targetUid);
+      });
+      if (alreadyFriends) return showMessage("Already friends with Brian!", "success");
+
+      const myProfileSnap = await getDoc(doc(db, "Profiles", meUid));
+      const myUsername = (myProfileSnap.data() as any)?.username || "";
+
+      // Auto-accept: create the friendship immediately instead of a pending request
+      const eid = edgeId(meUid, targetUid);
+      await setDoc(
+        doc(db, "FriendEdges", eid),
+        {
+          uids: [meUid, targetUid],
+          state: "accepted",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // Denorm subcollection for current user
+      await setDoc(
+        doc(db, "users", meUid, "friends", targetUid),
+        { uid: targetUid, username: targetUsername, status: "accepted", acceptedAt: serverTimestamp() },
+        { merge: true }
+      );
+
+      // Denorm subcollection for Brian
+      await setDoc(
+        doc(db, "users", targetUid, "friends", meUid),
+        { uid: meUid, username: myUsername, status: "accepted", acceptedAt: serverTimestamp() },
+        { merge: true }
+      );
+
+      // Legacy Friends arrays
+      await setDoc(
+        doc(db, "Friends", meUid),
+        { friends: arrayUnion({ uid: targetUid, username: targetUsername }) },
+        { merge: true }
+      );
+      await setDoc(
+        doc(db, "Friends", targetUid),
+        { friends: arrayUnion({ uid: meUid, username: myUsername }) },
+        { merge: true }
+      );
+
+      nameCacheRef.current[targetUid] = targetUsername;
+
+      showMessage("You and Brian are now friends!", "success");
+    } catch (e) {
+      console.error("handleAddBrian error", e);
+      showMessage("Failed to send request.", "error");
+    } finally {
+      setAddingBrian(false);
+    }
+  };
+
   // --- Notify toggle handler with clean permission flow ---
   const handleToggleNotify = async (friendUid: string, nextValue: boolean) => {
     const me = auth.currentUser;
@@ -862,7 +951,30 @@ export default function FriendsScreen() {
             <View style={[styles.card, { marginBottom: 0 }]}>
               <Text style={styles.sectionTitle}>My Friends</Text>
               {visibleFriends.length === 0 && (
-                <Text style={styles.subtle}>No friends yet — send a request above.</Text>
+                <>
+                  <Text style={styles.subtle}>No friends yet — send a request above.</Text>
+
+                  {/* First-friend suggestion */}
+                  <View style={styles.brianCard}>
+                    <View style={styles.brianAvatar}>
+                      <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.brianTitle}>New here? Add Brian, the creator of BeKin, as your first friend!</Text>
+                    </View>
+                    <Pressable
+                      onPress={handleAddBrian}
+                      disabled={addingBrian || busy}
+                      style={[styles.brianBtn, (addingBrian || busy) && { opacity: 0.6 }]}
+                    >
+                      {addingBrian ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.brianBtnText}>Add</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                </>
               )}
             </View>
           </View>
@@ -959,6 +1071,46 @@ const styles = StyleSheet.create({
   groupName: { fontWeight: "800", color: colors.text },
   groupMeta: { color: colors.subtle, marginTop: 2, fontSize: 12 },
   groupEditHint: { color: colors.primary, fontWeight: "700" },
+
+  // "Add Brian" first-friend card
+  brianCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: "#EBF1FD",
+  },
+  brianAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brianTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: colors.text,
+    lineHeight: 20,
+  },
+  brianBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brianBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+  },
 
   // Logout button
   logoutBtn: {
