@@ -2,7 +2,7 @@
   "expo": {
     "name": "BeKin",
     "slug": "bekin8",
-    "version": "1.2.3",
+    "version": "1.2.4",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "bekin8",
@@ -11,6 +11,8 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.knightofknee.bekin8",
+      "buildNumber": "3",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -50,7 +52,8 @@
         }
       ],
       "expo-web-browser",
-      "expo-secure-store"
+      "expo-secure-store",
+      "@react-native-google-signin/google-signin"
     ],
     "experiments": {
       "typedRoutes": true

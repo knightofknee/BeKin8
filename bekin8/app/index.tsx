@@ -22,6 +22,11 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { initNotifications, syncPushTokenIfGranted } from "../lib/push";
+import {
+  GoogleSigninButton,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
+import { signInWithGoogle } from "../lib/googleAuth";
 
 const colors = {
   primary: "#2F6FED",
@@ -49,6 +54,7 @@ export default function Index() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [pwFocused, setPwFocused] = useState(false);
 
@@ -144,6 +150,25 @@ export default function Index() {
     }
   };
 
+  const anyLoading = submitting || googleLoading;
+
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    try {
+      Keyboard.dismiss();
+      setGoogleLoading(true);
+      await signInWithGoogle();
+      // AuthProvider's onAuthStateChanged will detect the sign-in
+      // and Gate will redirect to /home automatically.
+    } catch (e: any) {
+      // Don't show error if user simply cancelled
+      if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
+      setError("Google sign-in failed. Please try again.");
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
   return (
     <>
       <Stack.Screen
@@ -201,7 +226,7 @@ export default function Index() {
                     textContentType="emailAddress"
                     autoComplete="email"
                     value={email}
-                    editable={!submitting}
+                    editable={!anyLoading}
                     onChangeText={setEmail}
                     onFocus={() => { setEmailFocused(true); /* no recompute on focus */ }}
                     onBlur={() => setEmailFocused(false)}
@@ -226,7 +251,7 @@ export default function Index() {
                       placeholderTextColor={colors.subtle}
                       secureTextEntry={!showPassword}
                       value={password}
-                      editable={!submitting}
+                      editable={!anyLoading}
                       onChangeText={setPassword}
                       onFocus={() => { setPwFocused(true); /* no recompute on focus */ }}
                       onBlur={() => setPwFocused(false)}
@@ -243,11 +268,11 @@ export default function Index() {
 
                 <Pressable
                   onPress={handleLogin}
-                  disabled={submitting}
+                  disabled={anyLoading}
                   style={({ pressed }) => [
                     styles.primaryBtn,
                     pressed && { opacity: 0.9 },
-                    submitting && { opacity: 0.7 },
+                    anyLoading && { opacity: 0.7 },
                   ]}
                   accessibilityRole="button"
                   accessibilityLabel="Sign in"
@@ -265,6 +290,22 @@ export default function Index() {
                   </Link>
                 </View>
 
+                {/* SSO divider + Google Sign-In */}
+                <View style={styles.dividerRow}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>or</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                <View style={{ alignItems: "center" }}>
+                  <GoogleSigninButton
+                    size={GoogleSigninButton.Size.Wide}
+                    color={GoogleSigninButton.Color.Light}
+                    onPress={handleGoogleSignIn}
+                    disabled={anyLoading}
+                  />
+                </View>
+
                 <View style={styles.bottomRow}>
                   <Text style={{ color: colors.subtle }}>New here?</Text>
                   <Link href="/signup" style={styles.link}>
@@ -274,10 +315,12 @@ export default function Index() {
               </View>
             </Animated.View>
           </TouchableWithoutFeedback>
-          {submitting && (
+          {anyLoading && (
             <View style={styles.blocker} pointerEvents="auto">
               <ActivityIndicator size="large" />
-              <Text style={{ marginTop: 8, color: colors.subtle }}>Signing you in…</Text>
+              <Text style={{ marginTop: 8, color: colors.subtle }}>
+                {googleLoading ? "Signing in with Google…" : "Signing you in…"}
+              </Text>
             </View>
           )}
         </SafeAreaView>
@@ -332,6 +375,24 @@ const styles = StyleSheet.create({
   bottomRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 },
 
   link: { color: colors.primary, fontWeight: "700" },
+
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.border,
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    color: colors.subtle,
+    fontSize: 14,
+    fontWeight: "600",
+  },
 
   error: {
     color: colors.error,

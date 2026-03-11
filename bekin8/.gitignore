@@ -6,6 +6,7 @@ node_modules/
 .env
 
 google-services.json
+GoogleService-Info.plist
 
 functions/lib/
 

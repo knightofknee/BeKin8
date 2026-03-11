@@ -20,6 +20,11 @@ import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  GoogleSigninButton,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
+import { signInWithGoogle } from "../lib/googleAuth";
 
 const colors = {
   primary: "#2F6FED",
@@ -52,6 +57,7 @@ export default function SignUp() {
   const [showPw2, setShowPw2] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [emailFocused, setEmailFocused] = useState(false);
@@ -100,6 +106,23 @@ export default function SignUp() {
       setError(friendlyError(e?.code, e?.message));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const anyLoading = loading || googleLoading;
+
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    try {
+      Keyboard.dismiss();
+      setGoogleLoading(true);
+      await signInWithGoogle();
+      router.replace("/home");
+    } catch (e: any) {
+      if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
+      setError("Google sign-in failed. Please try again.");
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -194,7 +217,7 @@ export default function SignUp() {
                   onBlur={() => setEmailFocused(false)}
                   returnKeyType="next"
                   onSubmitEditing={() => requestAnimationFrame(() => passwordRef.current?.focus())}
-                  editable={!loading}
+                  editable={!anyLoading}
                 />
               </View>
 
@@ -230,7 +253,7 @@ export default function SignUp() {
                     onBlur={() => setPwFocused(false)}
                     returnKeyType="next"
                     onSubmitEditing={() => requestAnimationFrame(() => confirmRef.current?.focus())}
-                    editable={!loading}
+                    editable={!anyLoading}
                   />
                   <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
                     <Text style={styles.togglePw}>{showPw ? "Hide" : "Show"}</Text>
@@ -270,7 +293,7 @@ export default function SignUp() {
                     onBlur={() => setPw2Focused(false)}
                     returnKeyType="go"
                     onSubmitEditing={handleSignUp}
-                    editable={!loading}
+                    editable={!anyLoading}
                   />
                   <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
                     <Text style={styles.togglePw}>{showPw2 ? "Hide" : "Show"}</Text>
@@ -281,11 +304,11 @@ export default function SignUp() {
               {/* Sign Up */}
               <Pressable
                 onPress={handleSignUp}
-                disabled={loading}
+                disabled={anyLoading}
                 style={({ pressed }) => [
                   styles.primaryBtn,
                   pressed && { opacity: 0.9 },
-                  loading && { opacity: 0.7 },
+                  anyLoading && { opacity: 0.7 },
                 ]}
               >
                 {loading ? (
@@ -294,6 +317,22 @@ export default function SignUp() {
                   <Text style={styles.primaryBtnText}>Sign Up</Text>
                 )}
               </Pressable>
+
+              {/* SSO divider + Google Sign-In */}
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+
+              <View style={{ alignItems: "center" }}>
+                <GoogleSigninButton
+                  size={GoogleSigninButton.Size.Wide}
+                  color={GoogleSigninButton.Color.Light}
+                  onPress={handleGoogleSignIn}
+                  disabled={anyLoading}
+                />
+              </View>
 
               {/* Terms / Privacy notice */}
               <View style={styles.termsRow}>
@@ -383,6 +422,24 @@ const styles = StyleSheet.create({
 
   bottomRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 },
   link: { color: colors.primary, fontWeight: "700" },
+
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.border,
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    color: colors.subtle,
+    fontSize: 14,
+    fontWeight: "600",
+  },
 
   error: {
     color: colors.error,
