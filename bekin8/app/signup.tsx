@@ -2,6 +2,7 @@
 import React, { useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -132,8 +133,16 @@ export default function SignUp() {
     try {
       Keyboard.dismiss();
       setAppleLoading(true);
-      await signInWithApple();
-      router.replace("/home");
+      const { isRelayEmail } = await signInWithApple();
+      if (isRelayEmail) {
+        Alert.alert(
+          "Hidden Email Detected",
+          "You signed in with Apple's \"Hide My Email.\" If you also have an email/password account, you can link them in Settings → Advanced.",
+          [{ text: "Got it", onPress: () => router.replace("/home") }]
+        );
+      } else {
+        router.replace("/home");
+      }
     } catch (e: any) {
       if (e?.code === "ERR_REQUEST_CANCELED") return;
       setError("Apple sign-in failed. Please try again.");

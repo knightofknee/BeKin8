@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   Dimensions,
@@ -17,7 +18,7 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { Link, Stack } from "expo-router";
+import { Link, Stack, useRouter } from "expo-router";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -43,6 +44,7 @@ const BOTTOM_GAP = 28; // desired minimal space between keyboard and card
 
 export default function Index() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   const shift = useRef(new Animated.Value(0)).current;
   const cardRef = useRef<View>(null);
@@ -159,6 +161,7 @@ export default function Index() {
       Keyboard.dismiss();
       setGoogleLoading(true);
       await signInWithGoogle();
+      router.replace("/home");
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       setError("Google sign-in failed. Please try again.");
@@ -172,7 +175,16 @@ export default function Index() {
     try {
       Keyboard.dismiss();
       setAppleLoading(true);
-      await signInWithApple();
+      const { isRelayEmail } = await signInWithApple();
+      if (isRelayEmail) {
+        Alert.alert(
+          "Hidden Email Detected",
+          "You signed in with Apple's \"Hide My Email.\" If you also have an email/password account, you can link them in Settings → Advanced.",
+          [{ text: "Got it", onPress: () => router.replace("/home") }]
+        );
+      } else {
+        router.replace("/home");
+      }
     } catch (e: any) {
       if (e?.code === "ERR_REQUEST_CANCELED") return;
       setError("Apple sign-in failed. Please try again.");

@@ -10,7 +10,8 @@ import { syncPushTokenIfGranted } from "./push";
  * Performs native Apple Sign-In, bridges to Firebase Auth,
  * and creates the Firestore user doc if this is a new user.
  *
- * Returns the Firebase User on success.
+ * Returns `{ user, isRelayEmail }` on success.
+ * `isRelayEmail` is true when Apple's "Hide My Email" was used (first sign-in only).
  * Throws on cancellation or error — caller should catch.
  */
 export async function signInWithApple() {
@@ -50,7 +51,9 @@ export async function signInWithApple() {
   const userDocRef = doc(db, "users", user.uid);
   const userDoc = await getDoc(userDocRef);
 
-  if (!userDoc.exists()) {
+  const isNewUser = !userDoc.exists();
+
+  if (isNewUser) {
     // Apple may provide name on first sign-in only; email may be hidden (relay).
     // Match the exact structure from signup.tsx / googleAuth.ts
     await setDoc(userDocRef, {
@@ -65,7 +68,10 @@ export async function signInWithApple() {
   // 6. Sync push token (same as other sign-in methods)
   await syncPushTokenIfGranted();
 
-  return user;
+  const isRelayEmail =
+    isNewUser && !!user.email?.endsWith("@privaterelay.appleid.com");
+
+  return { user, isRelayEmail };
 }
 
 /**

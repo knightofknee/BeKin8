@@ -3,9 +3,7 @@ import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput,
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { doc, getDoc, onSnapshot, setDoc, serverTimestamp, deleteField } from "firebase/firestore";
-import { signOut } from "firebase/auth";
+import { doc, onSnapshot, setDoc, serverTimestamp, deleteField } from "firebase/firestore";
 import * as Notifications from "expo-notifications";
 import BottomBar from "../components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
@@ -65,7 +63,6 @@ const colors = {
 
 export default function SettingsScreen() {
   const { profile, profileLoaded, updateProfile } = useAuth();
-  const [busy, setBusy] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [initialDisplayName, setInitialDisplayName] = useState("");
@@ -82,7 +79,6 @@ export default function SettingsScreen() {
   const [commentOnCommentNotify, setCommentOnCommentNotify] = useState(false);
   const [commentOnCommentNotifyBusy, setCommentOnCommentNotifyBusy] = useState(false);
   const router = useRouter();
-  const functions = getFunctions();
 
   // Seed local state from cached profile once available
   React.useEffect(() => {
@@ -225,32 +221,6 @@ export default function SettingsScreen() {
     }
   };
 
-  const confirmDelete = () => {
-    Alert.alert(
-      "Delete Account",
-      "This permanently removes your account and personal data. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: doDelete },
-      ]
-    );
-  };
-
-  const doDelete = async () => {
-    try {
-      setBusy(true);
-      const call = httpsCallable(functions, "deleteAccountData");
-      await call({});
-      try { await signOut(auth); } catch {}
-      Alert.alert("Account deleted", "Your account and data have been removed.");
-      router.replace("/");
-    } catch (e: any) {
-      Alert.alert("Delete failed", e?.message ?? "Try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (!profileLoaded) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
@@ -372,24 +342,14 @@ export default function SettingsScreen() {
           </View>
 
           <View style={s.spacer} />
-          {/* Bottom section */}
-          <View style={s.bottom}>
-            {/* Legal links */}
-            <Pressable style={s.row} onPress={() => router.push("/legal/privacy")}>
-              <Text style={s.link}>Privacy Policy</Text>
-            </Pressable>
-            <Pressable style={s.row} onPress={() => router.push("/legal/terms")}>
-              <Text style={s.link}>Terms of Service</Text>
-            </Pressable>
-            <Pressable style={s.row} onPress={() => router.push("/legal/guidelines")}>
-              <Text style={s.link}>Community Guidelines</Text>
-            </Pressable>
-            <View style={s.divider} />
-            <Text style={s.h2}>Danger zone</Text>
-            <Pressable style={[s.button, s.danger]} onPress={confirmDelete} disabled={busy}>
-              {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>Delete Account</Text>}
-            </Pressable>
-          </View>
+
+          <Pressable
+            style={[s.row, s.rowBetween]}
+            onPress={() => router.push("/advanced-settings")}
+          >
+            <Text style={s.link}>Advanced Settings</Text>
+            <Text style={s.subtle}>{"→"}</Text>
+          </Pressable>
         </View>
       </SafeAreaView>
       <BottomBar />
@@ -419,10 +379,8 @@ const s = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   link: { color: colors.primary, fontSize: 16, fontWeight: "700" },
-  divider: { height: 1, backgroundColor: colors.border, marginVertical: 16 },
   h2: { fontSize: 18, fontWeight: "800", marginBottom: 10, color: colors.text },
   button: { padding: 14, borderRadius: 12, alignItems: "center" },
-  danger: { backgroundColor: colors.danger },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
   editor: { paddingVertical: 12, gap: 8 },
   input: {
@@ -436,7 +394,6 @@ const s = StyleSheet.create({
   primary: { backgroundColor: colors.primary },
   disabledBtn: { backgroundColor: "#9CA3AF" },
   spacer: { flex: 1 },
-  bottom: { paddingTop: 8, paddingBottom: 24 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   subtle: { color: colors.subtle, fontSize: 14 },
 });
