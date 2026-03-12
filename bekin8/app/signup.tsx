@@ -20,11 +20,11 @@ import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-  GoogleSigninButton,
-  statusCodes,
-} from "@react-native-google-signin/google-signin";
+import { statusCodes } from "@react-native-google-signin/google-signin";
+import { Ionicons } from "@expo/vector-icons";
 import { signInWithGoogle } from "../lib/googleAuth";
+import { signInWithApple } from "../lib/appleAuth";
+import GoogleLogo from "../components/GoogleLogo";
 
 const colors = {
   primary: "#2F6FED",
@@ -58,6 +58,7 @@ export default function SignUp() {
 
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [emailFocused, setEmailFocused] = useState(false);
@@ -109,7 +110,7 @@ export default function SignUp() {
     }
   };
 
-  const anyLoading = loading || googleLoading;
+  const anyLoading = loading || googleLoading || appleLoading;
 
   const handleGoogleSignIn = async () => {
     setError(null);
@@ -123,6 +124,21 @@ export default function SignUp() {
       setError("Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
+    }
+  };
+
+  const handleAppleSignIn = async () => {
+    setError(null);
+    try {
+      Keyboard.dismiss();
+      setAppleLoading(true);
+      await signInWithApple();
+      router.replace("/home");
+    } catch (e: any) {
+      if (e?.code === "ERR_REQUEST_CANCELED") return;
+      setError("Apple sign-in failed. Please try again.");
+    } finally {
+      setAppleLoading(false);
     }
   };
 
@@ -193,6 +209,13 @@ export default function SignUp() {
 
             {/* card */}
             <View style={styles.card}>
+              <View style={styles.topRow}>
+                <Text style={{ color: colors.subtle }}>Already have an account?</Text>
+                <Link href="/" style={styles.link}>
+                  Sign in
+                </Link>
+              </View>
+
               {error ? <Text style={styles.error}>{error}</Text> : null}
 
               {/* Email */}
@@ -318,20 +341,55 @@ export default function SignUp() {
                 )}
               </Pressable>
 
-              {/* SSO divider + Google Sign-In */}
+              {/* SSO divider */}
               <View style={styles.dividerRow}>
                 <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or</Text>
+                <Text style={styles.dividerText}>or sign up with</Text>
                 <View style={styles.dividerLine} />
               </View>
 
-              <View style={{ alignItems: "center" }}>
-                <GoogleSigninButton
-                  size={GoogleSigninButton.Size.Wide}
-                  color={GoogleSigninButton.Color.Light}
+              <View style={styles.ssoRow}>
+                <Pressable
                   onPress={handleGoogleSignIn}
                   disabled={anyLoading}
-                />
+                  style={({ pressed }) => [
+                    styles.googleBtn,
+                    pressed && { opacity: 0.85 },
+                    anyLoading && { opacity: 0.7 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue with Google"
+                >
+                  {googleLoading ? (
+                    <ActivityIndicator color={colors.text} />
+                  ) : (
+                    <View style={styles.ssoBtnInner}>
+                      <GoogleLogo size={22} />
+                      <Text style={styles.googleBtnText}>Google</Text>
+                    </View>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  onPress={handleAppleSignIn}
+                  disabled={anyLoading}
+                  style={({ pressed }) => [
+                    styles.appleBtn,
+                    pressed && { opacity: 0.85 },
+                    anyLoading && { opacity: 0.7 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue with Apple"
+                >
+                  {appleLoading ? (
+                    <ActivityIndicator color="#FFF" />
+                  ) : (
+                    <View style={styles.ssoBtnInner}>
+                      <Ionicons name="logo-apple" size={22} color="#FFF" />
+                      <Text style={styles.appleBtnText}>Apple</Text>
+                    </View>
+                  )}
+                </Pressable>
               </View>
 
               {/* Terms / Privacy notice */}
@@ -343,13 +401,6 @@ export default function SignUp() {
                 <Text style={styles.termsText}>.</Text>
               </View>
 
-              {/* Already have an account */}
-              <View style={styles.bottomRow}>
-                <Text style={{ color: colors.subtle }}>Already have an account?</Text>
-                <Link href="/" style={styles.link}>
-                  Sign in
-                </Link>
-              </View>
             </View>
           </ScrollView>
         </TouchableWithoutFeedback>
@@ -420,7 +471,7 @@ const styles = StyleSheet.create({
   },
   termsText: { color: colors.subtle, fontSize: 12 },
 
-  bottomRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 },
+  topRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginBottom: 14 },
   link: { color: colors.primary, fontWeight: "700" },
 
   dividerRow: {
@@ -439,6 +490,44 @@ const styles = StyleSheet.create({
     color: colors.subtle,
     fontSize: 14,
     fontWeight: "600",
+  },
+
+  ssoRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  googleBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#FFF",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  appleBtn: {
+    flex: 1,
+    backgroundColor: "#000",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ssoBtnInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  googleBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  appleBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
   },
 
   error: {

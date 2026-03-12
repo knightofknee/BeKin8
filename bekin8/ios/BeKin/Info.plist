@@ -4,6 +4,8 @@
   <dict>
     <key>CADisableMinimumFrameDurationOnPhone</key>
     <true/>
+    <key>CFBundleAllowMixedLocalizations</key>
+    <true/>
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
@@ -29,6 +31,12 @@
         <array>
           <string>bekin8</string>
           <string>com.knightofknee.bekin8</string>
+        </array>
+      </dict>
+      <dict>
+        <key>CFBundleURLSchemes</key>
+        <array>
+          <string>com.googleusercontent.apps.203808800578-d8qed6h6g60n29l8r3kh3lfcqasl4go1</string>
         </array>
       </dict>
       <dict>

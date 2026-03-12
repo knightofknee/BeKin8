@@ -22,11 +22,11 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { initNotifications, syncPushTokenIfGranted } from "../lib/push";
-import {
-  GoogleSigninButton,
-  statusCodes,
-} from "@react-native-google-signin/google-signin";
+import { statusCodes } from "@react-native-google-signin/google-signin";
+import { Ionicons } from "@expo/vector-icons";
 import { signInWithGoogle } from "../lib/googleAuth";
+import { signInWithApple } from "../lib/appleAuth";
+import GoogleLogo from "../components/GoogleLogo";
 
 const colors = {
   primary: "#2F6FED",
@@ -55,6 +55,7 @@ export default function Index() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [pwFocused, setPwFocused] = useState(false);
 
@@ -150,7 +151,7 @@ export default function Index() {
     }
   };
 
-  const anyLoading = submitting || googleLoading;
+  const anyLoading = submitting || googleLoading || appleLoading;
 
   const handleGoogleSignIn = async () => {
     setError(null);
@@ -158,14 +159,25 @@ export default function Index() {
       Keyboard.dismiss();
       setGoogleLoading(true);
       await signInWithGoogle();
-      // AuthProvider's onAuthStateChanged will detect the sign-in
-      // and Gate will redirect to /home automatically.
     } catch (e: any) {
-      // Don't show error if user simply cancelled
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       setError("Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
+    }
+  };
+
+  const handleAppleSignIn = async () => {
+    setError(null);
+    try {
+      Keyboard.dismiss();
+      setAppleLoading(true);
+      await signInWithApple();
+    } catch (e: any) {
+      if (e?.code === "ERR_REQUEST_CANCELED") return;
+      setError("Apple sign-in failed. Please try again.");
+    } finally {
+      setAppleLoading(false);
     }
   };
 
@@ -209,6 +221,13 @@ export default function Index() {
 
               {/* card */}
               <View ref={cardRef} style={styles.card}>
+                <View style={styles.topRow}>
+                  <Text style={{ color: colors.subtle }}>New here?</Text>
+                  <Link href="/signup" style={styles.link}>
+                    Create an account
+                  </Link>
+                </View>
+
                 {error ? <Text style={styles.error}>{error}</Text> : null}
 
                 <View style={styles.inputGroup}>
@@ -290,27 +309,55 @@ export default function Index() {
                   </Link>
                 </View>
 
-                {/* SSO divider + Google Sign-In */}
+                {/* SSO divider */}
                 <View style={styles.dividerRow}>
                   <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>or</Text>
+                  <Text style={styles.dividerText}>or sign in with</Text>
                   <View style={styles.dividerLine} />
                 </View>
 
-                <View style={{ alignItems: "center" }}>
-                  <GoogleSigninButton
-                    size={GoogleSigninButton.Size.Wide}
-                    color={GoogleSigninButton.Color.Light}
+                <View style={styles.ssoRow}>
+                  <Pressable
                     onPress={handleGoogleSignIn}
                     disabled={anyLoading}
-                  />
-                </View>
+                    style={({ pressed }) => [
+                      styles.googleBtn,
+                      pressed && { opacity: 0.85 },
+                      anyLoading && { opacity: 0.7 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Sign in with Google"
+                  >
+                    {googleLoading ? (
+                      <ActivityIndicator color={colors.text} />
+                    ) : (
+                      <View style={styles.ssoBtnInner}>
+                        <GoogleLogo size={22} />
+                        <Text style={styles.googleBtnText}>Google</Text>
+                      </View>
+                    )}
+                  </Pressable>
 
-                <View style={styles.bottomRow}>
-                  <Text style={{ color: colors.subtle }}>New here?</Text>
-                  <Link href="/signup" style={styles.link}>
-                    Create an account
-                  </Link>
+                  <Pressable
+                    onPress={handleAppleSignIn}
+                    disabled={anyLoading}
+                    style={({ pressed }) => [
+                      styles.appleBtn,
+                      pressed && { opacity: 0.85 },
+                      anyLoading && { opacity: 0.7 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Sign in with Apple"
+                  >
+                    {appleLoading ? (
+                      <ActivityIndicator color="#FFF" />
+                    ) : (
+                      <View style={styles.ssoBtnInner}>
+                        <Ionicons name="logo-apple" size={22} color="#FFF" />
+                        <Text style={styles.appleBtnText}>Apple</Text>
+                      </View>
+                    )}
+                  </Pressable>
                 </View>
               </View>
             </Animated.View>
@@ -319,7 +366,7 @@ export default function Index() {
             <View style={styles.blocker} pointerEvents="auto">
               <ActivityIndicator size="large" />
               <Text style={{ marginTop: 8, color: colors.subtle }}>
-                {googleLoading ? "Signing in with Google…" : "Signing you in…"}
+                {googleLoading ? "Signing in with Google…" : appleLoading ? "Signing in with Apple…" : "Signing you in…"}
               </Text>
             </View>
           )}
@@ -372,7 +419,7 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
 
-  bottomRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 },
+  topRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginBottom: 14 },
 
   link: { color: colors.primary, fontWeight: "700" },
 
@@ -392,6 +439,44 @@ const styles = StyleSheet.create({
     color: colors.subtle,
     fontSize: 14,
     fontWeight: "600",
+  },
+
+  ssoRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  googleBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#FFF",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  appleBtn: {
+    flex: 1,
+    backgroundColor: "#000",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ssoBtnInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  googleBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  appleBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
   },
 
   error: {
