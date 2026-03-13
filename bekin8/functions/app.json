@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "d881fc08-b8f9-4569-a147-a6d0212fbdab"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.knightofknee.functions",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}

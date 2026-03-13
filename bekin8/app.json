@@ -2,7 +2,7 @@
   "expo": {
     "name": "BeKin",
     "slug": "bekin8",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "bekin8",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.knightofknee.bekin8",
-      "buildNumber": "3",
+      "buildNumber": "1",
       "googleServicesFile": "./GoogleService-Info.plist",
       "usesAppleSignIn": true,
       "infoPlist": {
