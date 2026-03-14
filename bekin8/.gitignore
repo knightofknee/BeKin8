@@ -5,8 +5,6 @@ node_modules/
 
 .env
 
-google-services.json
-
 functions/lib/
 
 .DS_Store
