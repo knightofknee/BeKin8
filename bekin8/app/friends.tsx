@@ -38,6 +38,7 @@ import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEdi
 import BottomBar from "@/components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap } from "../utils/haptics";
 
 import * as Notifications from "expo-notifications";
 
@@ -889,8 +890,8 @@ export default function FriendsScreen() {
               if (!item.uid) return;
               handleToggleNotify(item.uid, v);
             }}
-            onPressName={item.username ? () => router.push(`/profile/${item.username}`) : undefined}
-            onDoubleTap={item.username ? () => router.push(`/profile/${item.username}`) : undefined}
+            onPressName={item.username ? () => { tap(); router.push(`/profile/${item.username}`); } : undefined}
+            onDoubleTap={item.username ? () => { tap(); router.push(`/profile/${item.username}`); } : undefined}
           />
         )}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
@@ -917,7 +918,7 @@ export default function FriendsScreen() {
             <View style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>
               <View style={styles.groupsHeaderRow}>
                 <Text style={[styles.sectionTitle, { color: tc.text }]}>My Friend Groups</Text>
-                <Pressable onPress={() => { setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={[styles.plusBtn, { backgroundColor: tc.primary }]}>
+                <Pressable onPress={() => { tap(); setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={[styles.plusBtn, { backgroundColor: tc.primary }]}>
                   <Text style={styles.plusBtnText}>＋</Text>
                 </Pressable>
               </View>
@@ -929,7 +930,7 @@ export default function FriendsScreen() {
                   {groups.map((g) => (
                     <Pressable
                       key={g.id}
-                      onPress={() => { setEditingGroup(g); setGroupEditorOpen(true); }}
+                      onPress={() => { tap(); setEditingGroup(g); setGroupEditorOpen(true); }}
                       style={[styles.groupRow, { borderColor: tc.border, backgroundColor: tc.card }]}
                     >
                       <View style={[styles.groupAvatar, { backgroundColor: tc.primary }]}>

@@ -22,6 +22,7 @@ import {
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap, press } from "../utils/haptics";
 
 export type ListItem = { text: string; link?: string };
 
@@ -84,6 +85,7 @@ export default function ProfileListEditor({
   const canSave = title.trim().length > 0 && items.some((i) => i.text.trim().length > 0) && !saving;
 
   const handleSave = async () => {
+    press();
     if (!canSave) return;
     setSaving(true);
     try {
@@ -147,7 +149,7 @@ export default function ProfileListEditor({
           {/* Header */}
           <View style={styles.headerRow}>
             <Text style={[styles.title, { color: colors.text }]}>{list ? "Edit List" : "New List"}</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
+            <Pressable onPress={() => { tap(); onClose(); }} hitSlop={10}>
               <Text style={[styles.close, { color: colors.subtle }]}>✕</Text>
             </Pressable>
           </View>
@@ -210,7 +212,7 @@ export default function ProfileListEditor({
 
           {/* Actions */}
           <View style={styles.btnRow}>
-            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+            <Pressable onPress={() => { tap(); onClose(); }} style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
               <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
             </Pressable>
             <Pressable

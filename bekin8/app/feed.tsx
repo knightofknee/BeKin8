@@ -39,6 +39,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import PostComments from '../components/PostComments';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
+import LinkPreview from '../components/LinkPreview';
+import { tap, press, warning, selection } from '../utils/haptics';
 
 const PAGE_SIZE = 10; // posts per page
 
@@ -60,7 +62,7 @@ interface Post {
 const prefKey = () => `feed_showMine:${auth.currentUser?.uid ?? 'anon'}`;
 
 // ── Skeleton loader ────────────────────────────────────────────────────────
-function SkeletonBlock({ width, height, style, color }: { width: number | string; height: number; style?: any; color?: string }) {
+function SkeletonBlock({ width, height, style, color, shimmer }: { width: number | string; height: number; style?: any; color?: string; shimmer?: string }) {
   const anim = useRef(new Animated.Value(0.3)).current;
   useEffect(() => {
     const loop = Animated.loop(
@@ -74,21 +76,21 @@ function SkeletonBlock({ width, height, style, color }: { width: number | string
   }, []);
   return (
     <Animated.View
-      style={[{ width, height, borderRadius: 6, backgroundColor: color || '#E5E7EB', opacity: anim }, style]}
+      style={[{ width, height, borderRadius: 6, backgroundColor: shimmer || color || '#E5E7EB', opacity: anim }, style]}
     />
   );
 }
 
-function SkeletonCard() {
+function SkeletonCard({ cardBg, cardBorder, shimmer }: { cardBg?: string; cardBorder?: string; shimmer?: string } = {}) {
   return (
-    <View style={skeletonStyles.card}>
-      <SkeletonBlock width={100} height={14} />
-      <SkeletonBlock width="80%" height={18} style={{ marginTop: 10 }} />
-      <SkeletonBlock width="100%" height={14} style={{ marginTop: 8 }} />
-      <SkeletonBlock width="60%" height={14} style={{ marginTop: 6 }} />
+    <View style={[skeletonStyles.card, cardBg ? { backgroundColor: cardBg } : undefined, cardBorder ? { borderColor: cardBorder } : undefined]}>
+      <SkeletonBlock width={100} height={14} shimmer={shimmer} />
+      <SkeletonBlock width="80%" height={18} style={{ marginTop: 10 }} shimmer={shimmer} />
+      <SkeletonBlock width="100%" height={14} style={{ marginTop: 8 }} shimmer={shimmer} />
+      <SkeletonBlock width="60%" height={14} style={{ marginTop: 6 }} shimmer={shimmer} />
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
-        <SkeletonBlock width={120} height={14} />
-        <SkeletonBlock width={80} height={14} />
+        <SkeletonBlock width={120} height={14} shimmer={shimmer} />
+        <SkeletonBlock width={80} height={14} shimmer={shimmer} />
       </View>
     </View>
   );
@@ -308,6 +310,7 @@ export default function Feed() {
 
   // ── load more (pagination) ──────────────────────────────────────────────────
   const loadMore = useCallback(async () => {
+    press();
     if (loadingMore || !hasMore || !oldestTs.current) return;
     setLoadingMore(true);
     try {
@@ -367,6 +370,7 @@ export default function Feed() {
       {
         text: 'Report', style: 'destructive',
         onPress: async () => {
+          warning();
           const me = auth.currentUser?.uid;
           if (!me) return;
           try {
@@ -387,6 +391,7 @@ export default function Feed() {
       {
         text: 'Block', style: 'destructive',
         onPress: async () => {
+          warning();
           const me = auth.currentUser?.uid;
           if (!me || p.authorUid === me) return;
           try {
@@ -428,6 +433,7 @@ export default function Feed() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
+          warning();
           try {
             await deleteDoc(doc(db, 'Posts', p.id));
             setPosts((prev) => prev.filter((post) => post.id !== p.id));
@@ -445,6 +451,7 @@ export default function Feed() {
   }, []);
 
   const handleSaveEdit = useCallback(async () => {
+    press();
     if (!editingPost) return;
     const content = editContent.trim();
     if (!content) { Alert.alert('Content required'); return; }
@@ -475,9 +482,9 @@ export default function Feed() {
             <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
           </View>
           <View style={[styles.list, { backgroundColor: tc.bg }]}>
-            <SkeletonCard />
-            <SkeletonCard />
-            <SkeletonCard />
+            <SkeletonCard cardBg={tc.card} cardBorder={tc.border} shimmer={tc.skeleton} />
+            <SkeletonCard cardBg={tc.card} cardBorder={tc.border} shimmer={tc.skeleton} />
+            <SkeletonCard cardBg={tc.card} cardBorder={tc.border} shimmer={tc.skeleton} />
           </View>
           <BottomBar />
         </SafeAreaView>
@@ -497,7 +504,7 @@ export default function Feed() {
             <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
               <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
               <Pressable
-                onPress={() => setShowMine((s) => !s)}
+                onPress={() => { tap(); setShowMine((s) => !s); }}
                 style={({ pressed }) => [styles.toggleBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
               >
                 <Text style={styles.toggleBtnText}>{showMine ? 'Hide my posts' : 'Show my posts'}</Text>
@@ -512,7 +519,7 @@ export default function Feed() {
                 Posts from your friends will show up here. Add some friends to get started.
               </Text>
               <Pressable
-                onPress={() => router.push('/friends')}
+                onPress={() => { tap(); router.push('/friends'); }}
                 style={({ pressed }) => [styles.emptyBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
               >
                 <Text style={styles.emptyBtnTxt}>Find Friends</Text>
@@ -525,39 +532,30 @@ export default function Feed() {
               <View style={[styles.postContainer, { backgroundColor: tc.postBg, borderColor: tc.border }]}>
                 <View style={styles.postHeaderRow}>
                   <Pressable
-                    onPress={() => item.authorUsernameSlug && router.push(`/profile/${item.authorUsernameSlug}`)}
+                    onPress={() => { tap(); item.authorUsernameSlug && router.push(`/profile/${item.authorUsernameSlug}`); }}
                     disabled={!item.authorUsernameSlug}
                   >
                     <Text style={[styles.postAuthor, { color: tc.text }, item.authorUsernameSlug && [styles.postAuthorLink, { color: tc.linkText }]]}>
                       {item.authorUsername}
                     </Text>
                   </Pressable>
-                  <Pressable onPress={() => setMenuFor(item)} hitSlop={10} style={styles.menuBtn}>
+                  <Pressable onPress={() => { tap(); setMenuFor(item); }} hitSlop={10} style={styles.menuBtn}>
                     <Text style={[styles.menuDots, { color: tc.subtle }]}>⋯</Text>
                   </Pressable>
                 </View>
 
                 {item.title ? (
-                  <Text style={[styles.postTitle, { color: tc.text }]} numberOfLines={2}>{item.title}</Text>
+                  <Text selectable style={[styles.postTitle, { color: tc.text }]} numberOfLines={2}>{item.title}</Text>
                 ) : null}
 
-                {item.url ? (
-                  <Pressable
-                    onPress={() => Linking.openURL(/^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`)}
-                    style={{ marginBottom: 6 }}
-                  >
-                    <Text style={[styles.postLink, { color: tc.linkText }]} numberOfLines={1}>
-                      {String(item.url).replace(/^https?:\/\//i, '')}
-                    </Text>
-                  </Pressable>
-                ) : null}
+                {item.url ? <LinkPreview url={item.url} /> : null}
 
-                <Text style={[styles.postContent, { color: tc.text }]}>{item.content}</Text>
+                <Text selectable style={[styles.postContent, { color: tc.text }]}>{item.content}</Text>
 
                 <View style={styles.postFooter}>
                   {commentsVisible ? (
                     <Pressable
-                      onPress={() => setSelectedPost(item)}
+                      onPress={() => { tap(); setSelectedPost(item); }}
                       hitSlop={8}
                       style={({ pressed }) => [styles.viewCommentsBtn, pressed && { opacity: 0.7 }]}
                     >
@@ -611,7 +609,7 @@ export default function Feed() {
             ) : null}
 
             {menuFor?.authorUid === auth.currentUser?.uid && myGlobalCommentsEnabled ? (
-              <Pressable style={styles.menuRow} onPress={() => { if (menuFor) handleToggleComments(menuFor); setMenuFor(null); }}>
+              <Pressable style={styles.menuRow} onPress={() => { selection(); if (menuFor) handleToggleComments(menuFor); setMenuFor(null); }}>
                 <Text style={[styles.menuText, { color: tc.text }]}>{menuFor?.commentsEnabled !== false ? 'Turn off comments' : 'Turn on comments'}</Text>
               </Pressable>
             ) : null}
@@ -629,14 +627,14 @@ export default function Feed() {
             ) : null}
 
             {menuFor?.authorUid !== auth.currentUser?.uid && (profile as any)?.commentOnCommentNotify ? (
-              <Pressable style={styles.menuRow} onPress={() => { const p = menuFor; setMenuFor(null); if (p) handleToggleSilencePost(p); }}>
+              <Pressable style={styles.menuRow} onPress={() => { selection(); const p = menuFor; setMenuFor(null); if (p) handleToggleSilencePost(p); }}>
                 <Text style={[styles.menuText, { color: tc.text }]}>
                   {menuFor && silencedPostIds.has(menuFor.id) ? 'Unsilence comment notifications' : 'Silence comment notifications'}
                 </Text>
               </Pressable>
             ) : null}
 
-            <Pressable style={[styles.menuRow, styles.menuCancel, { borderTopColor: tc.border }]} onPress={() => setMenuFor(null)}>
+            <Pressable style={[styles.menuRow, styles.menuCancel, { borderTopColor: tc.border }]} onPress={() => { tap(); setMenuFor(null); }}>
               <Text style={[styles.menuText, { color: tc.text }]}>Cancel</Text>
             </Pressable>
           </Pressable>
@@ -676,7 +674,7 @@ export default function Feed() {
               maxLength={500}
             />
             <View style={styles.editActions}>
-              <Pressable onPress={() => setEditingPost(null)} style={[styles.editCancelBtn, { backgroundColor: tc.inputBg }]}>
+              <Pressable onPress={() => { tap(); setEditingPost(null); }} style={[styles.editCancelBtn, { backgroundColor: tc.inputBg }]}>
                 <Text style={[styles.editCancelTxt, { color: tc.subtle }]}>Cancel</Text>
               </Pressable>
               <Pressable onPress={handleSaveEdit} disabled={editSaving} style={[styles.editSaveBtn, { backgroundColor: tc.primary }, editSaving && { opacity: 0.6 }]}>

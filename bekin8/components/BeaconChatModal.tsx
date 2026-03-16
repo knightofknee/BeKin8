@@ -12,6 +12,7 @@ import {
   Pressable,
 } from 'react-native';
 import { useTheme } from '../providers/ThemeProvider';
+import { tap, press } from '../utils/haptics';
 import { auth, db } from '../firebase.config';
 import {
   addDoc,
@@ -165,6 +166,7 @@ export default function BeaconChatModal({
   }, [visible, beacon?.id]);
 
   const sendChat = useCallback(async () => {
+    press();
     if (!beacon) return;
     const user = auth.currentUser;
     if (!user) return;
@@ -201,7 +203,7 @@ export default function BeaconChatModal({
             <Text style={[styles.modalTitle, { color: tc.text }]}>
               {isToday ? '🔥 Today' : '🗓 Upcoming'} — {beacon.displayName}
             </Text>
-            <Pressable onPress={onClose}>
+            <Pressable onPress={() => { tap(); onClose(); }}>
               <Text style={[styles.close, { color: tc.subtle }]}>✕</Text>
             </Pressable>
           </View>

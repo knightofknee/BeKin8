@@ -17,6 +17,7 @@ import {
   Animated,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
 import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
@@ -24,11 +25,13 @@ import BottomBar from '@/components/BottomBar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
+import { tap, press } from '../utils/haptics';
 
 const BOTTOM_BAR_HEIGHT = 56;
 const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
 const ACCESSORY_ID_LINK  = 'create-post-accessory-link';
 const ACCESSORY_ID_BODY  = 'create-post-accessory-body';
+const DRAFT_KEY = '@bekin_post_draft';
 
 // ─── Floating-label field ───────────────────────────────────────────────────
 type FloatFieldProps = TextInputProps & {
@@ -97,6 +100,7 @@ export default function CreatePostScreen() {
   const [title, setTitle]           = useState('');
   const [link, setLink]             = useState('');
   const [content, setContent]       = useState('');
+  const [draftLoaded, setDraftLoaded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [bonusPosts, setBonusPosts] = useState<number>(3);
   const [rateLimitInfo, setRateLimitInfo] = useState<{
@@ -127,6 +131,32 @@ export default function CreatePostScreen() {
   useEffect(() => {
     if (!auth.currentUser) router.replace('/');
   }, [router]);
+
+  // ── Load draft from disk ────────────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(DRAFT_KEY);
+        if (raw) {
+          const d = JSON.parse(raw);
+          if (d.title) setTitle(d.title);
+          if (d.link) setLink(d.link);
+          if (d.content) setContent(d.content);
+        }
+      } catch {}
+      setDraftLoaded(true);
+    })();
+  }, []);
+
+  // ── Auto-save draft on every change ─────────────────────────────────────
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!draftLoaded) return;                // don't save before we've loaded
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      AsyncStorage.setItem(DRAFT_KEY, JSON.stringify({ title, link, content })).catch(() => {});
+    }, 400);                                  // debounce 400ms
+  }, [title, link, content, draftLoaded]);
 
   // ── Live bonus-post count ─────────────────────────────────────────────────
   useEffect(() => {
@@ -198,12 +228,17 @@ export default function CreatePostScreen() {
       timestamp: Date.now(),
       tags,
     });
+    await AsyncStorage.removeItem(DRAFT_KEY);
+    setTitle('');
+    setLink('');
+    setContent('');
     Alert.alert('Posted!', 'Your post is live.');
     router.push('/feed');
   };
 
   // ── Normal submit ─────────────────────────────────────────────────────────
   const handleSubmit = async () => {
+    press();
     if (submitting) return;
     if (!auth.currentUser) { router.replace('/'); return; }
     if (!validateFields()) return;
@@ -229,6 +264,7 @@ export default function CreatePostScreen() {
 
   // ── Bonus submit ──────────────────────────────────────────────────────────
   const handleBonusSubmit = async () => {
+    press();
     if (submitting) return;
     if (!auth.currentUser) { router.replace('/'); return; }
     if (!validateFields()) return;
@@ -400,21 +436,21 @@ export default function CreatePostScreen() {
         <>
           <InputAccessoryView nativeID={ACCESSORY_ID_TITLE}>
             <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
                 <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
           <InputAccessoryView nativeID={ACCESSORY_ID_LINK}>
             <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
                 <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
           <InputAccessoryView nativeID={ACCESSORY_ID_BODY}>
             <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
                 <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>

@@ -29,6 +29,7 @@ import {
 import { colors } from "@/components/ui/colors";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap, press, warning, selection } from "../utils/haptics";
 
 export type FriendGroup = {
   id?: string;
@@ -202,6 +203,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
 
   // toggle selection
   const toggleUid = useCallback((uid: string) => {
+    selection();
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(uid)) next.delete(uid);
@@ -217,6 +219,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
 
   // Save (create or update)
   const handleSave = async () => {
+    press();
     if (!meUid) return;
     const nm = name.trim();
     if (!nm) return;
@@ -277,6 +280,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
   };
 
   const handleDelete = async () => {
+    warning();
     if (!group?.id) return;
     try {
       await deleteDoc(doc(db, "FriendGroups", group.id));
@@ -325,7 +329,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
           {/* Header */}
           <View style={styles.headerRow}>
             <Text style={[styles.title, { color: colors.text }]}>{group ? "Edit Group" : "New Group"}</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
+            <Pressable onPress={() => { tap(); onClose(); }} hitSlop={10}>
               <Text style={[styles.close, { color: colors.subtle }]}>✕</Text>
             </Pressable>
           </View>
@@ -374,7 +378,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
 
           {/* Actions */}
           <View style={styles.btnRow}>
-            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+            <Pressable onPress={() => { tap(); onClose(); }} style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
               <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
             </Pressable>
             <Pressable

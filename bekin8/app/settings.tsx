@@ -9,6 +9,7 @@ import BottomBar from "../components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { syncPushTokenIfGranted } from "../lib/push";
+import { tap, press, selection } from '../utils/haptics';
 
 /** Returns true if notifications are (or become) granted. Shows OS prompt if needed. */
 async function ensureNotifyPermission(): Promise<boolean> {
@@ -125,6 +126,7 @@ export default function SettingsScreen() {
   };
 
   const handleToggleComments = async (val: boolean) => {
+    selection();
     const uid = auth.currentUser?.uid;
     if (!uid || commentsBusy) return;
     setCommentsEnabled(val);
@@ -141,6 +143,7 @@ export default function SettingsScreen() {
   };
 
   const handleToggleCommentNotify = async (val: boolean) => {
+    selection();
     const uid = auth.currentUser?.uid;
     if (!uid || commentNotifyBusy) return;
     if (val) {
@@ -159,6 +162,7 @@ export default function SettingsScreen() {
   };
 
   const handleTogglePostCommentNotify = async (val: boolean) => {
+    selection();
     const uid = auth.currentUser?.uid;
     if (!uid || postCommentNotifyBusy) return;
     if (val) {
@@ -177,6 +181,7 @@ export default function SettingsScreen() {
   };
 
   const handleToggleCommentOnCommentNotify = async (val: boolean) => {
+    selection();
     const uid = auth.currentUser?.uid;
     if (!uid || commentOnCommentNotifyBusy) return;
     if (val) {
@@ -195,6 +200,7 @@ export default function SettingsScreen() {
   };
 
   const handleToggleNewPostNotify = async (val: boolean) => {
+    selection();
     const uid = auth.currentUser?.uid;
     if (!uid || newPostNotifyBusy) return;
     if (val) {
@@ -222,6 +228,7 @@ export default function SettingsScreen() {
   };
 
   const saveDisplayName = async () => {
+    press();
     const t = (displayName ?? "").trim().replace(/\s+/g, " ");
     setAttemptedSave(true);
     if (!validateName(t)) return;
@@ -257,7 +264,7 @@ export default function SettingsScreen() {
       <SafeAreaView style={[s.safe, { backgroundColor: tc.bg }]} edges={["top", "left", "right"]}>
         {/* Header */}
         <View style={[s.header, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
-          <Pressable onPress={() => router.back()} hitSlop={8}>
+          <Pressable onPress={() => { tap(); router.back(); }} hitSlop={8}>
             <Text style={[s.back, { color: tc.primary }]}>{`← Back`}</Text>
           </Pressable>
           <Text style={[s.title, { color: tc.text }]}>Settings</Text>
@@ -266,7 +273,7 @@ export default function SettingsScreen() {
 
         <View style={s.body}>
           {/* Profile */}
-          <Pressable style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]} onPress={startEditDisplayName}>
+          <Pressable style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]} onPress={() => { tap(); startEditDisplayName(); }}>
             <Text style={[s.link, { color: tc.primary }]}>Edit Display Name</Text>
             <Text style={[s.subtle, { color: tc.subtle }]}>{currentDisplayName || "— uses username —"}</Text>
           </Pressable>
@@ -289,7 +296,7 @@ export default function SettingsScreen() {
               <View style={s.rowBtns}>
                 <Pressable
                   style={[s.button, s.ghostBtn, { borderColor: tc.border }]}
-                  onPress={() => { setEditingName(false); setDisplayName(initialDisplayName); setNameError(null); }}
+                  onPress={() => { tap(); setEditingName(false); setDisplayName(initialDisplayName); setNameError(null); }}
                   disabled={savingName}
                 >
                   <Text style={[s.ghostTxt, { color: tc.text }]}>Cancel</Text>
@@ -388,7 +395,7 @@ export default function SettingsScreen() {
             </View>
             <Switch
               value={isDark}
-              onValueChange={toggleTheme}
+              onValueChange={() => { selection(); toggleTheme(); }}
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
             />
@@ -398,7 +405,7 @@ export default function SettingsScreen() {
 
           <Pressable
             style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
-            onPress={() => router.push("/advanced-settings")}
+            onPress={() => { tap(); router.push("/advanced-settings"); }}
           >
             <Text style={[s.link, { color: tc.primary }]}>Advanced Settings</Text>
             <Text style={[s.subtle, { color: tc.subtle }]}>{"→"}</Text>

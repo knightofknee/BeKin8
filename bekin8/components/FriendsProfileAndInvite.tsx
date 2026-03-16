@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 
 import { colors } from "./ui/colors";
 import { MessageState } from "./types";
 import { useTheme } from "../providers/ThemeProvider";
+import { press } from "../utils/haptics";
 
 type Props = {
   currentUsername: string | null;
@@ -60,7 +61,7 @@ export default function FriendsProfileAndInvite({
             />
             <Pressable
               disabled={busyUsername}
-              onPress={onSaveUsername}
+              onPress={() => { press(); onSaveUsername(); }}
               style={[styles.btn, { paddingHorizontal: 16, opacity: busyUsername ? 0.6 : 1, backgroundColor: colors.primary }]}
             >
               {busyUsername ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
@@ -89,7 +90,7 @@ export default function FriendsProfileAndInvite({
           />
           <Pressable
             disabled={busySend || !hasProfileUsername}
-            onPress={onSendRequest}
+            onPress={() => { press(); onSendRequest(); }}
             style={[styles.btn, { paddingHorizontal: 16, opacity: busySend || !hasProfileUsername ? 0.5 : 1, backgroundColor: colors.primary }]}
           >
             {busySend ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Send</Text>}

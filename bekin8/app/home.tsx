@@ -40,6 +40,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted } from '../lib/push';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
+import { tap, press, selection } from '../utils/haptics';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -326,6 +327,7 @@ export default function HomeScreen() {
 
   // open options with prefill
   const openOptions = () => {
+    tap();
     const baseToday = startOfDay(new Date());
     let srcDate: Date | null = null;
     let srcMsg: string = DEFAULT_BEACON_MESSAGE;
@@ -358,6 +360,7 @@ export default function HomeScreen() {
         text: action,
         style: isLit ? 'destructive' : 'default',
         onPress: async () => {
+          press();
           const user = auth.currentUser;
           if (!user) {
             Alert.alert('Error', 'User not authenticated');
@@ -452,6 +455,7 @@ export default function HomeScreen() {
 
   // save options
   const saveBeaconOptions = async () => {
+    press();
     const user = auth.currentUser;
     if (!user) return;
 
@@ -603,7 +607,7 @@ export default function HomeScreen() {
 
               {isLit && myActiveBeacon ? (
                 <TouchableOpacity
-                  onPress={() => setSelectedBeacon(myActiveBeacon)}
+                  onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
                   activeOpacity={0.8}
                   style={[styles.myChatBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
                 >
@@ -651,7 +655,7 @@ export default function HomeScreen() {
               <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
                 <View style={styles.modalHeader}>
                   <Text style={[styles.modalTitle, { color: colors.text }]}>Schedule / Edit Beacon</Text>
-                  <Pressable onPress={() => setOptionsOpen(false)}>
+                  <Pressable onPress={() => { tap(); setOptionsOpen(false); }}>
                     <Text style={[styles.close, { color: colors.text }]}>✕</Text>
                   </Pressable>
                 </View>
@@ -667,7 +671,7 @@ export default function HomeScreen() {
                     {next7Days.map((d) => (
                       <Pressable
                         key={d.offset}
-                        onPress={() => setDayOffset(d.offset)}
+                        onPress={() => { selection(); setDayOffset(d.offset); }}
                         style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, d.offset === dayOffset && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
                       >
                         <Text style={[styles.dayChipText, { color: colors.text }, d.offset === dayOffset && styles.dayChipTextActive]}>
@@ -692,11 +696,12 @@ export default function HomeScreen() {
                         return (
                           <Pressable
                             key={g.id}
-                            onPress={() =>
+                            onPress={() => {
+                              selection();
                               setSelectedGroupIds((prev) =>
                                 selected ? prev.filter((x) => x !== g.id) : [...prev, g.id]
-                              )
-                            }
+                              );
+                            }}
                             style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, selected && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
                           >
                             <Text style={[styles.dayChipText, { color: colors.text }, selected && styles.dayChipTextActive]}>{g.name}</Text>
@@ -727,7 +732,7 @@ export default function HomeScreen() {
                   <Text style={[styles.msgHint, { color: colors.subtle }]}>140 chars • defaults if left blank</Text>
 
                   <View style={styles.modalBtnRow}>
-                    <TouchableOpacity style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]} onPress={() => setOptionsOpen(false)}>
+                    <TouchableOpacity style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]} onPress={() => { tap(); setOptionsOpen(false); }}>
                       <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={[styles.btn, styles.btnPrimary, { backgroundColor: colors.primary, borderColor: colors.primary }]} onPress={saveBeaconOptions}>
@@ -760,10 +765,10 @@ export default function HomeScreen() {
           onRequestClose={() => setSelectedBeacon(null)}
         >
           <View style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop }]}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={() => setSelectedBeacon(null)} />
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => { tap(); setSelectedBeacon(null); }} />
             <View style={[styles.detailCard, { backgroundColor: colors.card }]} pointerEvents="box-none">
               <View style={styles.modalHeader}>
-                <Pressable onPress={() => setSelectedBeacon(null)}>
+                <Pressable onPress={() => { tap(); setSelectedBeacon(null); }}>
                   <Text style={[styles.close, { color: colors.text }]}>✕</Text>
                 </Pressable>
               </View>

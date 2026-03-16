@@ -36,6 +36,7 @@ import {
 } from 'firebase/firestore';
 import PostComments from '../../components/PostComments';
 import { useTheme } from '../../providers/ThemeProvider';
+import { tap, press, warning, selection } from '../../utils/haptics';
 
 const PAGE_SIZE = 15;
 
@@ -268,6 +269,7 @@ export default function ProfileScreen() {
 
   // ── Color picker ──
   const handleColorChange = async (color: string) => {
+    selection();
     if (!me || !resolvedUid || me.uid !== resolvedUid) return;
     setProfileColor(color);
     try {
@@ -282,6 +284,7 @@ export default function ProfileScreen() {
   };
 
   const handleSaveBio = async () => {
+    press();
     if (!me || !resolvedUid || me.uid !== resolvedUid) return;
     const trimmed = bioDraft.trim();
     try {
@@ -314,6 +317,7 @@ export default function ProfileScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
+          warning();
           try {
             await deleteDoc(doc(db, 'Profiles', me.uid, 'lists', list.id));
           } catch {}
@@ -323,6 +327,7 @@ export default function ProfileScreen() {
   };
 
   const handleSaveList = async () => {
+    press();
     if (!me || !resolvedUid || !editingList) return;
     const title = editTitle.trim();
     if (!title) {
@@ -375,6 +380,7 @@ export default function ProfileScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
+          warning();
           try {
             await deleteDoc(doc(db, 'Posts', p.id));
             setPosts((prev) => prev.filter((x) => x.id !== p.id));
@@ -394,6 +400,7 @@ export default function ProfileScreen() {
   };
 
   const handleSaveEdit = useCallback(async () => {
+    press();
     if (!editingPost) return;
     const content = editPostContent.trim();
     if (!content) { Alert.alert('Content required'); return; }
@@ -414,6 +421,7 @@ export default function ProfileScreen() {
   }, [editingPost, editPostTitle, editPostContent, editPostUrl]);
 
   const handleToggleComments = async (p: Post) => {
+    selection();
     const next = !(p.commentsEnabled !== false);
     try {
       await updateDoc(doc(db, 'Posts', p.id), { commentsEnabled: next });
@@ -499,7 +507,7 @@ export default function ProfileScreen() {
     <View>
       {/* Hero section */}
       <View style={styles.hero}>
-        <Pressable onPress={isOwnProfile ? () => setShowColorPicker((v) => !v) : undefined} disabled={!isOwnProfile}>
+        <Pressable onPress={isOwnProfile ? () => { selection(); setShowColorPicker((v) => !v); } : undefined} disabled={!isOwnProfile}>
           <View style={[styles.heroAvatar, { backgroundColor: profileColor }]}>
             <Text style={styles.heroInitial}>{initial}</Text>
           </View>
@@ -543,7 +551,7 @@ export default function ProfileScreen() {
                 autoFocus
               />
               <View style={styles.bioActions}>
-                <Pressable onPress={() => setEditingBio(false)} style={[styles.bioCancelBtn, { backgroundColor: colors.inputBg }]}>
+                <Pressable onPress={() => { tap(); setEditingBio(false); }} style={[styles.bioCancelBtn, { backgroundColor: colors.inputBg }]}>
                   <Text style={[styles.bioCancelTxt, { color: colors.subtle }]}>Cancel</Text>
                 </Pressable>
                 <Pressable onPress={handleSaveBio} style={[styles.bioSaveBtn, { backgroundColor: colors.primary }]}>
@@ -579,7 +587,7 @@ export default function ProfileScreen() {
       <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.headerBg }]}>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+          <Pressable onPress={() => { tap(); router.back(); }} hitSlop={12} style={styles.backBtn}>
             <Text style={[styles.backArrow, { color: colors.primary }]}>&#8249;</Text>
           </Pressable>
           <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
@@ -753,7 +761,7 @@ export default function ProfileScreen() {
             </Pressable>
 
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setEditingList(null)} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
+              <Pressable onPress={() => { tap(); setEditingList(null); }} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
                 <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
               </Pressable>
               <Pressable onPress={handleSaveList} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }]}>
@@ -766,7 +774,7 @@ export default function ProfileScreen() {
 
       {/* Post menu modal */}
       <Modal visible={!!menuFor} animationType="fade" transparent onRequestClose={() => setMenuFor(null)}>
-        <Pressable style={[styles.menuBackdrop, { backgroundColor: colors.backdrop }]} onPress={() => setMenuFor(null)}>
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: colors.backdrop }]} onPress={() => { tap(); setMenuFor(null); }}>
           <Pressable style={[styles.menuSheet, { backgroundColor: colors.card }]} onPress={(e) => e.stopPropagation()}>
             <Pressable style={styles.menuRow} onPress={() => { const p = menuFor; setMenuFor(null); if (p) handleStartEdit(p); }}>
               <Text style={[styles.menuText, { color: colors.text }]}>Edit post</Text>
@@ -779,7 +787,7 @@ export default function ProfileScreen() {
                 <Text style={[styles.menuText, { color: colors.text }]}>{menuFor?.commentsEnabled !== false ? 'Turn off comments' : 'Turn on comments'}</Text>
               </Pressable>
             )}
-            <Pressable style={[styles.menuRow, { borderTopWidth: 1, borderTopColor: colors.border }]} onPress={() => setMenuFor(null)}>
+            <Pressable style={[styles.menuRow, { borderTopWidth: 1, borderTopColor: colors.border }]} onPress={() => { tap(); setMenuFor(null); }}>
               <Text style={[styles.menuText, { color: colors.subtle }]}>Cancel</Text>
             </Pressable>
           </Pressable>
@@ -819,7 +827,7 @@ export default function ProfileScreen() {
               maxLength={500}
             />
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setEditingPost(null)} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
+              <Pressable onPress={() => { tap(); setEditingPost(null); }} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
                 <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
               </Pressable>
               <Pressable onPress={handleSaveEdit} disabled={editPostSaving} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, editPostSaving && { opacity: 0.6 }]}>

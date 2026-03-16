@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, Platform, Keyboard } from "react-native";
 import { usePathname, useRouter } from "expo-router";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap } from "../utils/haptics";
 
 type TabKey = "home" | "feed" | "friends" | "create-post" | "settings";
 type Tab = { key: TabKey; label: string; emoji: string; href: `/${string}` };
@@ -29,6 +30,7 @@ export default function BottomBar() {
   }, [pathname]);
 
   const onNav = (href: `/${string}`) => {
+    tap();
     Keyboard.dismiss();
     router.push(href as any);
   };

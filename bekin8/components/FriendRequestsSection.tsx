@@ -4,6 +4,7 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "
 import { colors } from "./ui/colors";
 import { FriendRequest } from "./types";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap, success, warning } from "../utils/haptics";
 
 type Props = {
   incoming: FriendRequest[];
@@ -48,14 +49,14 @@ export default function FriendRequestsSection({
                       <Text style={[styles.subtle, { color: colors.subtle }]}>wants to be friends</Text>
                     </View>
                     <Pressable
-                      onPress={() => onAccept(item)}
+                      onPress={() => { success(); onAccept(item); }}
                       disabled={busy}
                       style={[styles.smallBtn, { backgroundColor: colors.primary, opacity: busy ? 0.5 : 1 }]}
                     >
                       <Text style={styles.smallBtnText}>Accept</Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => onReject(item)}
+                      onPress={() => { warning(); onReject(item); }}
                       disabled={busy}
                       style={[styles.smallBtn, { backgroundColor: colors.error, opacity: busy ? 0.5 : 1 }]}
                     >
@@ -86,7 +87,7 @@ export default function FriendRequestsSection({
                       <Text style={[styles.subtle, { color: colors.subtle }]}>pending…</Text>
                     </View>
                     <Pressable
-                      onPress={() => onCancel(item)}
+                      onPress={() => { tap(); onCancel(item); }}
                       disabled={busy}
                       style={[styles.smallBtn, { backgroundColor: colors.subtle, opacity: busy ? 0.5 : 1 }]}
                     >

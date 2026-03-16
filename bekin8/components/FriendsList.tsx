@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View, Switch, GestureResponderEvent } from
 import { colors } from "./ui/colors";
 import { Friend } from "./types";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap, warning, selection } from "../utils/haptics";
 
 type RowProps = {
   item: Friend;
@@ -35,7 +36,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
     <Pressable onPress={handleRowPress} style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }]}>
       {/* Avatar — tappable to view profile */}
       <Pressable
-        onPress={onPressName}
+        onPress={() => { tap(); onPressName?.(); }}
         disabled={!onPressName}
         hitSlop={4}
         style={[styles.avatar, { backgroundColor: item.profileColor || colors.primary }, onPressName && styles.avatarTappable]}
@@ -55,7 +56,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
         <Text style={[styles.notifyLabel, { color: colors.subtle }]}>Notifications?</Text>
         <Switch
           value={!!notify}
-          onValueChange={(v) => onToggleNotify && onToggleNotify(v)}
+          onValueChange={(v) => { selection(); onToggleNotify && onToggleNotify(v); }}
           disabled={disabled}
         />
       </View>
@@ -63,7 +64,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
       {/* Block button */}
       <Pressable
         disabled={disabled}
-        onPress={onBlock}
+        onPress={() => { warning(); onBlock(); }}
         hitSlop={10}
         style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
       >
@@ -73,7 +74,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
       {/* Remove (unfriend) button */}
       <Pressable
         disabled={disabled}
-        onPress={onRemove}
+        onPress={() => { warning(); onRemove(); }}
         hitSlop={10}
         style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
       >

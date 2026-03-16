@@ -2,6 +2,7 @@
 import React from "react";
 import { View, Modal, Pressable, Text, StyleSheet } from "react-native";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap, warning } from "../utils/haptics";
 
 type Props = {
   visible: boolean;
@@ -15,17 +16,17 @@ export default function ItemMenu({ visible, onClose, onReport, onBlock, showBloc
   const { colors } = useTheme();
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
-      <Pressable style={[styles.backdrop, { backgroundColor: colors.backdrop }]} onPress={onClose}>
+      <Pressable style={[styles.backdrop, { backgroundColor: colors.backdrop }]} onPress={() => { tap(); onClose(); }}>
         <View style={[styles.sheet, { backgroundColor: colors.card }]}>
-          <Pressable style={styles.row} onPress={() => { onReport(); onClose(); }}>
+          <Pressable style={styles.row} onPress={() => { warning(); onReport(); onClose(); }}>
             <Text style={[styles.text, { color: colors.text }]}>Report</Text>
           </Pressable>
           {showBlock && onBlock && (
-            <Pressable style={styles.row} onPress={() => { onBlock(); onClose(); }}>
+            <Pressable style={styles.row} onPress={() => { warning(); onBlock(); onClose(); }}>
               <Text style={[styles.text, { color: colors.text }]}>Block user</Text>
             </Pressable>
           )}
-          <Pressable style={[styles.row, styles.cancel, { borderTopColor: colors.border }]} onPress={onClose}>
+          <Pressable style={[styles.row, styles.cancel, { borderTopColor: colors.border }]} onPress={() => { tap(); onClose(); }}>
             <Text style={[styles.text, { color: colors.text }]}>Cancel</Text>
           </Pressable>
         </View>

@@ -32,6 +32,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { useTheme } from '../providers/ThemeProvider';
+import { tap, press, warning } from '../utils/haptics';
 
 type Post = {
   id: string;
@@ -174,11 +175,12 @@ export default function PostComments({ post, onClose }: Props) {
     const y = e.nativeEvent.contentOffset.y;
     setShowScrollTop(contentHeight > listHeight + 1 && y > 8);
   };
-  const scrollToTop = () => listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  const scrollToTop = () => { tap(); listRef.current?.scrollToOffset({ offset: 0, animated: true }); };
 
   const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
   const handleSend = async () => {
+    press();
     if (!canSend || !me) return;
     try {
       setSending(true);
@@ -204,6 +206,7 @@ export default function PostComments({ post, onClose }: Props) {
       {
         text: 'Report', style: 'destructive',
         onPress: async () => {
+          warning();
           if (!me) return;
           try {
             await addDoc(collection(db, 'Reports'), {
@@ -231,6 +234,7 @@ export default function PostComments({ post, onClose }: Props) {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
+          warning();
           try {
             await deleteDoc(doc(db, 'Posts', post.id, 'comments', comment.id));
           } catch (e: any) {
@@ -298,7 +302,7 @@ export default function PostComments({ post, onClose }: Props) {
               <Text style={[styles.headerSub, { color: tc.subtle }]} numberOfLines={1}>{post.content}</Text>
             </View>
           </View>
-          <Pressable hitSlop={12} onPress={onClose} style={styles.closeBtn}>
+          <Pressable hitSlop={12} onPress={() => { tap(); onClose(); }} style={styles.closeBtn}>
             <Text style={[styles.closeIcon, { color: tc.subtle }]}>✕</Text>
           </Pressable>
         </View>
@@ -364,7 +368,7 @@ export default function PostComments({ post, onClose }: Props) {
                                 return ' · ' + (isToday ? time : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time);
                               })()}
                             </Text>
-                            <Text style={[styles.msgText, { color: tc.text }, deleted && styles.deletedText]}>
+                            <Text selectable style={[styles.msgText, { color: tc.text }, deleted && styles.deletedText]}>
                               {deleted ? '[deleted]' : item.text}
                             </Text>
                           </View>

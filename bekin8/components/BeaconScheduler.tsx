@@ -24,6 +24,7 @@ import {
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
 import { useTheme } from "../providers/ThemeProvider";
+import { tap, press, selection } from "../utils/haptics";
 import KeyboardAware from "./KeyboardAware";
 
 type FriendGroup = {
@@ -160,10 +161,12 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
   }, [initialGroupIds]);
 
   const toggleDay = (day: string) => {
+    selection();
     setSelectedDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
   };
 
   const toggleGroup = (id: string) => {
+    selection();
     setSelectedGroupIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
@@ -173,6 +176,7 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
   );
 
   const saveBeacon = async () => {
+    press();
     const user = auth.currentUser;
     if (!user) return;
 
@@ -246,7 +250,7 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
             <View style={[styles.emptyHintBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
               <Text style={[styles.emptyHintText, { color: colors.subtle }]}>You don’t have any friend groups yet.</Text>
               <Text style={[styles.emptyHintText, { marginTop: 2, color: colors.subtle }]}>Create groups from the Friends screen.</Text>
-              <Pressable onPress={() => router.push("/friends")} style={[styles.hintBtn, { backgroundColor: colors.primary }]}>
+              <Pressable onPress={() => { tap(); router.push("/friends"); }} style={[styles.hintBtn, { backgroundColor: colors.primary }]}>
                 <Text style={styles.hintBtnText}>Open Friends</Text>
               </Pressable>
             </View>

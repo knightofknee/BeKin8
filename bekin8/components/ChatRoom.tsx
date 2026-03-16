@@ -35,6 +35,7 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { useTheme } from '../providers/ThemeProvider';
+import { tap, press, warning } from '../utils/haptics';
 
 type ChatMessage = {
   id: string;
@@ -126,6 +127,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   };
 
   const scrollToTop = () => {
+    tap();
     listRef.current?.scrollToOffset({ offset: 0, animated: true });
   };
 
@@ -278,6 +280,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   const canSendMsg = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
   const handleSend = async () => {
+    press();
     if (!canSendMsg || !me) return;
     try {
       setSending(true);
@@ -395,6 +398,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            warning();
             const uid = auth.currentUser?.uid;
             if (!uid || msg.authorUid !== uid) return;
             try {
@@ -527,7 +531,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
                       return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
                     })()}
                   </Text>
-                  <Text style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
+                  <Text selectable style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
                 </View>
 
                 {mine && (
