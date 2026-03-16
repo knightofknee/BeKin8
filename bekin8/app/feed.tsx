@@ -302,7 +302,7 @@ export default function Feed() {
       page.forEach((p) => seen.set(p.id, p));
       setPosts(Array.from(seen.values()));
     } catch (err) {
-      console.error('Feed initial load error:', err);
+      if (__DEV__) console.error('Feed initial load error:', err);
     } finally {
       setLoading(false);
     }
@@ -326,7 +326,7 @@ export default function Feed() {
         return Array.from(seen.values()).sort((a, b) => b._timestamp - a._timestamp);
       });
     } catch (err) {
-      console.error('Feed loadMore error:', err);
+      if (__DEV__) console.error('Feed loadMore error:', err);
     } finally {
       setLoadingMore(false);
     }

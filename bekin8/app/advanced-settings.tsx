@@ -94,7 +94,7 @@ export default function AdvancedSettingsScreen() {
         await linkWithCredential(currentUser, credential);
       } catch (linkErr: any) {
         // Non-fatal: data was ported even if linking fails
-        console.warn("linkWithCredential failed after port:", linkErr?.message);
+        if (__DEV__) console.warn("linkWithCredential failed after port:", linkErr?.message);
       }
 
       await currentUser.reload();

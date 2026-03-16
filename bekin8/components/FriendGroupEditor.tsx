@@ -255,7 +255,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
       });
       onClose();
     } catch (e) {
-      console.error("Save group error", e);
+      if (__DEV__) console.error("Save group error", e);
       Alert.alert("Error", "Failed to save group.");
     } finally {
       setSaving(false);
@@ -287,7 +287,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
       onDeleted?.(group.id);
       onClose();
     } catch (e) {
-      console.error("Delete group error", e);
+      if (__DEV__) console.error("Delete group error", e);
       Alert.alert("Error", "Failed to delete group.");
     }
   };

@@ -203,7 +203,7 @@ export default function HomeScreen() {
         }
       },
       (e) => {
-        console.warn('mine onSnapshot error:', e);
+        if (__DEV__) console.warn('mine onSnapshot error:', e);
         setIsLit(false);
         setMyActiveBeacon(null);
         setNextPlannedDate(null);
@@ -445,7 +445,7 @@ export default function HomeScreen() {
               );
             }
           } catch (err) {
-            console.error('Error toggling beacon:', err);
+            if (__DEV__) console.error('Error toggling beacon:', err);
             Alert.alert('Error', 'Failed to update beacon.');
           }
         },
@@ -540,7 +540,7 @@ export default function HomeScreen() {
 
       setOptionsOpen(false);
     } catch (e: any) {
-      console.error(e);
+      if (__DEV__) console.error(e);
       Alert.alert('Error', e?.message || 'Failed to save options.');
     }
   };
@@ -564,7 +564,7 @@ export default function HomeScreen() {
         createdAt: serverTimestamp(),
       });
     } catch (e) {
-      console.warn('im-in failed', e);
+      if (__DEV__) console.warn('im-in failed', e);
       Alert.alert('Error', 'Could not mark you as in. Try again.');
     }
   };

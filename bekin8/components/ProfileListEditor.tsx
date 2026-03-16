@@ -111,7 +111,7 @@ export default function ProfileListEditor({
       onSaved?.();
       onClose();
     } catch (e) {
-      console.error("Save list error", e);
+      if (__DEV__) console.error("Save list error", e);
       Alert.alert("Error", "Failed to save list.");
     } finally {
       setSaving(false);
@@ -133,7 +133,7 @@ export default function ProfileListEditor({
       onDeleted?.();
       onClose();
     } catch (e) {
-      console.error("Delete list error", e);
+      if (__DEV__) console.error("Delete list error", e);
       Alert.alert("Error", "Failed to delete list.");
     }
   };

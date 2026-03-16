@@ -389,7 +389,7 @@ export default function FriendsScreen() {
       nameCacheRef.current[user.uid] = desired;
       showMessage("Username saved!", "success");
     } catch (e) {
-      console.error("handleSetUsername error", e);
+      if (__DEV__) console.error("handleSetUsername error", e);
       showMessage("Failed to save username.", "error");
     } finally {
       setBusyUsername(false);
@@ -476,7 +476,7 @@ export default function FriendsScreen() {
       setName("");
       showMessage("Request sent!", "success");
     } catch (e) {
-      console.error("Error sending request:", e);
+      if (__DEV__) console.error("Error sending request:", e);
       showMessage("Failed to send request.", "error");
     } finally {
       setBusy(false);
@@ -532,7 +532,7 @@ export default function FriendsScreen() {
 
       showMessage("Friend added!", "success");
     } catch (e) {
-      console.error("acceptRequest error", e);
+      if (__DEV__) console.error("acceptRequest error", e);
       showMessage("Failed to accept.", "error");
     } finally {
       setBusy(false);
@@ -551,7 +551,7 @@ export default function FriendsScreen() {
       });
       showMessage("Request rejected.", "success");
     } catch (e) {
-      console.error("rejectRequest error", e);
+      if (__DEV__) console.error("rejectRequest error", e);
       showMessage("Failed to reject.", "error");
     } finally {
       setBusy(false);
@@ -570,7 +570,7 @@ export default function FriendsScreen() {
       });
       showMessage("Request cancelled.", "success");
     } catch (e) {
-      console.error("cancelRequest error", e);
+      if (__DEV__) console.error("cancelRequest error", e);
       showMessage("Failed to cancel.", "error");
     } finally {
       setBusy(false);
@@ -604,7 +604,7 @@ export default function FriendsScreen() {
 
       showMessage(`Removed ${friend.username}.`, "success");
     } catch (e) {
-      console.error("removeFriend error", e);
+      if (__DEV__) console.error("removeFriend error", e);
       showMessage("Failed to remove friend.", "error");
     } finally {
       setBusy(false);
@@ -631,7 +631,7 @@ export default function FriendsScreen() {
       });
       showMessage(`Blocked ${friend.username}.`, "success");
     } catch (e) {
-      console.error("blockFriend error", e);
+      if (__DEV__) console.error("blockFriend error", e);
       showMessage("Failed to block user.", "error");
     } finally {
       setBusy(false);
@@ -747,7 +747,7 @@ export default function FriendsScreen() {
 
       showMessage("You and Brian are now friends!", "success");
     } catch (e) {
-      console.error("handleAddBrian error", e);
+      if (__DEV__) console.error("handleAddBrian error", e);
       showMessage("Failed to send request.", "error");
     } finally {
       setAddingBrian(false);
@@ -814,7 +814,7 @@ export default function FriendsScreen() {
         try {
           await syncPushTokenIfGranted();
         } catch (e) {
-          console.warn("syncPushTokenIfGranted failed (best‑effort)", e);
+          if (__DEV__) console.warn("syncPushTokenIfGranted failed (best‑effort)", e);
         }
 
         // 5) Persist ON + subscribe
@@ -827,7 +827,7 @@ export default function FriendsScreen() {
           await subscribeToFriendNotifications(friendUid);
         } catch (e) {
           // Non-fatal: backend fanout also honors users/{uid}/friends/{friendUid}.notify===true
-          console.warn("subscribeToFriendNotifications failed (best‑effort)", e);
+          if (__DEV__) console.warn("subscribeToFriendNotifications failed (best‑effort)", e);
         }
         setNotifyByUid((prev) => ({ ...prev, [friendUid]: true }));
       } else {
@@ -852,11 +852,11 @@ export default function FriendsScreen() {
         try {
           await unsubscribeFromFriendNotifications(friendUid);
         } catch (e) {
-          console.warn("unsubscribeFromFriendNotifications failed (best‑effort)", e);
+          if (__DEV__) console.warn("unsubscribeFromFriendNotifications failed (best‑effort)", e);
         }
       }
     } catch (e: any) {
-      console.error("onToggleNotify failed", e);
+      if (__DEV__) console.error("onToggleNotify failed", e);
       showMessage(e?.message || "Couldn't update notifications.", "error");
     } finally {
       togglingRef.current.delete(friendUid);

@@ -183,7 +183,7 @@ export default function BeaconChatModal({
         expireAt: beacon.expiresAt,
       });
     } catch (e) {
-      console.error(e);
+      if (__DEV__) console.error(e);
     }
   }, [beacon, chatInput, meDisplayName]);
 

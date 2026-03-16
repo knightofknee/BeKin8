@@ -206,7 +206,7 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
 
       onSaved?.();
     } catch (e) {
-      console.error("Failed to save beacon:", e);
+      if (__DEV__) console.error("Failed to save beacon:", e);
     } finally {
       setSaving(false);
     }
