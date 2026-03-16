@@ -85,6 +85,10 @@ export default function FriendsScreen() {
 
   // Username cache for UIDs from edges
   const nameCacheRef = useRef<Record<string, string>>({});
+  // Display name cache (uid -> displayName)
+  const displayNameCacheRef = useRef<Record<string, string>>({});
+  // Avatar color cache (uid -> avatarColor)
+  const avatarColorCacheRef = useRef<Record<string, string>>({});
 
   // Logout state
   const [loggingOut, setLoggingOut] = useState(false);
@@ -125,7 +129,8 @@ export default function FriendsScreen() {
       const key = uid ? `uid:${uid}` : `name:${username.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ uid, username });
+      const displayName = (f?.displayName ?? "").toString().trim() || undefined;
+      out.push({ uid, username, displayName });
     }
     out.sort((a, b) => a.username.localeCompare(b.username));
     return out;
@@ -151,10 +156,14 @@ export default function FriendsScreen() {
       toFetch.map(async (uid) => {
         try {
           const prof = await getDoc(doc(db, "Profiles", uid));
-          const uname =
-            (prof.exists() && (prof.data() as any)?.username) ||
-            (prof.exists() && (prof.data() as any)?.usernameLower);
+          if (!prof.exists()) return;
+          const data = prof.data() as any;
+          const uname = data?.username || data?.usernameLower;
           if (uname) nameCacheRef.current[uid] = String(uname);
+          const dn = (data?.displayName ?? "").toString().trim();
+          if (dn) displayNameCacheRef.current[uid] = dn;
+          const ac = (data?.avatarColor ?? "").toString().trim();
+          if (ac) avatarColorCacheRef.current[uid] = ac;
         } catch {
           // ignore
         }
@@ -307,10 +316,10 @@ export default function FriendsScreen() {
 
     const map = new Map<string, Friend>();
     subFriends.forEach((f) => {
-      if (f.uid) map.set(f.uid, { uid: f.uid, username: f.username });
+      if (f.uid) map.set(f.uid, { uid: f.uid, username: f.username, displayName: f.displayName || displayNameCacheRef.current[f.uid], avatarColor: avatarColorCacheRef.current[f.uid] });
     });
     legacyFriends.forEach((f) => {
-      if (f.uid && !map.has(f.uid)) map.set(f.uid, { uid: f.uid, username: f.username });
+      if (f.uid && !map.has(f.uid)) map.set(f.uid, { uid: f.uid, username: f.username, displayName: f.displayName || displayNameCacheRef.current[f.uid], avatarColor: avatarColorCacheRef.current[f.uid] });
     });
 
     const otherUids: string[] = [];
@@ -319,7 +328,7 @@ export default function FriendsScreen() {
       if (!other) return;
       if (!map.has(other)) {
         const uname = nameCacheRef.current[other] || other;
-        map.set(other, { uid: other, username: uname });
+        map.set(other, { uid: other, username: uname, displayName: displayNameCacheRef.current[other], avatarColor: avatarColorCacheRef.current[other] });
         if (!nameCacheRef.current[other]) otherUids.push(other);
       }
     });
@@ -330,7 +339,9 @@ export default function FriendsScreen() {
           const m = new Map<string, Friend>();
           for (const f of Array.from(map.values())) {
             const u = f.uid ? nameCacheRef.current[f.uid] || f.username : f.username;
-            m.set(f.uid || f.username, { uid: f.uid, username: u });
+            const dn = f.uid ? displayNameCacheRef.current[f.uid] : undefined;
+            const ac = f.uid ? avatarColorCacheRef.current[f.uid] : undefined;
+            m.set(f.uid || f.username, { uid: f.uid, username: u, displayName: dn, avatarColor: ac });
           }
           return Array.from(m.values()).sort((a, b) => a.username.localeCompare(b.username));
         });
@@ -878,6 +889,7 @@ export default function FriendsScreen() {
               handleToggleNotify(item.uid, v);
             }}
             onPressName={item.username ? () => router.push(`/profile/${item.username}`) : undefined}
+            onDoubleTap={item.username ? () => router.push(`/profile/${item.username}`) : undefined}
           />
         )}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}

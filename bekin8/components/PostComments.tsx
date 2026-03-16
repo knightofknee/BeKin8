@@ -99,6 +99,7 @@ export default function PostComments({ post, onClose }: Props) {
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
   const [postAuthorName, setPostAuthorName] = useState<string>(post.authorUsername);
   const [authorCommentsEnabled, setAuthorCommentsEnabled] = useState<boolean | null>(null);
+  const [authorAvatarColor, setAuthorAvatarColor] = useState<string>('#2F6FED');
 
   useEffect(() => {
     let alive = true;
@@ -108,8 +109,8 @@ export default function PostComments({ post, onClose }: Props) {
       if (!alive) return;
       if (snap.exists()) {
         const data = snap.data() as any;
-        // commentsEnabled defaults to false in settings, so undefined means false
         setAuthorCommentsEnabled(data.commentsEnabled === true);
+        if (data.avatarColor) setAuthorAvatarColor(data.avatarColor);
       } else {
         setAuthorCommentsEnabled(false);
       }
@@ -287,7 +288,7 @@ export default function PostComments({ post, onClose }: Props) {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <View style={styles.avatar}>
+            <View style={[styles.avatar, { backgroundColor: authorAvatarColor }]}>
               <Text style={styles.avatarTxt}>{(postAuthorName?.[0] || 'F').toUpperCase()}</Text>
             </View>
             <View>
@@ -491,7 +492,7 @@ const styles = StyleSheet.create({
   headerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 },
   avatar: {
     width: 34, height: 34, borderRadius: 17,
-    backgroundColor: '#2F6FED', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
   },
   avatarTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   headerAuthor: { fontWeight: '800', color: '#0B1426', fontSize: 14 },

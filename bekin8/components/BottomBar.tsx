@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
+import { View, Text, Pressable, StyleSheet, Platform, Keyboard } from "react-native";
 import { usePathname, useRouter } from "expo-router";
 
 type TabKey = "home" | "feed" | "friends" | "create-post" | "settings";
@@ -27,6 +27,7 @@ export default function BottomBar() {
   }, [pathname]);
 
   const onNav = (href: `/${string}`) => {
+    Keyboard.dismiss();
     router.push(href);
   };
 

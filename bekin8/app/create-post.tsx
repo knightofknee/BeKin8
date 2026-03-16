@@ -1,5 +1,5 @@
 // app/create-post.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import {
   Keyboard,
   Animated,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
@@ -23,6 +24,8 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../providers/AuthProvider';
+
+const DRAFT_KEY = 'bekin8_post_draft';
 
 const BOTTOM_BAR_HEIGHT = 56;
 const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
@@ -99,6 +102,43 @@ export default function CreatePostScreen() {
     availableDay: string;
   } | null>(null);
   const [checkingLimit, setCheckingLimit] = useState(true);
+  const [draftLoaded, setDraftLoaded] = useState(false);
+
+  // ── Restore draft on mount ──────────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(DRAFT_KEY);
+        if (raw) {
+          const d = JSON.parse(raw);
+          if (d.title) setTitle(d.title);
+          if (d.link) setLink(d.link);
+          if (d.content) setContent(d.content);
+        }
+      } catch {}
+      setDraftLoaded(true);
+    })();
+  }, []);
+
+  // ── Persist draft on every change (debounced) ───────────────────────────
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!draftLoaded) return; // don't overwrite before we've loaded
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      const hasContent = title || link || content;
+      if (hasContent) {
+        AsyncStorage.setItem(DRAFT_KEY, JSON.stringify({ title, link, content })).catch(() => {});
+      } else {
+        AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
+      }
+    }, 400);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [title, link, content, draftLoaded]);
+
+  const clearDraft = useCallback(() => {
+    AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
+  }, []);
 
   const functions = getFunctions();
   const checkPostAllowed = httpsCallable<{ useBonus: boolean }, { allowed: boolean; reason?: string; availableDay?: string }>(
@@ -193,6 +233,10 @@ export default function CreatePostScreen() {
       timestamp: Date.now(),
       tags,
     });
+    clearDraft();
+    setTitle('');
+    setLink('');
+    setContent('');
     Alert.alert('Posted!', 'Your post is live.');
     router.push('/feed');
   };
@@ -249,7 +293,7 @@ export default function CreatePostScreen() {
   };
 
   // ── Loading states ────────────────────────────────────────────────────────
-  if (!profileLoaded || checkingLimit) {
+  if (!profileLoaded || checkingLimit || !draftLoaded) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={BLUE} />
@@ -380,8 +424,9 @@ export default function CreatePostScreen() {
             </View>
           </ScrollView>
 
-          <BottomBar />
         </KeyboardAvoidingView>
+
+        <BottomBar />
       </SafeAreaView>
 
       {/* iOS Done bar — one per field */}

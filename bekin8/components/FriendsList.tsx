@@ -1,5 +1,5 @@
 // components/FriendsList.tsx
-import React from "react";
+import React, { useRef } from "react";
 import { Pressable, StyleSheet, Text, View, Switch } from "react-native";
 import { colors } from "./ui/colors";
 import { Friend } from "./types";
@@ -8,26 +8,36 @@ type RowProps = {
   item: Friend;
   busy: boolean;
   onRemove: () => void;
-  // NEW: block handler
   onBlock: () => void;
-  // per-friend notification preference
   notify?: boolean;
   onToggleNotify?: (value: boolean) => void;
-  // profile navigation
   onPressName?: () => void;
+  onDoubleTap?: () => void;
 };
 
-function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName }: RowProps) {
+function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap }: RowProps) {
   const disabled = busy || !item.uid;
+  const lastTap = useRef<number>(0);
+
+  const handleRowPress = () => {
+    if (!onDoubleTap) return;
+    const now = Date.now();
+    if (now - lastTap.current < 300) {
+      lastTap.current = 0;
+      onDoubleTap();
+    } else {
+      lastTap.current = now;
+    }
+  };
 
   return (
-    <View style={styles.row}>
+    <Pressable onPress={handleRowPress} style={styles.row}>
       {/* Avatar — tappable to view profile */}
       <Pressable
         onPress={onPressName}
         disabled={!onPressName}
         hitSlop={4}
-        style={[styles.avatar, onPressName && styles.avatarTappable]}
+        style={[styles.avatar, item.avatarColor ? { backgroundColor: item.avatarColor } : null, onPressName && styles.avatarTappable]}
       >
         <Text style={{ color: "#fff", fontWeight: "800" }}>
           {item.username?.[0]?.toUpperCase() || "?"}
@@ -36,7 +46,14 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
 
       {/* Name */}
       <View style={{ flex: 1 }}>
-        <Text style={styles.rowTitle}>{item.username}</Text>
+        {item.displayName ? (
+          <>
+            <Text style={styles.rowTitle}>{item.displayName}</Text>
+            <Text style={styles.rowSubtitle}>{item.username}</Text>
+          </>
+        ) : (
+          <Text style={styles.rowTitle}>{item.username}</Text>
+        )}
       </View>
 
       {/* Notifications toggle (minimal, inline) */}
@@ -68,7 +85,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
       >
         <Text style={styles.iconTxt}>🗑️</Text>
       </Pressable>
-    </View>
+    </Pressable>
   );
 }
 
@@ -87,6 +104,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
   },
   rowTitle: { fontWeight: "700", color: colors.text },
+  rowSubtitle: { fontSize: 12, color: colors.subtle, marginTop: 1 },
   avatar: {
     width: 36,
     height: 36,

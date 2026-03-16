@@ -46,7 +46,7 @@ type Props = {
   onDeleted?: (groupId: string) => void;
 };
 
-type Friend = { uid: string; username: string };
+type Friend = { uid: string; username: string; displayName?: string; avatarColor?: string };
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
 
@@ -61,23 +61,25 @@ const cleanAndDedupeFriends = (arr: any[]): Friend[] => {
     const key = `uid:${uid}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ uid, username });
+    const displayName = (f?.displayName ?? "").toString().trim() || undefined;
+    out.push({ uid, username, displayName });
   }
   out.sort((a, b) => a.username.localeCompare(b.username));
   return out;
 };
 
 async function resolveUsernames(uids: string[]) {
-  const out: Record<string, string> = {};
+  const out: Record<string, { username: string; displayName?: string; avatarColor?: string }> = {};
   await Promise.all(
     uids.map(async (uid) => {
       try {
         const p = await getDoc(doc(db, "Profiles", uid));
         if (p.exists()) {
           const data: any = p.data();
-          const uname =
-            (data?.username || data?.displayName || "").toString().trim();
-          if (uname) out[uid] = uname;
+          const uname = (data?.username || "").toString().trim();
+          const dn = (data?.displayName || "").toString().trim();
+          const ac = (data?.avatarColor || "").toString().trim();
+          if (uname) out[uid] = { username: uname, displayName: dn || undefined, avatarColor: ac || undefined };
         }
       } catch {
         // ignore
@@ -102,8 +104,8 @@ export default function FriendGroupEditor({
   const [loadingFriends, setLoadingFriends] = useState(true);
   const [friends, setFriends] = useState<Friend[]>([]);
 
-  // live caches
-  const cacheRef = useRef<Record<string, string>>({}); // uid -> username
+  // live caches: uid -> { username, displayName, avatarColor }
+  const cacheRef = useRef<Record<string, { username: string; displayName?: string; avatarColor?: string }>>({});
 
   // keep local state in sync when opening with a different group
   useEffect(() => {
@@ -129,7 +131,9 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
       (snap) => {
         const arr = snap.docs.map((d) => d.data() as any);
         const cleaned = cleanAndDedupeFriends(arr);
-        cleaned.forEach((f) => (cacheRef.current[f.uid] = f.username));
+        cleaned.forEach((f) => {
+          cacheRef.current[f.uid] = { username: f.username, displayName: f.displayName };
+        });
         mergeAndSet();
       }
     );
@@ -139,7 +143,11 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
     const unsubLegacy = onSnapshot(doc(db, "Friends", meUid), (snap) => {
       const arr: any[] = (snap.exists() && (snap.data() as any)?.friends) || [];
       const cleaned = cleanAndDedupeFriends(arr);
-      cleaned.forEach((f) => (cacheRef.current[f.uid] = f.username));
+      cleaned.forEach((f) => {
+        if (!cacheRef.current[f.uid]) {
+          cacheRef.current[f.uid] = { username: f.username, displayName: f.displayName };
+        }
+      });
       mergeAndSet();
     });
     cleanups.push(unsubLegacy);
@@ -163,7 +171,9 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
         const missingNames = Array.from(others).filter((uid) => !cacheRef.current[uid]);
         if (missingNames.length) {
           const map = await resolveUsernames(missingNames);
-          Object.assign(cacheRef.current, map);
+          for (const [uid, info] of Object.entries(map)) {
+            cacheRef.current[uid] = info;
+          }
         }
         mergeAndSet();
       }
@@ -171,10 +181,11 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
     cleanups.push(unsubEdges);
 
     function mergeAndSet() {
-      // Build Friend[] from cacheRef
-      const all = Object.entries(cacheRef.current).map(([uid, username]) => ({
+      const all = Object.entries(cacheRef.current).map(([uid, info]) => ({
         uid,
-        username,
+        username: info.username,
+        displayName: info.displayName,
+        avatarColor: info.avatarColor,
       }));
       all.sort((a, b) => a.username.localeCompare(b.username));
       setFriends(all);
@@ -289,9 +300,16 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
         <View style={[styles.checkbox, checked && styles.checkboxOn]}>
           {checked ? <Text style={styles.checkboxTick}>✓</Text> : null}
         </View>
-        <Text style={styles.rowText} numberOfLines={1}>
-          {item.username}
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.rowText} numberOfLines={1}>
+            {item.displayName || item.username}
+          </Text>
+          {item.displayName ? (
+            <Text style={styles.rowSubText} numberOfLines={1}>
+              {item.username}
+            </Text>
+          ) : null}
+        </View>
       </Pressable>
     );
   };
@@ -439,7 +457,8 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
   },
   checkboxTick: { color: "#fff", fontWeight: "900", fontSize: 14 },
-  rowText: { flex: 1, fontWeight: "700", color: colors.text },
+  rowText: { fontWeight: "700", color: colors.text },
+  rowSubText: { fontSize: 12, color: colors.subtle, marginTop: 1 },
 
   btnRow: { flexDirection: "row", gap: 10, marginTop: 14 },
   btn: {
