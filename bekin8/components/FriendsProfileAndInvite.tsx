@@ -3,6 +3,7 @@ import React from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { colors } from "./ui/colors";
 import { MessageState } from "./types";
+import { useTheme } from "../providers/ThemeProvider";
 
 type Props = {
   currentUsername: string | null;
@@ -33,17 +34,18 @@ export default function FriendsProfileAndInvite({
   busySend,
   message,
 }: Props) {
+  const { colors } = useTheme();
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
       {/* Username */}
       {currentUsername ? (
         <>
-          <Text style={styles.label}>Your username</Text>
-          <Text style={styles.rowTitle}>{currentUsername}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>Your username</Text>
+          <Text style={[styles.rowTitle, { color: colors.text }]}>{currentUsername}</Text>
         </>
       ) : (
         <>
-          <Text style={styles.label}>Set your username</Text>
+          <Text style={[styles.label, { color: colors.text }]}>Set your username</Text>
           <View style={styles.inputRow}>
             <TextInput
               value={usernameInput}
@@ -52,14 +54,14 @@ export default function FriendsProfileAndInvite({
               placeholderTextColor={colors.subtle}
               autoCapitalize="none"
               autoCorrect={false}
-              style={styles.input}
+              style={[styles.input, { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
               returnKeyType="done"
               onSubmitEditing={onSaveUsername}
             />
             <Pressable
               disabled={busyUsername}
               onPress={onSaveUsername}
-              style={[styles.btn, { paddingHorizontal: 16, opacity: busyUsername ? 0.6 : 1 }]}
+              style={[styles.btn, { paddingHorizontal: 16, opacity: busyUsername ? 0.6 : 1, backgroundColor: colors.primary }]}
             >
               {busyUsername ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
             </Pressable>
@@ -69,9 +71,9 @@ export default function FriendsProfileAndInvite({
 
       {/* Add Friend */}
       <View style={[styles.cardInner, { marginTop: 14 }]}>
-        <Text style={styles.label}>Send a Friend Request (by username)</Text>
+        <Text style={[styles.label, { color: colors.text }]}>Send a Friend Request (by username)</Text>
         {!hasProfileUsername && (
-          <Text style={[styles.subtle, { marginBottom: 8 }]}>You need a username first.</Text>
+          <Text style={[styles.subtle, { marginBottom: 8, color: colors.subtle }]}>You need a username first.</Text>
         )}
         <View style={styles.inputRow}>
           <TextInput
@@ -80,7 +82,7 @@ export default function FriendsProfileAndInvite({
             placeholder="friend_username"
             placeholderTextColor={colors.subtle}
             autoCapitalize="none"
-            style={[styles.input, !hasProfileUsername && styles.inputDisabled]}
+            style={[styles.input, { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }, !hasProfileUsername && { backgroundColor: colors.skeleton }]}
             editable={hasProfileUsername}
             returnKeyType="done"
             onSubmitEditing={hasProfileUsername ? onSendRequest : undefined}
@@ -88,7 +90,7 @@ export default function FriendsProfileAndInvite({
           <Pressable
             disabled={busySend || !hasProfileUsername}
             onPress={onSendRequest}
-            style={[styles.btn, { paddingHorizontal: 16, opacity: busySend || !hasProfileUsername ? 0.5 : 1 }]}
+            style={[styles.btn, { paddingHorizontal: 16, opacity: busySend || !hasProfileUsername ? 0.5 : 1, backgroundColor: colors.primary }]}
           >
             {busySend ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Send</Text>}
           </Pressable>

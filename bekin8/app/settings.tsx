@@ -7,6 +7,7 @@ import { doc, onSnapshot, setDoc, serverTimestamp, deleteField } from "firebase/
 import * as Notifications from "expo-notifications";
 import BottomBar from "../components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
 import { syncPushTokenIfGranted } from "../lib/push";
 
 /** Returns true if notifications are (or become) granted. Shows OS prompt if needed. */
@@ -62,6 +63,7 @@ const colors = {
 };
 
 export default function SettingsScreen() {
+  const { colors: tc, isDark, toggleTheme } = useTheme();
   const { profile, profileLoaded, updateProfile } = useAuth();
   const [editingName, setEditingName] = useState(false);
   const [displayName, setDisplayName] = useState("");
@@ -78,6 +80,8 @@ export default function SettingsScreen() {
   const [postCommentNotifyBusy, setPostCommentNotifyBusy] = useState(false);
   const [commentOnCommentNotify, setCommentOnCommentNotify] = useState(false);
   const [commentOnCommentNotifyBusy, setCommentOnCommentNotifyBusy] = useState(false);
+  const [newPostNotify, setNewPostNotify] = useState(false);
+  const [newPostNotifyBusy, setNewPostNotifyBusy] = useState(false);
   const router = useRouter();
 
   // Seed local state from cached profile once available
@@ -101,6 +105,7 @@ export default function SettingsScreen() {
         const d = snap.data() as any;
         setPostCommentNotify(!!d?.postCommentNotify);
         setCommentOnCommentNotify(!!d?.commentOnCommentNotify);
+        setNewPostNotify(!!d?.newPostNotify);
       }
     });
     return () => { unsubUser(); unsubProfile(); };
@@ -189,6 +194,24 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleToggleNewPostNotify = async (val: boolean) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || newPostNotifyBusy) return;
+    if (val) {
+      const granted = await ensureNotifyPermission();
+      if (!granted) return;
+    }
+    setNewPostNotify(val);
+    setNewPostNotifyBusy(true);
+    try {
+      await setDoc(doc(db, "Profiles", uid), { newPostNotify: val, updatedAt: serverTimestamp() }, { merge: true });
+    } catch {
+      setNewPostNotify(!val);
+    } finally {
+      setNewPostNotifyBusy(false);
+    }
+  };
+
   const validateName = (val: string) => {
     const t = (val ?? "").trim();
     if (t.length === 0) { setNameError(null); return true; } // empty allowed -> fallback to username
@@ -223,55 +246,56 @@ export default function SettingsScreen() {
 
   if (!profileLoaded) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
-        <ActivityIndicator color={colors.primary} />
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: tc.bg }}>
+        <ActivityIndicator color={tc.primary} />
       </View>
     );
   }
 
   return (
     <>
-      <SafeAreaView style={s.safe} edges={["top", "left", "right"]}>
+      <SafeAreaView style={[s.safe, { backgroundColor: tc.bg }]} edges={["top", "left", "right"]}>
         {/* Header */}
-        <View style={s.header}>
+        <View style={[s.header, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
           <Pressable onPress={() => router.back()} hitSlop={8}>
-            <Text style={s.back}>{`← Back`}</Text>
+            <Text style={[s.back, { color: tc.primary }]}>{`← Back`}</Text>
           </Pressable>
-          <Text style={s.title}>Settings</Text>
+          <Text style={[s.title, { color: tc.text }]}>Settings</Text>
           <View style={{ width: 48 }} />
         </View>
 
         <View style={s.body}>
           {/* Profile */}
-          <Pressable style={[s.row, s.rowBetween]} onPress={startEditDisplayName}>
-            <Text style={s.link}>Edit Display Name</Text>
-            <Text style={s.subtle}>{currentDisplayName || "— uses username —"}</Text>
+          <Pressable style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]} onPress={startEditDisplayName}>
+            <Text style={[s.link, { color: tc.primary }]}>Edit Display Name</Text>
+            <Text style={[s.subtle, { color: tc.subtle }]}>{currentDisplayName || "— uses username —"}</Text>
           </Pressable>
 
           {/* Inline editor panel */}
           {editingName && (
             <View style={s.editor}>
-              <Text style={s.h2}>Edit Display Name</Text>
+              <Text style={[s.h2, { color: tc.text }]}>Edit Display Name</Text>
               <TextInput
-                style={s.input}
+                style={[s.input, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
                 placeholder="Your display name"
+                placeholderTextColor={tc.subtle}
                 value={displayName}
                 onChangeText={(t) => { setDisplayName(t); if (attemptedSave) validateName(t); }}
                 autoCapitalize="none"
                 autoCorrect={false}
                 maxLength={40}
               />
-              {attemptedSave && !!nameError && <Text style={s.err}>{nameError}</Text>}
+              {attemptedSave && !!nameError && <Text style={[s.err, { color: tc.error }]}>{nameError}</Text>}
               <View style={s.rowBtns}>
                 <Pressable
-                  style={[s.button, s.ghostBtn]}
+                  style={[s.button, s.ghostBtn, { borderColor: tc.border }]}
                   onPress={() => { setEditingName(false); setDisplayName(initialDisplayName); setNameError(null); }}
                   disabled={savingName}
                 >
-                  <Text style={s.ghostTxt}>Cancel</Text>
+                  <Text style={[s.ghostTxt, { color: tc.text }]}>Cancel</Text>
                 </Pressable>
                 <Pressable
-                  style={[s.button, nameError ? s.disabledBtn : s.primary]}
+                  style={[s.button, nameError ? s.disabledBtn : { backgroundColor: tc.primary }]}
                   onPress={saveDisplayName}
                   disabled={!!nameError || savingName}
                 >
@@ -282,61 +306,90 @@ export default function SettingsScreen() {
           )}
 
           {/* Allow comments on my posts */}
-          <View style={[s.row, s.rowBetween]}>
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1 }}>
-              <Text style={s.link}>Allow comments on my posts</Text>
-              <Text style={s.subtle}>Let friends comment on your posts</Text>
+              <Text style={[s.link, { color: tc.primary }]}>Allow comments on my posts</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Let friends comment on your posts</Text>
             </View>
             <Switch
               value={commentsEnabled}
               onValueChange={handleToggleComments}
               disabled={commentsBusy}
-              trackColor={{ false: colors.border, true: colors.primary }}
+              trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
             />
           </View>
 
           {/* Notify: comments on RSVP'd beacons */}
-          <View style={[s.row, s.rowBetween]}>
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={s.link}>RSVP beacon comment notifications</Text>
-              <Text style={s.subtle}>Get notified when someone comments on a beacon you've RSVP'd to</Text>
+              <Text style={[s.link, { color: tc.primary }]}>RSVP beacon comment notifications</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on a beacon you've RSVP'd to</Text>
             </View>
             <Switch
               value={commentNotify}
               onValueChange={handleToggleCommentNotify}
               disabled={commentNotifyBusy}
-              trackColor={{ false: colors.border, true: colors.primary }}
+              trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
             />
           </View>
 
           {/* Notify: comments on my own posts */}
-          <View style={[s.row, s.rowBetween]}>
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={s.link}>Post comment notifications</Text>
-              <Text style={s.subtle}>Get notified when someone comments on your post</Text>
+              <Text style={[s.link, { color: tc.primary }]}>Post comment notifications</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on your post</Text>
             </View>
             <Switch
               value={postCommentNotify}
               onValueChange={handleTogglePostCommentNotify}
               disabled={postCommentNotifyBusy}
-              trackColor={{ false: colors.border, true: colors.primary }}
+              trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
             />
           </View>
 
           {/* Notify: new comments on posts I've commented on */}
-          <View style={[s.row, s.rowBetween]}>
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={s.link}>Comments on comments</Text>
-              <Text style={s.subtle}>Get notified when someone comments on a post you've commented on</Text>
+              <Text style={[s.link, { color: tc.primary }]}>Comments on comments</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on a post you've commented on</Text>
             </View>
             <Switch
               value={commentOnCommentNotify}
               onValueChange={handleToggleCommentOnCommentNotify}
               disabled={commentOnCommentNotifyBusy}
-              trackColor={{ false: colors.border, true: colors.primary }}
+              trackColor={{ false: tc.border, true: tc.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          {/* Notify: new posts from friends with notifications on */}
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: tc.primary }]}>New post notifications</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when a friend who you have notifications turned on for posts</Text>
+            </View>
+            <Switch
+              value={newPostNotify}
+              onValueChange={handleToggleNewPostNotify}
+              disabled={newPostNotifyBusy}
+              trackColor={{ false: tc.border, true: tc.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          {/* Dark mode */}
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: tc.primary }]}>Dark mode</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Switch to a darker color scheme</Text>
+            </View>
+            <Switch
+              value={isDark}
+              onValueChange={toggleTheme}
+              trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
             />
           </View>
@@ -344,11 +397,11 @@ export default function SettingsScreen() {
           <View style={s.spacer} />
 
           <Pressable
-            style={[s.row, s.rowBetween]}
+            style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
             onPress={() => router.push("/advanced-settings")}
           >
-            <Text style={s.link}>Advanced Settings</Text>
-            <Text style={s.subtle}>{"→"}</Text>
+            <Text style={[s.link, { color: tc.primary }]}>Advanced Settings</Text>
+            <Text style={[s.subtle, { color: tc.subtle }]}>{"→"}</Text>
           </Pressable>
         </View>
       </SafeAreaView>

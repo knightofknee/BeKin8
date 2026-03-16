@@ -3,6 +3,7 @@ import React from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "./ui/colors";
 import { FriendRequest } from "./types";
+import { useTheme } from "../providers/ThemeProvider";
 
 type Props = {
   incoming: FriendRequest[];
@@ -21,29 +22,30 @@ export default function FriendRequestsSection({
   onReject,
   onCancel,
 }: Props) {
+  const { colors } = useTheme();
   return (
-    <View style={styles.card}>
-      <Text style={styles.sectionTitle}>Requests</Text>
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>Requests</Text>
       {incoming.length === 0 && outgoing.length === 0 ? (
-        <Text style={styles.subtle}>No active requests.</Text>
+        <Text style={[styles.subtle, { color: colors.subtle }]}>No active requests.</Text>
       ) : (
         <>
           {incoming.length > 0 && (
             <>
-              <Text style={[styles.subtle, { marginBottom: 8 }]}>Incoming</Text>
+              <Text style={[styles.subtle, { marginBottom: 8, color: colors.subtle }]}>Incoming</Text>
               <FlatList
                 data={incoming}
                 keyExtractor={(i) => `in_${i.id}`}
                 renderItem={({ item }) => (
-                  <View style={styles.row}>
-                    <View style={styles.avatar}>
+                  <View style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
                       <Text style={{ color: "#fff", fontWeight: "800" }}>
                         {(item.senderUsername?.[0] || "?").toUpperCase()}
                       </Text>
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.rowTitle}>{item.senderUsername || item.senderUid}</Text>
-                      <Text style={styles.subtle}>wants to be friends</Text>
+                      <Text style={[styles.rowTitle, { color: colors.text }]}>{item.senderUsername || item.senderUid}</Text>
+                      <Text style={[styles.subtle, { color: colors.subtle }]}>wants to be friends</Text>
                     </View>
                     <Pressable
                       onPress={() => onAccept(item)}
@@ -55,7 +57,7 @@ export default function FriendRequestsSection({
                     <Pressable
                       onPress={() => onReject(item)}
                       disabled={busy}
-                      style={[styles.smallBtn, { backgroundColor: colors.danger, opacity: busy ? 0.5 : 1 }]}
+                      style={[styles.smallBtn, { backgroundColor: colors.error, opacity: busy ? 0.5 : 1 }]}
                     >
                       <Text style={styles.smallBtnText}>Reject</Text>
                     </Pressable>
@@ -68,25 +70,25 @@ export default function FriendRequestsSection({
           )}
           {outgoing.length > 0 && (
             <>
-              <Text style={[styles.subtle, { marginTop: 12, marginBottom: 8 }]}>Outgoing</Text>
+              <Text style={[styles.subtle, { marginTop: 12, marginBottom: 8, color: colors.subtle }]}>Outgoing</Text>
               <FlatList
                 data={outgoing}
                 keyExtractor={(i) => `out_${i.id}`}
                 renderItem={({ item }) => (
-                  <View style={styles.row}>
-                    <View style={styles.avatar}>
+                  <View style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
                       <Text style={{ color: "#fff", fontWeight: "800" }}>
                         {(item.receiverUsername?.[0] || "?").toUpperCase()}
                       </Text>
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.rowTitle}>{item.receiverUsername || item.receiverUid}</Text>
-                      <Text style={styles.subtle}>pending…</Text>
+                      <Text style={[styles.rowTitle, { color: colors.text }]}>{item.receiverUsername || item.receiverUid}</Text>
+                      <Text style={[styles.subtle, { color: colors.subtle }]}>pending…</Text>
                     </View>
                     <Pressable
                       onPress={() => onCancel(item)}
                       disabled={busy}
-                      style={[styles.smallBtn, { backgroundColor: "#444", opacity: busy ? 0.5 : 1 }]}
+                      style={[styles.smallBtn, { backgroundColor: colors.subtle, opacity: busy ? 0.5 : 1 }]}
                     >
                       <Text style={styles.smallBtnText}>Cancel</Text>
                     </Pressable>

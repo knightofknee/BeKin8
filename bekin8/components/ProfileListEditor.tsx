@@ -21,6 +21,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
+import { useTheme } from "../providers/ThemeProvider";
 
 export type ListItem = { text: string; link?: string };
 
@@ -52,6 +53,7 @@ export default function ProfileListEditor({
   onSaved,
   onDeleted,
 }: Props) {
+  const { colors } = useTheme();
   const [title, setTitle] = useState("");
   const [items, setItems] = useState<ListItem[]>([{ text: "", link: "" }]);
   const [saving, setSaving] = useState(false);
@@ -140,20 +142,20 @@ export default function ProfileListEditor({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={styles.card}>
+      <View style={[styles.backdrop, { backgroundColor: colors.backdrop }]}>
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
           {/* Header */}
           <View style={styles.headerRow}>
-            <Text style={styles.title}>{list ? "Edit List" : "New List"}</Text>
+            <Text style={[styles.title, { color: colors.text }]}>{list ? "Edit List" : "New List"}</Text>
             <Pressable onPress={onClose} hitSlop={10}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={[styles.close, { color: colors.subtle }]}>✕</Text>
             </Pressable>
           </View>
 
           {/* Title */}
-          <Text style={styles.label}>Title</Text>
+          <Text style={[styles.label, { color: colors.text }]}>Title</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
             placeholder={placeholderTitle}
             value={title}
             onChangeText={setTitle}
@@ -162,7 +164,7 @@ export default function ProfileListEditor({
 
           {/* Items */}
           <View style={styles.itemsHeaderRow}>
-            <Text style={styles.label}>Items</Text>
+            <Text style={[styles.label, { color: colors.text }]}>Items</Text>
             {list?.id ? (
               <Pressable onPress={confirmDelete} hitSlop={10} style={styles.deleteBtn}>
                 <Text style={styles.deleteText}>Delete List</Text>
@@ -172,18 +174,20 @@ export default function ProfileListEditor({
 
           <ScrollView style={styles.itemsScroll} keyboardShouldPersistTaps="handled">
             {items.map((item, idx) => (
-              <View key={idx} style={styles.itemRow}>
+              <View key={idx} style={[styles.itemRow, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
                 <View style={{ flex: 1, gap: 6 }}>
                   <TextInput
-                    style={styles.input}
+                    style={[styles.input, { borderColor: colors.border, backgroundColor: colors.card, color: colors.text }]}
                     placeholder={placeholderText}
+                    placeholderTextColor={colors.subtle}
                     value={item.text}
                     onChangeText={(v) => updateItem(idx, "text", v)}
                     maxLength={200}
                   />
                   <TextInput
-                    style={[styles.input, styles.linkInput]}
+                    style={[styles.input, styles.linkInput, { borderColor: colors.border, backgroundColor: colors.card, color: colors.subtle }]}
                     placeholder={placeholderLink}
+                    placeholderTextColor={colors.subtle}
                     value={item.link ?? ""}
                     onChangeText={(v) => updateItem(idx, "link", v)}
                     autoCapitalize="none"
@@ -200,19 +204,19 @@ export default function ProfileListEditor({
             ))}
 
             <Pressable onPress={addItem} style={styles.addItemBtn}>
-              <Text style={styles.addItemTxt}>+ Add Item</Text>
+              <Text style={[styles.addItemTxt, { color: colors.primary }]}>+ Add Item</Text>
             </Pressable>
           </ScrollView>
 
           {/* Actions */}
           <View style={styles.btnRow}>
-            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost]}>
-              <Text style={styles.btnGhostText}>Cancel</Text>
+            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+              <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
             </Pressable>
             <Pressable
               onPress={handleSave}
               disabled={!canSave}
-              style={[styles.btn, styles.btnPrimary, !canSave && { opacity: 0.6 }]}
+              style={[styles.btn, styles.btnPrimary, { backgroundColor: colors.primary, borderColor: colors.primary }, !canSave && { opacity: 0.6 }]}
             >
               {saving ? (
                 <ActivityIndicator color="#fff" />

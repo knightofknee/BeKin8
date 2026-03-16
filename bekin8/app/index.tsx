@@ -28,21 +28,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { signInWithGoogle } from "../lib/googleAuth";
 import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
+import { useTheme } from "../providers/ThemeProvider";
 
-const colors = {
-  primary: "#2F6FED",
-  bg: "#F5F8FF",
-  card: "#FFFFFF",
-  text: "#111827",
-  subtle: "#6B7280",
-  border: "#E5E7EB",
-  error: "#B00020",
-};
-
-const TOP_OFFSET = 64; // consistent “reach-friendly” offset
+const TOP_OFFSET = 64; // consistent "reach-friendly" offset
 const BOTTOM_GAP = 28; // desired minimal space between keyboard and card
 
 export default function Index() {
+  const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -207,7 +199,7 @@ export default function Index() {
         style={{ flex: 1, backgroundColor: colors.bg }}
         behavior={undefined}
       >
-        <StatusBar barStyle="dark-content" />
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <SafeAreaView style={{ flex: 1 }}>
           <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
             <Animated.View
@@ -217,8 +209,8 @@ export default function Index() {
               ]}
             >
               {/* decorative soft circles */}
-              <View style={styles.blobA} />
-              <View style={styles.blobB} />
+              <View style={[styles.blobA, { backgroundColor: isDark ? "#1E2A4A" : "#e2ebff" }]} />
+              <View style={[styles.blobB, { backgroundColor: isDark ? "#1A2744" : "#d7e4ff" }]} />
 
               {/* header / logo */}
               <View style={styles.header}>
@@ -227,27 +219,31 @@ export default function Index() {
                   style={styles.logo}
                   resizeMode="contain"
                 />
-                <Text style={styles.title}>Welcome back</Text>
-                <Text style={styles.subtitle}>Sign in to BeKin</Text>
+                <Text style={[styles.title, { color: colors.text }]}>Welcome back</Text>
+                <Text style={[styles.subtitle, { color: colors.subtle }]}>Sign in to BeKin</Text>
               </View>
 
               {/* card */}
-              <View ref={cardRef} style={styles.card}>
+              <View ref={cardRef} style={[styles.card, { backgroundColor: colors.card }]}>
                 <View style={styles.topRow}>
                   <Text style={{ color: colors.subtle }}>New here?</Text>
-                  <Link href="/signup" style={styles.link}>
+                  <Link href="/signup" style={[styles.link, { color: colors.primary }]}>
                     Create an account
                   </Link>
                 </View>
 
-                {error ? <Text style={styles.error}>{error}</Text> : null}
+                {error ? <Text style={[styles.error, { color: colors.error }]}>{error}</Text> : null}
 
                 <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Email</Text>
+                  <Text style={[styles.label, { color: colors.text }]}>Email</Text>
                   <TextInput
                     style={[
                       styles.input,
-                      { borderColor: emailFocused ? colors.primary : colors.border },
+                      {
+                        borderColor: emailFocused ? colors.primary : colors.border,
+                        backgroundColor: colors.inputBg,
+                        color: colors.text,
+                      },
                     ]}
                     placeholder="you@example.com"
                     placeholderTextColor={colors.subtle}
@@ -268,16 +264,19 @@ export default function Index() {
                 </View>
 
                 <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Password</Text>
+                  <Text style={[styles.label, { color: colors.text }]}>Password</Text>
                   <View
                     style={[
                       styles.input,
                       styles.inputRow,
-                      { borderColor: pwFocused ? colors.primary : colors.border },
+                      {
+                        borderColor: pwFocused ? colors.primary : colors.border,
+                        backgroundColor: colors.inputBg,
+                      },
                     ]}
                   >
                     <TextInput
-                      style={{ flex: 1 }}
+                      style={{ flex: 1, color: colors.text }}
                       placeholder="••••••••"
                       placeholderTextColor={colors.subtle}
                       secureTextEntry={!showPassword}
@@ -292,7 +291,7 @@ export default function Index() {
                       onSubmitEditing={handleLogin}
                     />
                     <Pressable onPress={() => setShowPassword((s) => !s)} hitSlop={10}>
-                      <Text style={styles.togglePw}>{showPassword ? "Hide" : "Show"}</Text>
+                      <Text style={[styles.togglePw, { color: colors.primary }]}>{showPassword ? "Hide" : "Show"}</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -302,6 +301,7 @@ export default function Index() {
                   disabled={anyLoading}
                   style={({ pressed }) => [
                     styles.primaryBtn,
+                    { backgroundColor: colors.primary },
                     pressed && { opacity: 0.9 },
                     anyLoading && { opacity: 0.7 },
                   ]}
@@ -316,16 +316,16 @@ export default function Index() {
                 </Pressable>
 
                 <View style={{ alignItems: "center", marginTop: 10 }}>
-                  <Link href="/forgot-password" style={styles.link}>
+                  <Link href="/forgot-password" style={[styles.link, { color: colors.primary }]}>
                     Forgot password?
                   </Link>
                 </View>
 
                 {/* SSO divider */}
                 <View style={styles.dividerRow}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>or sign in with</Text>
-                  <View style={styles.dividerLine} />
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+                  <Text style={[styles.dividerText, { color: colors.subtle }]}>or sign in with</Text>
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
                 </View>
 
                 <View style={styles.ssoRow}>
@@ -334,6 +334,7 @@ export default function Index() {
                     disabled={anyLoading}
                     style={({ pressed }) => [
                       styles.googleBtn,
+                      { borderColor: colors.border, backgroundColor: colors.inputBg },
                       pressed && { opacity: 0.85 },
                       anyLoading && { opacity: 0.7 },
                     ]}
@@ -345,7 +346,7 @@ export default function Index() {
                     ) : (
                       <View style={styles.ssoBtnInner}>
                         <GoogleLogo size={22} />
-                        <Text style={styles.googleBtnText}>Google</Text>
+                        <Text style={[styles.googleBtnText, { color: colors.text }]}>Google</Text>
                       </View>
                     )}
                   </Pressable>
@@ -355,6 +356,7 @@ export default function Index() {
                     disabled={anyLoading}
                     style={({ pressed }) => [
                       styles.appleBtn,
+                      { backgroundColor: isDark ? "#FFFFFF" : "#000" },
                       pressed && { opacity: 0.85 },
                       anyLoading && { opacity: 0.7 },
                     ]}
@@ -362,11 +364,11 @@ export default function Index() {
                     accessibilityLabel="Sign in with Apple"
                   >
                     {appleLoading ? (
-                      <ActivityIndicator color="#FFF" />
+                      <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
                     ) : (
                       <View style={styles.ssoBtnInner}>
-                        <Ionicons name="logo-apple" size={22} color="#FFF" />
-                        <Text style={styles.appleBtnText}>Apple</Text>
+                        <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
+                        <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
                       </View>
                     )}
                   </Pressable>
@@ -375,8 +377,8 @@ export default function Index() {
             </Animated.View>
           </TouchableWithoutFeedback>
           {anyLoading && (
-            <View style={styles.blocker} pointerEvents="auto">
-              <ActivityIndicator size="large" />
+            <View style={[styles.blocker, { backgroundColor: isDark ? "rgba(15,17,23,0.98)" : "rgba(255,255,255,0.98)" }]} pointerEvents="auto">
+              <ActivityIndicator size="large" color={colors.primary} />
               <Text style={{ marginTop: 8, color: colors.subtle }}>
                 {googleLoading ? "Signing in with Google…" : appleLoading ? "Signing in with Apple…" : "Signing you in…"}
               </Text>
@@ -389,16 +391,13 @@ export default function Index() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
-
   container: { flex: 1, paddingHorizontal: 20 },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
-  title: { fontSize: 28, fontWeight: "800", color: colors.text },
-  subtitle: { marginTop: 6, fontSize: 16, color: colors.subtle },
+  title: { fontSize: 28, fontWeight: "800" },
+  subtitle: { marginTop: 6, fontSize: 16 },
 
   card: {
-    backgroundColor: colors.card,
     borderRadius: 16,
     padding: 18,
     shadowColor: "#000",
@@ -409,21 +408,18 @@ const styles = StyleSheet.create({
   },
 
   inputGroup: { marginBottom: 14 },
-  label: { fontWeight: "600", marginBottom: 8, color: colors.text },
+  label: { fontWeight: "600", marginBottom: 8 },
   input: {
     borderWidth: 1,
-    borderColor: colors.border,
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: "#FFF",
   },
   inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
 
-  togglePw: { fontWeight: "700", color: colors.primary },
+  togglePw: { fontWeight: "700" },
 
   primaryBtn: {
-    backgroundColor: colors.primary,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -433,7 +429,7 @@ const styles = StyleSheet.create({
 
   topRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginBottom: 14 },
 
-  link: { color: colors.primary, fontWeight: "700" },
+  link: { fontWeight: "700" },
 
   dividerRow: {
     flexDirection: "row",
@@ -444,11 +440,9 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: colors.border,
   },
   dividerText: {
     marginHorizontal: 12,
-    color: colors.subtle,
     fontSize: 14,
     fontWeight: "600",
   },
@@ -460,8 +454,6 @@ const styles = StyleSheet.create({
   googleBtn: {
     flex: 1,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: "#FFF",
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -469,7 +461,6 @@ const styles = StyleSheet.create({
   },
   appleBtn: {
     flex: 1,
-    backgroundColor: "#000",
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -483,16 +474,13 @@ const styles = StyleSheet.create({
   googleBtnText: {
     fontSize: 16,
     fontWeight: "700",
-    color: colors.text,
   },
   appleBtnText: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#FFF",
   },
 
   error: {
-    color: colors.error,
     textAlign: "center",
     marginBottom: 12,
     fontWeight: "600",
@@ -504,7 +492,6 @@ const styles = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: "#e2ebff",
     top: -60,
     right: -40,
   },
@@ -513,7 +500,6 @@ const styles = StyleSheet.create({
     width: 160,
     height: 160,
     borderRadius: 999,
-    backgroundColor: "#d7e4ff",
     bottom: -40,
     left: -30,
   },
@@ -523,7 +509,6 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: "rgba(255,255,255,0.98)",
     alignItems: "center",
     justifyContent: "center",
   },

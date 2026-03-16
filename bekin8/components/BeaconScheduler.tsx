@@ -23,6 +23,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
+import { useTheme } from "../providers/ThemeProvider";
 import KeyboardAware from "./KeyboardAware";
 
 type FriendGroup = {
@@ -42,6 +43,7 @@ type Props = {
 const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export default function BeaconScheduler({ beaconId, onSaved, initialDays, initialGroupIds }: Props) {
+  const { colors } = useTheme();
   const router = useRouter();
   const [selectedDays, setSelectedDays] = useState<string[]>(initialDays || []);
   const [friendGroups, setFriendGroups] = useState<FriendGroup[]>([]);
@@ -225,26 +227,26 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
           showsVerticalScrollIndicator={false}
         >
           {/* Day selector */}
-          <Text style={styles.label}>Day</Text>
+          <Text style={[styles.label, { color: colors.text }]}>Day</Text>
           <View style={styles.rowWrap}>
             {daysOfWeek.map((day) => {
               const selected = selectedDays.includes(day);
               return (
-                <Pressable key={day} onPress={() => toggleDay(day)} style={[styles.chip, selected && styles.chipActive]}>
-                  <Text style={[styles.chipText, selected && styles.chipTextActive]}>{day}</Text>
+                <Pressable key={day} onPress={() => toggleDay(day)} style={[styles.chip, { borderColor: colors.border, backgroundColor: colors.inputBg }, selected && [styles.chipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}>
+                  <Text style={[styles.chipText, { color: colors.text }, selected && styles.chipTextActive]}>{day}</Text>
                 </Pressable>
               );
             })}
           </View>
 
           {/* Friend groups selector */}
-          <Text style={[styles.label, { marginTop: 16 }]}>Friend Groups</Text>
+          <Text style={[styles.label, { marginTop: 16, color: colors.text }]}>Friend Groups</Text>
 
           {showEmptyHint ? (
-            <View style={styles.emptyHintBox}>
-              <Text style={styles.emptyHintText}>You don’t have any friend groups yet.</Text>
-              <Text style={[styles.emptyHintText, { marginTop: 2 }]}>Create groups from the Friends screen.</Text>
-              <Pressable onPress={() => router.push("/friends")} style={styles.hintBtn}>
+            <View style={[styles.emptyHintBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
+              <Text style={[styles.emptyHintText, { color: colors.subtle }]}>You don’t have any friend groups yet.</Text>
+              <Text style={[styles.emptyHintText, { marginTop: 2, color: colors.subtle }]}>Create groups from the Friends screen.</Text>
+              <Pressable onPress={() => router.push("/friends")} style={[styles.hintBtn, { backgroundColor: colors.primary }]}>
                 <Text style={styles.hintBtnText}>Open Friends</Text>
               </Pressable>
             </View>
@@ -256,16 +258,16 @@ export default function BeaconScheduler({ beaconId, onSaved, initialDays, initia
                   <Pressable
                     key={`${g.source}:${g.id}`}
                     onPress={() => toggleGroup(g.id)}
-                    style={[styles.chip, selected && styles.chipActive]}
+                    style={[styles.chip, { borderColor: colors.border, backgroundColor: colors.inputBg }, selected && [styles.chipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
                   >
-                    <Text style={[styles.chipText, selected && styles.chipTextActive]}>{g.name}</Text>
+                    <Text style={[styles.chipText, { color: colors.text }, selected && styles.chipTextActive]}>{g.name}</Text>
                   </Pressable>
                 );
               })}
             </View>
           )}
 
-          <Pressable onPress={saveBeacon} disabled={saving} style={[styles.saveBtn, saving && { opacity: 0.6 }]}>
+          <Pressable onPress={saveBeacon} disabled={saving} style={[styles.saveBtn, { backgroundColor: colors.primary }, saving && { opacity: 0.6 }]}>
             {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Beacon</Text>}
           </Pressable>
         </ScrollView>

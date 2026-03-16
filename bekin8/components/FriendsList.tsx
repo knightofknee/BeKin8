@@ -1,8 +1,9 @@
 // components/FriendsList.tsx
-import React, { useRef } from "react";
-import { Pressable, StyleSheet, Text, View, Switch } from "react-native";
+import React, { useRef, useCallback } from "react";
+import { Pressable, StyleSheet, Text, View, Switch, GestureResponderEvent } from "react-native";
 import { colors } from "./ui/colors";
 import { Friend } from "./types";
+import { useTheme } from "../providers/ThemeProvider";
 
 type RowProps = {
   item: Friend;
@@ -16,28 +17,28 @@ type RowProps = {
 };
 
 function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap }: RowProps) {
+  const { colors } = useTheme();
   const disabled = busy || !item.uid;
-  const lastTap = useRef<number>(0);
+  const lastTapRef = useRef(0);
 
-  const handleRowPress = () => {
-    if (!onDoubleTap) return;
+  const handleRowPress = useCallback(() => {
     const now = Date.now();
-    if (now - lastTap.current < 300) {
-      lastTap.current = 0;
-      onDoubleTap();
+    if (now - lastTapRef.current < 350) {
+      onDoubleTap?.();
+      lastTapRef.current = 0;
     } else {
-      lastTap.current = now;
+      lastTapRef.current = now;
     }
-  };
+  }, [onDoubleTap]);
 
   return (
-    <Pressable onPress={handleRowPress} style={styles.row}>
+    <Pressable onPress={handleRowPress} style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }]}>
       {/* Avatar — tappable to view profile */}
       <Pressable
         onPress={onPressName}
         disabled={!onPressName}
         hitSlop={4}
-        style={[styles.avatar, item.avatarColor ? { backgroundColor: item.avatarColor } : null, onPressName && styles.avatarTappable]}
+        style={[styles.avatar, { backgroundColor: item.profileColor || colors.primary }, onPressName && styles.avatarTappable]}
       >
         <Text style={{ color: "#fff", fontWeight: "800" }}>
           {item.username?.[0]?.toUpperCase() || "?"}
@@ -46,19 +47,12 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
 
       {/* Name */}
       <View style={{ flex: 1 }}>
-        {item.displayName ? (
-          <>
-            <Text style={styles.rowTitle}>{item.displayName}</Text>
-            <Text style={styles.rowSubtitle}>{item.username}</Text>
-          </>
-        ) : (
-          <Text style={styles.rowTitle}>{item.username}</Text>
-        )}
+        <Text style={[styles.rowTitle, { color: colors.text }]}>{item.username}</Text>
       </View>
 
       {/* Notifications toggle (minimal, inline) */}
       <View style={styles.notifyWrap}>
-        <Text style={styles.notifyLabel}>Notifications?</Text>
+        <Text style={[styles.notifyLabel, { color: colors.subtle }]}>Notifications?</Text>
         <Switch
           value={!!notify}
           onValueChange={(v) => onToggleNotify && onToggleNotify(v)}
@@ -71,7 +65,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
         disabled={disabled}
         onPress={onBlock}
         hitSlop={10}
-        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1 }]}
+        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
       >
         <Text style={styles.iconTxt}>⛔</Text>
       </Pressable>
@@ -81,7 +75,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
         disabled={disabled}
         onPress={onRemove}
         hitSlop={10}
-        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1 }]}
+        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
       >
         <Text style={styles.iconTxt}>🗑️</Text>
       </Pressable>
@@ -104,7 +98,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
   },
   rowTitle: { fontWeight: "700", color: colors.text },
-  rowSubtitle: { fontSize: 12, color: colors.subtle, marginTop: 1 },
   avatar: {
     width: 36,
     height: 36,

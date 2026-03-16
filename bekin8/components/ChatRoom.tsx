@@ -34,6 +34,7 @@ import {
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
+import { useTheme } from '../providers/ThemeProvider';
 
 type ChatMessage = {
   id: string;
@@ -94,6 +95,7 @@ async function resolveMyName(uid: string): Promise<string> {
 const CHAT_ACCESSORY_ID = 'chatroom-accessory';
 
 export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: ChatRoomProps) {
+  const { colors: tc } = useTheme();
   const me = auth.currentUser;
 
   const [loading, setLoading] = useState(true);
@@ -408,14 +410,14 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
 
   const ComposerRow = (
-    <View style={styles.inputRow}>
+    <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
       <TextInput
         value={text}
         onChangeText={setText}
         placeholder="Message"
-        placeholderTextColor="#9CA3AF"
+        placeholderTextColor={tc.subtle}
         editable
-        style={styles.input}
+        style={[styles.input, { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text }]}
         multiline
         onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
         inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
@@ -426,7 +428,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       <Pressable
         onPress={handleSend}
         disabled={!canSendMsg}
-        style={[styles.sendBtn, { opacity: canSendMsg ? 1 : 0.5 }]}
+        style={[styles.sendBtn, { opacity: canSendMsg ? 1 : 0.5, backgroundColor: tc.primary }]}
       >
         {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
       </Pressable>
@@ -435,12 +437,12 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
   const PanelBody = (
     <>
-      <View style={styles.slimHeader}>
+      <View style={[styles.slimHeader, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
         <View style={styles.headerLeft}>
-          <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
+          <Text style={[styles.headerTitle, { color: tc.text }]} numberOfLines={1} ellipsizeMode="tail">
             {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
           </Text>
-          {!!startLabel && <Text style={styles.headerDate}>{startLabel}</Text>}
+          {!!startLabel && <Text style={[styles.headerDate, { color: tc.subtle }]}>{startLabel}</Text>}
         </View>
 
         {iAmIn ? (
@@ -450,7 +452,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         ) : (
           <Pressable
             onPress={handleImIn}
-            style={({ pressed }) => [styles.imInChip, pressed && { opacity: 0.9 }]}
+            style={({ pressed }) => [styles.imInChip, { backgroundColor: tc.primary }, pressed && { opacity: 0.9 }]}
             hitSlop={8}
           >
             <Text style={styles.imInText}>I'm in</Text>
@@ -490,8 +492,8 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           renderItem={({ item }) => {
             if (item.type === 'system') {
               return (
-                <View style={styles.systemRow}>
-                  <Text style={styles.systemText}>{item.text}</Text>
+                <View style={[styles.systemRow, { backgroundColor: tc.inputBg }]}>
+                  <Text style={[styles.systemText, { color: tc.subtle }]}>{item.text}</Text>
                 </View>
               );
             }
@@ -508,12 +510,12 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
                     accessibilityRole="button"
                     accessibilityLabel="Message options"
                   >
-                    <Text style={styles.dots}>⋯</Text>
+                    <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
                   </Pressable>
                 )}
 
-                <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-                  <Text style={styles.msgMeta} numberOfLines={1} ellipsizeMode="tail">
+                <View style={[styles.bubble, mine ? [styles.bubbleMine, { backgroundColor: tc.bubbleMine, borderColor: tc.bubbleMineBorder }] : [styles.bubbleTheirs, { backgroundColor: tc.bubbleTheirs, borderColor: tc.bubbleTheirsBorder }]]}>
+                  <Text style={[styles.msgMeta, { color: tc.subtle }]} numberOfLines={1} ellipsizeMode="tail">
                     {(item.authorName || (mine ? 'You' : 'Friend'))}
                     {' • '}
                     {(() => {
@@ -525,7 +527,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
                       return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
                     })()}
                   </Text>
-                  <Text style={styles.msgText}>{item.text}</Text>
+                  <Text style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
                 </View>
 
                 {mine && (
@@ -536,7 +538,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
                     accessibilityRole="button"
                     accessibilityLabel="Message options"
                   >
-                    <Text style={styles.dots}>⋯</Text>
+                    <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
                   </Pressable>
                 )}
               </View>
@@ -553,30 +555,30 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         animationType="fade"
         onRequestClose={() => setMenuFor(null)}
       >
-        <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
-          <View style={styles.menuSheet}>
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: tc.backdrop }]} onPress={() => setMenuFor(null)}>
+          <View style={[styles.menuSheet, { backgroundColor: tc.card }]}>
             <Pressable
               style={styles.menuItem}
               onPress={() => { if (menuFor) handleReport(menuFor); }}
             >
-              <Text style={styles.menuText}>Report</Text>
+              <Text style={[styles.menuText, { color: tc.text }]}>Report</Text>
             </Pressable>
 
             {menuFor && me && menuFor.authorUid === me.uid ? (
               <>
-                <View style={styles.menuDivider} />
+                <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
                 <Pressable
                   style={styles.menuItem}
                   onPress={() => { if (menuFor) handleDelete(menuFor); }}
                 >
-                  <Text style={[styles.menuText, styles.menuTextDestructive]}>Delete message</Text>
+                  <Text style={[styles.menuText, styles.menuTextDestructive, { color: tc.danger }]}>Delete message</Text>
                 </Pressable>
               </>
             ) : null}
 
-            <View style={styles.menuDivider} />
+            <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
             <Pressable style={styles.menuItem} onPress={() => setMenuFor(null)}>
-              <Text style={styles.menuText}>Cancel</Text>
+              <Text style={[styles.menuText, { color: tc.text }]}>Cancel</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -590,12 +592,12 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   if (onClose) {
     return (
       <>
-        <View style={styles.modalShim}>
+        <View style={[styles.modalShim, { backgroundColor: tc.backdrop }]}>
           {/* Backdrop tap closes */}
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-          <View ref={containerRef} onLayout={onContainerLayout} style={[styles.cardWrap, translated]}>
-            <View style={[styles.wrap, { height: maxHeight }, style]}>{PanelBody}</View>
+          <View ref={containerRef} onLayout={onContainerLayout} style={[styles.cardWrap, { backgroundColor: tc.card }, translated]}>
+            <View style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
           </View>
         </View>
       </>
@@ -604,7 +606,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
   if (loading) {
     return (
-      <View style={[styles.wrap, { height: maxHeight }]}>
+      <View style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }]}>
         <ActivityIndicator />
       </View>
     );
@@ -615,7 +617,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
       <View
         ref={containerRef}
         onLayout={onContainerLayout}
-        style={[styles.wrap, { height: maxHeight }, style, translated]}
+        style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style, translated]}
       >
         {PanelBody}
       </View>

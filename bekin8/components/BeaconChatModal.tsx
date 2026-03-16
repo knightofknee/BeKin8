@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   Pressable,
 } from 'react-native';
+import { useTheme } from '../providers/ThemeProvider';
 import { auth, db } from '../firebase.config';
 import {
   addDoc,
@@ -53,6 +54,7 @@ export default function BeaconChatModal({
   beacon?: Beacon;
   onClose: () => void;
 }) {
+  const { colors: tc } = useTheme();
   const [loadingChat, setLoadingChat] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -193,26 +195,26 @@ export default function BeaconChatModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+      <View style={[styles.modalBackdrop, { backgroundColor: tc.backdrop }]}>
+        <View style={[styles.modalCard, { backgroundColor: tc.card }]}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>
+            <Text style={[styles.modalTitle, { color: tc.text }]}>
               {isToday ? '🔥 Today' : '🗓 Upcoming'} — {beacon.displayName}
             </Text>
             <Pressable onPress={onClose}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={[styles.close, { color: tc.subtle }]}>✕</Text>
             </Pressable>
           </View>
 
-          <Text style={styles.modalMeta}>
+          <Text style={[styles.modalMeta, { color: tc.subtle }]}>
             {beacon.startAt.toDate().toLocaleDateString()} • clears at{' '}
             {beacon.expiresAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
-          <Text style={styles.modalMessage}>"{beacon.message || 'Beacon lit — who’s in?'}"</Text>
+          <Text style={[styles.modalMessage, { color: tc.text }]}>"{beacon.message || 'Beacon lit — who’s in?'}"</Text>
 
-          <View style={styles.hr} />
+          <View style={[styles.hr, { backgroundColor: tc.border }]} />
 
-          <Text style={styles.chatHeader}>Chat (auto-clears when the beacon expires)</Text>
+          <Text style={[styles.chatHeader, { color: tc.text }]}>Chat (auto-clears when the beacon expires)</Text>
 
           {loadingChat ? (
             <View style={styles.center}>
@@ -224,10 +226,10 @@ export default function BeaconChatModal({
               keyExtractor={(m) => m.id}
               contentContainerStyle={{ paddingVertical: 6 }}
               renderItem={({ item }) => (
-                <View style={styles.msgBubble}>
-                  <Text style={styles.msgSender}>{displayLabelFor(item.senderId, item.senderName)}</Text>
-                  <Text style={styles.msgText}>{item.text}</Text>
-                  <Text style={styles.msgTime}>
+                <View style={[styles.msgBubble, { borderColor: tc.border, backgroundColor: tc.inputBg }]}>
+                  <Text style={[styles.msgSender, { color: tc.text }]}>{displayLabelFor(item.senderId, item.senderName)}</Text>
+                  <Text style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
+                  <Text style={[styles.msgTime, { color: tc.subtle }]}>
                     {item.createdAt?.toDate
                       ? item.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                       : '…'}
@@ -239,14 +241,15 @@ export default function BeaconChatModal({
 
           <View style={styles.chatInputRow}>
             <TextInput
-              style={styles.chatInput}
+              style={[styles.chatInput, { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text }]}
               placeholder="Type a message…"
+              placeholderTextColor={tc.subtle}
               value={chatInput}
               onChangeText={setChatInput}
               onSubmitEditing={sendChat}
               returnKeyType="send"
             />
-            <TouchableOpacity style={styles.sendBtn} onPress={sendChat}>
+            <TouchableOpacity style={[styles.sendBtn, { backgroundColor: tc.primary }]} onPress={sendChat}>
               <Text style={styles.sendBtnText}>Send</Text>
             </TouchableOpacity>
           </View>

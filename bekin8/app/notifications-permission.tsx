@@ -4,17 +4,10 @@ import * as Notifications from "expo-notifications";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { ensurePushPermissionsAndToken } from "../lib/push";
-
-const colors = {
-  primary: "#2F6FED",
-  text: "#111827",
-  subtle: "#6B7280",
-  bg: "#F5F8FF",
-  card: "#FFFFFF",
-  border: "#E5E7EB",
-};
+import { useTheme } from "../providers/ThemeProvider";
 
 export default function NotificationsPermission() {
+  const { colors } = useTheme();
   const [busy, setBusy] = useState(false);
 
   const request = async () => {
@@ -34,27 +27,27 @@ export default function NotificationsPermission() {
   };
 
   return (
-    <View style={s.wrap}>
-      <Text style={s.h1}>Turn on notifications?</Text>
-      <Text style={s.p}>
+    <View style={[s.wrap, { backgroundColor: colors.bg }]}>
+      <Text style={[s.h1, { color: colors.text }]}>Turn on notifications?</Text>
+      <Text style={[s.p, { color: colors.subtle }]}>
         We use notifications to let you know when friends light beacons, interact with your posts, or send requests.
         You can turn this off anytime in system settings.
       </Text>
-      <Pressable style={s.btn} onPress={request} disabled={busy}>
+      <Pressable style={[s.btn, { backgroundColor: colors.primary }]} onPress={request} disabled={busy}>
         {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Allow notifications</Text>}
       </Pressable>
       <Pressable onPress={() => Alert.alert("Skipped", "You can enable them later.")}>
-        <Text style={s.skip}>Not now</Text>
+        <Text style={[s.skip, { color: colors.subtle }]}>Not now</Text>
       </Pressable>
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  wrap:{ flex:1, padding:16, backgroundColor: colors.bg, justifyContent:"center" },
-  h1:{ fontSize:22, fontWeight:"800", marginBottom:12, color: colors.text },
-  p:{ fontSize:16, lineHeight:22, marginBottom:16, color: colors.subtle },
-  btn:{ backgroundColor: colors.primary, padding:14, borderRadius:12, alignItems:"center" },
-  btnText:{ color:"#fff", fontSize:16, fontWeight:"800" },
-  skip:{ marginTop:12, color: colors.subtle, textAlign:"center" }
+  wrap: { flex: 1, padding: 16, justifyContent: "center" },
+  h1: { fontSize: 22, fontWeight: "800", marginBottom: 12 },
+  p: { fontSize: 16, lineHeight: 22, marginBottom: 16 },
+  btn: { padding: 14, borderRadius: 12, alignItems: "center" },
+  btnText: { color: "#fff", fontSize: 16, fontWeight: "800" },
+  skip: { marginTop: 12, textAlign: "center" },
 });

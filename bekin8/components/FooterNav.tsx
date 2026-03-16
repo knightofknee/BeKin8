@@ -1,9 +1,11 @@
 import React from 'react';
 import { View, Button, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useTheme } from '../providers/ThemeProvider';
 
 export default function FooterNav() {
   const router = useRouter();
+  const { colors } = useTheme();
 
   return (
     <View style={styles.wrap}>

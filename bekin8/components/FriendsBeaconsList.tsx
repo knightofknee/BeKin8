@@ -1,6 +1,7 @@
 // components/FriendsBeaconsList.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import { useTheme } from '../providers/ThemeProvider';
 import { auth, db } from '../firebase.config';
 import {
   collection,
@@ -87,6 +88,7 @@ async function fetchProfileNames(uids: string[]): Promise<Record<string, string>
 }
 
 export default function FriendsBeaconsList({ onSelect }: Props) {
+  const { colors: tc } = useTheme();
   const meUid = auth.currentUser?.uid || null;
 
   // local caches/state for list
@@ -432,17 +434,17 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
           pressed && { opacity: 0.85 },
         ]}
       >
-        <View style={styles.avatar}>
+        <View style={[styles.avatar, { backgroundColor: tc.primary }]}>
           <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.beaconOwner} numberOfLines={1}>
+          <Text style={[styles.beaconOwner, { color: tc.text }]} numberOfLines={1}>
             {ownerLabel}
           </Text>
-          <Text style={styles.beaconWhen} numberOfLines={1}>
+          <Text style={[styles.beaconWhen, { color: tc.subtle }]} numberOfLines={1}>
             {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
           </Text>
-          <Text style={styles.beaconMsg} numberOfLines={2}>
+          <Text style={[styles.beaconMsg, { color: tc.text }]} numberOfLines={2}>
             {beacon.message}
           </Text>
         </View>
@@ -482,7 +484,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       {/* Hide ALL copy until ready */}
       {!uiReady ? null : beacons.length > 0 ? (
         <>
-          <Text style={styles.friendActiveHeader} onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}>
+          <Text style={[styles.friendActiveHeader, { color: tc.text }]} onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}>
             {beacons.length} beacon{beacons.length !== 1 ? 's' : ''} from friends
           </Text>
 
@@ -516,7 +518,7 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         </>
       ) : (
         emptyReady ? (
-          <Text style={styles.friendInactive}>No friend beacons lit</Text>
+          <Text style={[styles.friendInactive, { color: tc.subtle }]}>No friend beacons lit</Text>
         ) : null
       )}
     </View>

@@ -1,5 +1,5 @@
 // components/types.ts
-export type Friend = { uid?: string; username: string; displayName?: string; avatarColor?: string };
+export type Friend = { uid?: string; username: string; profileColor?: string };
 
 export type FriendRequest = {
   id: string;

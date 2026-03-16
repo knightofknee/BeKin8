@@ -420,6 +420,12 @@ async function wantsCommentOnCommentNotify(uid: string): Promise<boolean> {
   return snap.exists ? !!(snap.data() as any)?.commentOnCommentNotify : false;
 }
 
+/** New-post notify: Profiles/{uid}.newPostNotify */
+async function wantsNewPostNotify(uid: string): Promise<boolean> {
+  const snap = await db.collection('Profiles').doc(uid).get();
+  return snap.exists ? !!(snap.data() as any)?.newPostNotify : false;
+}
+
 /** Check if user has silenced notifications for a specific post. */
 async function hasSilencedPost(uid: string, postId: string): Promise<boolean> {
   const snap = await db.collection('users').doc(uid).collection('silencedPosts').doc(postId).get();
@@ -634,6 +640,84 @@ export const onPostCommentNotify = onDocumentCreated(
     }
   }
 );
+
+// ===== 6) New post notifications =====
+// Notify friends who have notifications turned on for the post author.
+
+export const onPostCreatedNotify = onDocumentCreated('Posts/{postId}', async (event) => {
+  const postData = (event.data?.data() as any) ?? undefined;
+  if (!postData) return;
+
+  const authorUid: string | undefined = postData.author || postData.authorUid;
+  if (!authorUid) return;
+
+  const postId = event.params.postId as string;
+
+  // Get all friends, then filter to those who opted in for this author's notifications
+  const allFriends = await friendUidsOf(authorUid);
+  if (allFriends.length === 0) return;
+
+  // Filter: must have global newPostNotify ON *and* per-friend notifications ON for this author
+  const recipients: string[] = [];
+  await Promise.all(
+    allFriends.map(async (uid) => {
+      const [wantsGlobal, wantsFriend] = await Promise.all([
+        wantsNewPostNotify(uid),
+        recipientWantsNotify(uid, authorUid),
+      ]);
+      if (wantsGlobal && wantsFriend) recipients.push(uid);
+    })
+  );
+
+  if (recipients.length === 0) return;
+
+  // Resolve author display name
+  let authorName = '';
+  try {
+    const profSnap = await db.collection('Profiles').doc(authorUid).get();
+    if (profSnap.exists) {
+      const dn = (profSnap.data() as any)?.displayName;
+      if (typeof dn === 'string' && dn.trim()) authorName = dn.trim();
+    }
+  } catch {}
+  if (!authorName) authorName = 'A friend';
+
+  const title = `${authorName} shared a new post`;
+  const content = (postData.content || '').toString().slice(0, 200);
+  const body = content || 'Check it out';
+
+  logger.info('postCreatedNotify fanOut', {
+    postId,
+    authorUid,
+    recipientCount: recipients.length,
+  });
+
+  for (const recipientUid of recipients) {
+    const tokens = await getAllExpoTokens(recipientUid);
+    if (tokens.length === 0) continue;
+
+    for (const token of tokens) {
+      try {
+        const tickets = await expo.sendPushNotificationsAsync([{
+          to: token,
+          title,
+          body,
+          sound: 'default',
+          priority: 'high',
+          data: { type: 'new_post', postId, authorUid },
+        }]);
+        await saveTickets(tickets, {
+          subscriberUid: recipientUid,
+          friendUid: authorUid,
+          token,
+          beaconId: postId, // reusing field for postId
+        });
+      } catch (err) {
+        logger.error('Post created notify send error', { recipientUid, authorUid, postId, err });
+      }
+    }
+  }
+});
 
 // Keep callable exports (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';

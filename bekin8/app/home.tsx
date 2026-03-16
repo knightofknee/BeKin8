@@ -39,6 +39,7 @@ import BottomBar from '@/components/BottomBar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted } from '../lib/push';
 import { useAuth } from '../providers/AuthProvider';
+import { useTheme } from '../providers/ThemeProvider';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -83,6 +84,7 @@ type FriendGroup = {
 export default function HomeScreen() {
   const router = useRouter();
   const { profile } = useAuth();
+  const { colors } = useTheme();
 
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
@@ -566,8 +568,8 @@ export default function HomeScreen() {
   // Loading baseline
   if (isLit === null) {
     return (
-      <View style={styles.controls}>
-        <Text style={styles.status}>Checking beacon status…</Text>
+      <View style={[styles.controls, { backgroundColor: colors.bg }]}>
+        <Text style={[styles.status, { color: colors.subtle }]}>Checking beacon status…</Text>
       </View>
     );
   }
@@ -579,13 +581,13 @@ export default function HomeScreen() {
 
   return (
     <>
-      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
         <View style={styles.page}>
           <View style={styles.beaconsWrap}>
             <FriendsBeaconsList onSelect={setSelectedBeacon} />
           </View>
 
-          <View style={styles.controls}>
+          <View style={[styles.controls, { backgroundColor: colors.bg }]}>
             <View style={styles.myBeaconColumn}>
               <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
                 {isLit ? (
@@ -603,54 +605,54 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   onPress={() => setSelectedBeacon(myActiveBeacon)}
                   activeOpacity={0.8}
-                  style={styles.myChatBtn}
+                  style={[styles.myChatBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
                 >
-                  <Text style={styles.myChatBtnTxt}>Open my beacon details</Text>
+                  <Text style={[styles.myChatBtnTxt, { color: colors.text }]}>Open my beacon details</Text>
                 </TouchableOpacity>
               ) : (
-                <Text style={styles.logHint}>Tap the logs to light your Beacon</Text>
+                <Text style={[styles.logHint, { color: colors.subtle }]}>Tap the logs to light your Beacon</Text>
               )}
             </View>
 
             {isLit && myActiveBeacon ? (
-              <Text style={styles.statusActive}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+              <Text style={[styles.statusActive, { color: colors.success }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
             ) : (
-              <Text style={[styles.statusActive, { opacity: 0 }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
+              <Text style={[styles.statusActive, { opacity: 0, color: colors.success }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
             )}
 
             <Pressable
               onPress={openOptions}
               hitSlop={8}
-              style={({ pressed }) => [styles.optionsCta, pressed && styles.optionsCtaPressed]}
+              style={({ pressed }) => [styles.optionsCta, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.optionsCtaPressed]}
               android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
             >
               <View style={styles.optionsCtaIconWrap}>
                 <Text style={styles.optionsCtaIcon}>🗓️</Text>
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.optionsCtaTitle}>Beacon options</Text>
-                <Text style={styles.optionsCtaSubtitle}>Pick a day • choose friends • add a note</Text>
+                <Text style={[styles.optionsCtaTitle, { color: colors.text }]}>Beacon options</Text>
+                <Text style={[styles.optionsCtaSubtitle, { color: colors.subtle }]}>Pick a day • choose friends • add a note</Text>
               </View>
-              <Text style={styles.optionsCtaChevron}>›</Text>
+              <Text style={[styles.optionsCtaChevron, { color: colors.primary }]}>›</Text>
             </Pressable>
 
-            <Text style={styles.status}>Your beacon is set for {scheduledLabel}</Text>
+            <Text style={[styles.status, { color: colors.subtle }]}>Your beacon is set for {scheduledLabel}</Text>
           </View>
         </View>
 
         {/* Options Modal */}
         <Modal visible={optionsOpen} animationType="slide" transparent>
-          <View style={styles.modalBackdrop}>
+          <View style={[styles.modalBackdrop, { backgroundColor: colors.backdrop }]}>
             <KeyboardAvoidingView
               behavior={Platform.OS === 'ios' ? 'position' : 'height'}
               keyboardVerticalOffset={0}
               style={{ width: '100%' }}
             >
-              <View style={styles.modalCard}>
+              <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
                 <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Schedule / Edit Beacon</Text>
+                  <Text style={[styles.modalTitle, { color: colors.text }]}>Schedule / Edit Beacon</Text>
                   <Pressable onPress={() => setOptionsOpen(false)}>
-                    <Text style={styles.close}>✕</Text>
+                    <Text style={[styles.close, { color: colors.text }]}>✕</Text>
                   </Pressable>
                 </View>
 
@@ -660,15 +662,15 @@ export default function HomeScreen() {
                   showsVerticalScrollIndicator={false}
                 >
                   {/* Day */}
-                  <Text style={styles.modalLabel}>Day</Text>
+                  <Text style={[styles.modalLabel, { color: colors.text }]}>Day</Text>
                   <View style={styles.daysWrap}>
                     {next7Days.map((d) => (
                       <Pressable
                         key={d.offset}
                         onPress={() => setDayOffset(d.offset)}
-                        style={[styles.dayChip, d.offset === dayOffset && styles.dayChipActive]}
+                        style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, d.offset === dayOffset && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
                       >
-                        <Text style={[styles.dayChipText, d.offset === dayOffset && styles.dayChipTextActive]}>
+                        <Text style={[styles.dayChipText, { color: colors.text }, d.offset === dayOffset && styles.dayChipTextActive]}>
                           {d.label}
                         </Text>
                       </Pressable>
@@ -676,7 +678,7 @@ export default function HomeScreen() {
                   </View>
 
                   {/* Friend Groups */}
-                  <Text style={[styles.modalLabel, { marginTop: 12 }]}>
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>
                     Friend Groups (if none selected, all friends can see)
                   </Text>
                   {loadingGroups ? (
@@ -695,24 +697,25 @@ export default function HomeScreen() {
                                 selected ? prev.filter((x) => x !== g.id) : [...prev, g.id]
                               )
                             }
-                            style={[styles.dayChip, selected && styles.dayChipActive]}
+                            style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, selected && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
                           >
-                            <Text style={[styles.dayChipText, selected && styles.dayChipTextActive]}>{g.name}</Text>
+                            <Text style={[styles.dayChipText, { color: colors.text }, selected && styles.dayChipTextActive]}>{g.name}</Text>
                           </Pressable>
                         );
                       })}
                     </View>
                   ) : (
-                    <Text style={{ color: '#667085', marginBottom: 6 }}>
+                    <Text style={{ color: colors.subtle, marginBottom: 6 }}>
                       No groups yet — create some in Friends.
                     </Text>
                   )}
 
                   {/* Message */}
-                  <Text style={[styles.modalLabel, { marginTop: 12 }]}>Message</Text>
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Message</Text>
                   <TextInput
-                    style={styles.msgInput}
+                    style={[styles.msgInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
                     placeholder={DEFAULT_BEACON_MESSAGE}
+                    placeholderTextColor={colors.subtle}
                     value={message}
                     onChangeText={setMessage}
                     maxLength={140}
@@ -721,13 +724,13 @@ export default function HomeScreen() {
                     returnKeyType="done"
                     blurOnSubmit={false}
                   />
-                  <Text style={styles.msgHint}>140 chars • defaults if left blank</Text>
+                  <Text style={[styles.msgHint, { color: colors.subtle }]}>140 chars • defaults if left blank</Text>
 
                   <View style={styles.modalBtnRow}>
-                    <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setOptionsOpen(false)}>
-                      <Text style={styles.btnGhostText}>Cancel</Text>
+                    <TouchableOpacity style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]} onPress={() => setOptionsOpen(false)}>
+                      <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={saveBeaconOptions}>
+                    <TouchableOpacity style={[styles.btn, styles.btnPrimary, { backgroundColor: colors.primary, borderColor: colors.primary }]} onPress={saveBeaconOptions}>
                       <Text style={styles.btnPrimaryText}>Save</Text>
                     </TouchableOpacity>
                   </View>
@@ -736,11 +739,11 @@ export default function HomeScreen() {
             </KeyboardAvoidingView>
             {Platform.OS === 'ios' && (
               <InputAccessoryView nativeID={MSG_ACCESSORY_ID}>
-                <View style={{ borderTopWidth: 1, borderTopColor: '#E5E7EB', backgroundColor: '#fff' }}>
+                <View style={{ borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.card }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', padding: 8 }}>
                     <View style={{ flex: 1 }} />
                     <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
-                      <Text style={{ fontWeight: '700', color: '#0B1426' }}>Done</Text>
+                      <Text style={{ fontWeight: '700', color: colors.text }}>Done</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -756,12 +759,12 @@ export default function HomeScreen() {
           transparent
           onRequestClose={() => setSelectedBeacon(null)}
         >
-          <View style={styles.modalBackdropCenter}>
+          <View style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop }]}>
             <Pressable style={StyleSheet.absoluteFill} onPress={() => setSelectedBeacon(null)} />
-            <View style={styles.detailCard} pointerEvents="box-none">
+            <View style={[styles.detailCard, { backgroundColor: colors.card }]} pointerEvents="box-none">
               <View style={styles.modalHeader}>
                 <Pressable onPress={() => setSelectedBeacon(null)}>
-                  <Text style={styles.close}>✕</Text>
+                  <Text style={[styles.close, { color: colors.text }]}>✕</Text>
                 </Pressable>
               </View>
 

@@ -37,6 +37,7 @@ import FriendsList from "@/components/FriendsList";
 import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEditor";
 import BottomBar from "@/components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
 
 import * as Notifications from "expo-notifications";
 
@@ -53,6 +54,7 @@ const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBa
 
 export default function FriendsScreen() {
   const { user, initialized, profile, profileLoaded } = useAuth();
+  const { colors: tc } = useTheme();
   const [notifyByUid, setNotifyByUid] = useState<Record<string, boolean>>({});
   const router = useRouter();
 
@@ -85,10 +87,8 @@ export default function FriendsScreen() {
 
   // Username cache for UIDs from edges
   const nameCacheRef = useRef<Record<string, string>>({});
-  // Display name cache (uid -> displayName)
-  const displayNameCacheRef = useRef<Record<string, string>>({});
-  // Avatar color cache (uid -> avatarColor)
-  const avatarColorCacheRef = useRef<Record<string, string>>({});
+  // Profile color cache
+  const colorCacheRef = useRef<Record<string, string>>({});
 
   // Logout state
   const [loggingOut, setLoggingOut] = useState(false);
@@ -129,8 +129,7 @@ export default function FriendsScreen() {
       const key = uid ? `uid:${uid}` : `name:${username.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const displayName = (f?.displayName ?? "").toString().trim() || undefined;
-      out.push({ uid, username, displayName });
+      out.push({ uid, username });
     }
     out.sort((a, b) => a.username.localeCompare(b.username));
     return out;
@@ -156,14 +155,12 @@ export default function FriendsScreen() {
       toFetch.map(async (uid) => {
         try {
           const prof = await getDoc(doc(db, "Profiles", uid));
-          if (!prof.exists()) return;
-          const data = prof.data() as any;
-          const uname = data?.username || data?.usernameLower;
-          if (uname) nameCacheRef.current[uid] = String(uname);
-          const dn = (data?.displayName ?? "").toString().trim();
-          if (dn) displayNameCacheRef.current[uid] = dn;
-          const ac = (data?.avatarColor ?? "").toString().trim();
-          if (ac) avatarColorCacheRef.current[uid] = ac;
+          if (prof.exists()) {
+            const data = prof.data() as any;
+            const uname = data?.username || data?.usernameLower;
+            if (uname) nameCacheRef.current[uid] = String(uname);
+            if (data?.profileColor) colorCacheRef.current[uid] = data.profileColor;
+          }
         } catch {
           // ignore
         }
@@ -314,12 +311,18 @@ export default function FriendsScreen() {
       return;
     }
 
+    const makeFriend = (uid: string, username: string): Friend => ({
+      uid,
+      username,
+      profileColor: colorCacheRef.current[uid] || undefined,
+    });
+
     const map = new Map<string, Friend>();
     subFriends.forEach((f) => {
-      if (f.uid) map.set(f.uid, { uid: f.uid, username: f.username, displayName: f.displayName || displayNameCacheRef.current[f.uid], avatarColor: avatarColorCacheRef.current[f.uid] });
+      if (f.uid) map.set(f.uid, makeFriend(f.uid, f.username));
     });
     legacyFriends.forEach((f) => {
-      if (f.uid && !map.has(f.uid)) map.set(f.uid, { uid: f.uid, username: f.username, displayName: f.displayName || displayNameCacheRef.current[f.uid], avatarColor: avatarColorCacheRef.current[f.uid] });
+      if (f.uid && !map.has(f.uid)) map.set(f.uid, makeFriend(f.uid, f.username));
     });
 
     const otherUids: string[] = [];
@@ -328,7 +331,7 @@ export default function FriendsScreen() {
       if (!other) return;
       if (!map.has(other)) {
         const uname = nameCacheRef.current[other] || other;
-        map.set(other, { uid: other, username: uname, displayName: displayNameCacheRef.current[other], avatarColor: avatarColorCacheRef.current[other] });
+        map.set(other, makeFriend(other, uname));
         if (!nameCacheRef.current[other]) otherUids.push(other);
       }
     });
@@ -339,9 +342,7 @@ export default function FriendsScreen() {
           const m = new Map<string, Friend>();
           for (const f of Array.from(map.values())) {
             const u = f.uid ? nameCacheRef.current[f.uid] || f.username : f.username;
-            const dn = f.uid ? displayNameCacheRef.current[f.uid] : undefined;
-            const ac = f.uid ? avatarColorCacheRef.current[f.uid] : undefined;
-            m.set(f.uid || f.username, { uid: f.uid, username: u, displayName: dn, avatarColor: ac });
+            m.set(f.uid || f.username, makeFriend(f.uid!, u));
           }
           return Array.from(m.values()).sort((a, b) => a.username.localeCompare(b.username));
         });
@@ -864,14 +865,14 @@ export default function FriendsScreen() {
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
   if (!profileLoaded) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg }}>
-        <ActivityIndicator color={colors.primary} />
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: tc.bg }}>
+        <ActivityIndicator color={tc.primary} />
       </View>
     );
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+    <View style={{ flex: 1, backgroundColor: tc.bg }}>
       <FlatList
         data={visibleFriends}
         keyExtractor={(item, index) =>
@@ -895,7 +896,7 @@ export default function FriendsScreen() {
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
-            <Text style={styles.header}>Friends</Text>
+            <Text style={[styles.header, { color: tc.text }]}>Friends</Text>
 
             {/* Username + Invite */}
             <FriendsProfileAndInvite
@@ -913,36 +914,36 @@ export default function FriendsScreen() {
             />
 
             {/* My Friend Groups */}
-            <View style={styles.card}>
+            <View style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>
               <View style={styles.groupsHeaderRow}>
-                <Text style={styles.sectionTitle}>My Friend Groups</Text>
-                <Pressable onPress={() => { setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={styles.plusBtn}>
+                <Text style={[styles.sectionTitle, { color: tc.text }]}>My Friend Groups</Text>
+                <Pressable onPress={() => { setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={[styles.plusBtn, { backgroundColor: tc.primary }]}>
                   <Text style={styles.plusBtnText}>＋</Text>
                 </Pressable>
               </View>
 
               {groups.length === 0 ? (
-                <Text style={styles.subtle}>No groups yet — tap + to create one.</Text>
+                <Text style={[styles.subtle, { color: tc.subtle }]}>No groups yet — tap + to create one.</Text>
               ) : (
                 <View style={{ rowGap: 8 }}>
                   {groups.map((g) => (
                     <Pressable
                       key={g.id}
                       onPress={() => { setEditingGroup(g); setGroupEditorOpen(true); }}
-                      style={styles.groupRow}
+                      style={[styles.groupRow, { borderColor: tc.border, backgroundColor: tc.card }]}
                     >
-                      <View style={styles.groupAvatar}>
+                      <View style={[styles.groupAvatar, { backgroundColor: tc.primary }]}>
                         <Text style={{ color: "#fff", fontWeight: "800" }}>
                           {g.name?.[0]?.toUpperCase() || "G"}
                         </Text>
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.groupName}>{g.name}</Text>
-                        <Text style={styles.groupMeta}>
+                        <Text style={[styles.groupName, { color: tc.text }]}>{g.name}</Text>
+                        <Text style={[styles.groupMeta, { color: tc.subtle }]}>
                           {(g.memberUids?.length ?? 0)} member{(g.memberUids?.length ?? 0) === 1 ? "" : "s"}
                         </Text>
                       </View>
-                      <Text style={styles.groupEditHint}>Edit</Text>
+                      <Text style={[styles.groupEditHint, { color: tc.primary }]}>Edit</Text>
                     </Pressable>
                   ))}
                 </View>
@@ -960,24 +961,24 @@ export default function FriendsScreen() {
             />
 
             {/* Friends section title */}
-            <View style={[styles.card, { marginBottom: 0 }]}>
-              <Text style={styles.sectionTitle}>My Friends</Text>
+            <View style={[styles.card, { marginBottom: 0, backgroundColor: tc.card, shadowColor: tc.dark }]}>
+              <Text style={[styles.sectionTitle, { color: tc.text }]}>My Friends</Text>
               {visibleFriends.length === 0 && (
                 <>
-                  <Text style={styles.subtle}>No friends yet — send a request above.</Text>
+                  <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet — search for a username above to send a request.</Text>
 
                   {/* First-friend suggestion */}
-                  <View style={styles.brianCard}>
-                    <View style={styles.brianAvatar}>
+                  <View style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
+                    <View style={[styles.brianAvatar, { backgroundColor: tc.primary }]}>
                       <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.brianTitle}>New here? Add Brian, the creator of BeKin, as your first friend!</Text>
+                      <Text style={[styles.brianTitle, { color: tc.text }]}>New here? Add Brian, the creator of BeKin, as your first friend!</Text>
                     </View>
                     <Pressable
                       onPress={handleAddBrian}
                       disabled={addingBrian || busy}
-                      style={[styles.brianBtn, (addingBrian || busy) && { opacity: 0.6 }]}
+                      style={[styles.brianBtn, { backgroundColor: tc.primary }, (addingBrian || busy) && { opacity: 0.6 }]}
                     >
                       {addingBrian ? (
                         <ActivityIndicator color="#fff" size="small" />
@@ -996,7 +997,7 @@ export default function FriendsScreen() {
             <Pressable
               onPress={handleLogout}
               disabled={loggingOut}
-              style={[styles.logoutBtn, loggingOut && { opacity: 0.6 }]}
+              style={[styles.logoutBtn, { backgroundColor: tc.danger }, loggingOut && { opacity: 0.6 }]}
             >
               {loggingOut ? (
                 <ActivityIndicator color="#fff" />
@@ -1040,7 +1041,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderRadius: 16,
     padding: 16,
-    shadowColor: "#000",
+    shadowColor: "#000", // overridden inline with tc.dark
     shadowOpacity: 0.08,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
@@ -1093,8 +1094,6 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.primary,
-    backgroundColor: "#EBF1FD",
   },
   brianAvatar: {
     width: 40,
@@ -1126,7 +1125,6 @@ const styles = StyleSheet.create({
 
   // Logout button
   logoutBtn: {
-    backgroundColor: "#B00020",
     paddingVertical: 12,
     paddingHorizontal: 18,
     borderRadius: 12,

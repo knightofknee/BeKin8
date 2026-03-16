@@ -1,5 +1,5 @@
 // app/create-post.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,6 @@ import {
   Keyboard,
   Animated,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
@@ -24,16 +23,12 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import BottomBar from '@/components/BottomBar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../providers/AuthProvider';
-
-const DRAFT_KEY = 'bekin8_post_draft';
+import { useTheme } from '../providers/ThemeProvider';
 
 const BOTTOM_BAR_HEIGHT = 56;
 const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
 const ACCESSORY_ID_LINK  = 'create-post-accessory-link';
 const ACCESSORY_ID_BODY  = 'create-post-accessory-body';
-
-const BLUE = '#2F6FED';
-const GRAY = '#9CA3AF';
 
 // ─── Floating-label field ───────────────────────────────────────────────────
 type FloatFieldProps = TextInputProps & {
@@ -41,11 +36,17 @@ type FloatFieldProps = TextInputProps & {
   value: string;
   accessoryID?: string;
   fieldStyle?: object;
+  themeColors?: { primary: string; subtle: string; text: string; border: string; inputBg: string };
 };
 
-function FloatField({ label, value, accessoryID, fieldStyle, ...rest }: FloatFieldProps) {
+function FloatField({ label, value, accessoryID, fieldStyle, themeColors, ...rest }: FloatFieldProps) {
   const [focused, setFocused] = useState(false);
   const anim = useRef(new Animated.Value(value ? 1 : 0)).current;
+  const PRIMARY = themeColors?.primary ?? '#2F6FED';
+  const SUBTLE = themeColors?.subtle ?? '#9CA3AF';
+  const TEXT = themeColors?.text ?? '#111827';
+  const BORDER = themeColors?.border ?? '#D1D5DB';
+  const INPUT_BG = themeColors?.inputBg ?? '#FAFAFA';
 
   const floated = focused || !!value;
 
@@ -61,12 +62,12 @@ function FloatField({ label, value, accessoryID, fieldStyle, ...rest }: FloatFie
   const labelSize = anim.interpolate({ inputRange: [0, 1], outputRange: [16, 11] });
   const labelColor = anim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['#9CA3AF', focused ? BLUE : '#6B7280'],
+    outputRange: [SUBTLE, focused ? PRIMARY : SUBTLE],
   });
-  const borderColor = focused ? BLUE : '#D1D5DB';
+  const borderColor = focused ? PRIMARY : BORDER;
 
   return (
-    <View style={[styles.floatWrap, { borderColor }, fieldStyle]}>
+    <View style={[styles.floatWrap, { borderColor, backgroundColor: INPUT_BG }, fieldStyle]}>
       <Animated.Text
         style={[styles.floatLabel, { top: labelTop, fontSize: labelSize, color: labelColor }]}
         numberOfLines={1}
@@ -76,7 +77,7 @@ function FloatField({ label, value, accessoryID, fieldStyle, ...rest }: FloatFie
       <TextInput
         {...rest}
         value={value}
-        style={[styles.floatInput, rest.multiline && styles.floatInputMulti]}
+        style={[styles.floatInput, { color: TEXT }, rest.multiline && styles.floatInputMulti]}
         placeholderTextColor="transparent"
         inputAccessoryViewID={Platform.OS === 'ios' ? accessoryID : undefined}
         onFocus={(e) => { setFocused(true); rest.onFocus?.(e); }}
@@ -91,6 +92,7 @@ export default function CreatePostScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { profile, profileLoaded } = useAuth();
+  const { colors } = useTheme();
 
   const [title, setTitle]           = useState('');
   const [link, setLink]             = useState('');
@@ -102,43 +104,6 @@ export default function CreatePostScreen() {
     availableDay: string;
   } | null>(null);
   const [checkingLimit, setCheckingLimit] = useState(true);
-  const [draftLoaded, setDraftLoaded] = useState(false);
-
-  // ── Restore draft on mount ──────────────────────────────────────────────
-  useEffect(() => {
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(DRAFT_KEY);
-        if (raw) {
-          const d = JSON.parse(raw);
-          if (d.title) setTitle(d.title);
-          if (d.link) setLink(d.link);
-          if (d.content) setContent(d.content);
-        }
-      } catch {}
-      setDraftLoaded(true);
-    })();
-  }, []);
-
-  // ── Persist draft on every change (debounced) ───────────────────────────
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!draftLoaded) return; // don't overwrite before we've loaded
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      const hasContent = title || link || content;
-      if (hasContent) {
-        AsyncStorage.setItem(DRAFT_KEY, JSON.stringify({ title, link, content })).catch(() => {});
-      } else {
-        AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
-      }
-    }, 400);
-    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [title, link, content, draftLoaded]);
-
-  const clearDraft = useCallback(() => {
-    AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
-  }, []);
 
   const functions = getFunctions();
   const checkPostAllowed = httpsCallable<{ useBonus: boolean }, { allowed: boolean; reason?: string; availableDay?: string }>(
@@ -154,9 +119,9 @@ export default function CreatePostScreen() {
 
   // word-count colour: grey → amber → red
   const counterColor =
-    wordCount > 950 ? '#EF4444' :
+    wordCount > 950 ? colors.error :
     wordCount > 800 ? '#F59E0B' :
-    GRAY;
+    colors.subtle;
 
   // ── Auth guard ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -233,10 +198,6 @@ export default function CreatePostScreen() {
       timestamp: Date.now(),
       tags,
     });
-    clearDraft();
-    setTitle('');
-    setLink('');
-    setContent('');
     Alert.alert('Posted!', 'Your post is live.');
     router.push('/feed');
   };
@@ -293,10 +254,10 @@ export default function CreatePostScreen() {
   };
 
   // ── Loading states ────────────────────────────────────────────────────────
-  if (!profileLoaded || checkingLimit || !draftLoaded) {
+  if (!profileLoaded || checkingLimit) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator color={BLUE} />
+      <View style={[styles.centered, { backgroundColor: colors.bg }]}>
+        <ActivityIndicator color={colors.primary} />
       </View>
     );
   }
@@ -307,7 +268,7 @@ export default function CreatePostScreen() {
 
   return (
     <>
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.select({ ios: 'padding', android: undefined })}
@@ -317,8 +278,8 @@ export default function CreatePostScreen() {
             contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
           >
             {/* Header */}
-            <Text style={styles.h1}>New Post</Text>
-            <Text style={styles.rateNote}>
+            <Text style={[styles.h1, { color: colors.text }]}>New Post</Text>
+            <Text style={[styles.rateNote, { color: colors.subtle }]}>
               1 post per day max · Bank up to 10 bonus posts by taking days off
             </Text>
 
@@ -330,6 +291,7 @@ export default function CreatePostScreen() {
                 returnKeyType="next"
                 maxLength={150}
                 accessoryID={ACCESSORY_ID_TITLE}
+                themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
               <FloatField
@@ -341,6 +303,7 @@ export default function CreatePostScreen() {
                 returnKeyType="next"
                 maxLength={500}
                 accessoryID={ACCESSORY_ID_LINK}
+                themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
               <FloatField
@@ -355,6 +318,7 @@ export default function CreatePostScreen() {
                 blurOnSubmit={false}
                 accessoryID={ACCESSORY_ID_BODY}
                 fieldStyle={{ flex: 1, minHeight: 260 }}
+                themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
               {/* word counter */}
@@ -363,7 +327,7 @@ export default function CreatePostScreen() {
                   {wordCount} / 1000 words
                 </Text>
                 {isCharLimitExceeded && (
-                  <Text style={styles.counterExceeded}>Character limit exceeded</Text>
+                  <Text style={[styles.counterExceeded, { color: colors.error }]}>Character limit exceeded</Text>
                 )}
               </View>
 
@@ -376,7 +340,8 @@ export default function CreatePostScreen() {
                   style={({ pressed }) => [
                     styles.submitBtn,
                     styles.submitBtnFlex,
-                    (submitting || isLimited) && styles.submitBtnDisabled,
+                    { backgroundColor: colors.primary, shadowColor: colors.primary },
+                    (submitting || isLimited) && [styles.submitBtnDisabled, { backgroundColor: colors.border }],
                     pressed && !isLimited && { opacity: 0.88 },
                   ]}
                 >
@@ -388,14 +353,14 @@ export default function CreatePostScreen() {
 
                 {/* Bonus count badge */}
                 <View style={styles.bonusBadge}>
-                  <Text style={styles.bonusCount}>{bonusPosts}</Text>
-                  <Text style={styles.bonusLabel}>bonus</Text>
+                  <Text style={[styles.bonusCount, { color: colors.primary }]}>{bonusPosts}</Text>
+                  <Text style={[styles.bonusLabel, { color: colors.subtle }]}>bonus</Text>
                 </View>
               </View>
 
               {/* Available day message when rate-limited */}
               {isLimited && (
-                <Text style={styles.availableText}>
+                <Text style={[styles.availableText, { color: colors.subtle }]}>
                   Next free post available: {availableDay}
                 </Text>
               )}
@@ -407,14 +372,15 @@ export default function CreatePostScreen() {
                   disabled={submitting || bonusPosts <= 0}
                   style={({ pressed }) => [
                     styles.bonusBtn,
-                    (submitting || bonusPosts <= 0) && styles.bonusBtnDisabled,
+                    { borderColor: colors.primary },
+                    (submitting || bonusPosts <= 0) && { borderColor: colors.border },
                     pressed && bonusPosts > 0 && { opacity: 0.88 },
                   ]}
                 >
                   {submitting
-                    ? <ActivityIndicator color={BLUE} />
+                    ? <ActivityIndicator color={colors.primary} />
                     : (
-                      <Text style={[styles.bonusBtnTxt, bonusPosts <= 0 && styles.bonusBtnTxtDisabled]}>
+                      <Text style={[styles.bonusBtnTxt, { color: colors.primary }, bonusPosts <= 0 && { color: colors.subtle }]}>
                         Use Bonus Post
                       </Text>
                     )
@@ -433,23 +399,23 @@ export default function CreatePostScreen() {
       {Platform.OS === 'ios' && (
         <>
           <InputAccessoryView nativeID={ACCESSORY_ID_TITLE}>
-            <View style={styles.iosAccessory}>
+            <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
               <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
-                <Text style={styles.iosDone}>Done</Text>
+                <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
           <InputAccessoryView nativeID={ACCESSORY_ID_LINK}>
-            <View style={styles.iosAccessory}>
+            <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
               <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
-                <Text style={styles.iosDone}>Done</Text>
+                <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
           <InputAccessoryView nativeID={ACCESSORY_ID_BODY}>
-            <View style={styles.iosAccessory}>
+            <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
               <Pressable onPress={() => Keyboard.dismiss()} hitSlop={10}>
-                <Text style={styles.iosDone}>Done</Text>
+                <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>
           </InputAccessoryView>
@@ -463,8 +429,8 @@ const styles = StyleSheet.create({
   container:   { padding: 20 },
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  h1:          { fontSize: 26, fontWeight: '700', color: '#111827', marginBottom: 4, textAlign: 'center' },
-  rateNote:    { fontSize: 13, color: GRAY, marginBottom: 20, textAlign: 'center' },
+  h1:          { fontSize: 26, fontWeight: '700', marginBottom: 4, textAlign: 'center' },
+  rateNote:    { fontSize: 13, marginBottom: 20, textAlign: 'center' },
 
   form:        { gap: 16 },
 
@@ -472,7 +438,6 @@ const styles = StyleSheet.create({
   floatWrap: {
     borderWidth: 1.5,
     borderRadius: 12,
-    backgroundColor: '#FAFAFA',
     paddingHorizontal: 14,
     paddingTop: 22,
     paddingBottom: 10,
@@ -485,7 +450,6 @@ const styles = StyleSheet.create({
   },
   floatInput: {
     fontSize: 16,
-    color: '#111827',
     padding: 0,
     margin: 0,
   },
@@ -497,7 +461,7 @@ const styles = StyleSheet.create({
   // ── counter ──
   counterRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   counterText:     { fontSize: 12, fontWeight: '500' },
-  counterExceeded: { fontSize: 12, color: '#EF4444', fontWeight: '600' },
+  counterExceeded: { fontSize: 12, fontWeight: '600' },
 
   // ── submit row ──
   submitRow: {
@@ -510,18 +474,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   submitBtn: {
-    backgroundColor: BLUE,
     borderRadius: 14,
     paddingVertical: 15,
     alignItems: 'center',
-    shadowColor: BLUE,
     shadowOpacity: 0.35,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
   submitBtnDisabled: {
-    backgroundColor: '#D1D5DB',
     shadowOpacity: 0,
     elevation: 0,
   },
@@ -540,19 +501,16 @@ const styles = StyleSheet.create({
   bonusCount: {
     fontSize: 20,
     fontWeight: '700',
-    color: BLUE,
     lineHeight: 22,
   },
   bonusLabel: {
     fontSize: 11,
-    color: GRAY,
     fontWeight: '500',
   },
 
   // ── available day message ──
   availableText: {
     fontSize: 13,
-    color: GRAY,
     textAlign: 'center',
     marginTop: -4,
   },
@@ -560,28 +518,18 @@ const styles = StyleSheet.create({
   // ── bonus post button ──
   bonusBtn: {
     borderWidth: 1.5,
-    borderColor: BLUE,
     borderRadius: 14,
     paddingVertical: 13,
     alignItems: 'center',
   },
-  bonusBtnDisabled: {
-    borderColor: '#D1D5DB',
-  },
   bonusBtnTxt: {
-    color: BLUE,
     fontSize: 16,
     fontWeight: '600',
-  },
-  bonusBtnTxtDisabled: {
-    color: GRAY,
   },
 
   // ── iOS accessory ──
   iosAccessory: {
     borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-    backgroundColor: '#F9FAFB',
     paddingHorizontal: 16,
     paddingVertical: 8,
     alignItems: 'flex-end',
@@ -589,6 +537,5 @@ const styles = StyleSheet.create({
   iosDone: {
     fontSize: 16,
     fontWeight: '600',
-    color: BLUE,
   },
 });

@@ -1,6 +1,7 @@
 // components/ItemMenu.tsx
 import React from "react";
 import { View, Modal, Pressable, Text, StyleSheet } from "react-native";
+import { useTheme } from "../providers/ThemeProvider";
 
 type Props = {
   visible: boolean;
@@ -11,20 +12,21 @@ type Props = {
 };
 
 export default function ItemMenu({ visible, onClose, onReport, onBlock, showBlock = true }: Props) {
+  const { colors } = useTheme();
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.sheet}>
+      <Pressable style={[styles.backdrop, { backgroundColor: colors.backdrop }]} onPress={onClose}>
+        <View style={[styles.sheet, { backgroundColor: colors.card }]}>
           <Pressable style={styles.row} onPress={() => { onReport(); onClose(); }}>
-            <Text style={styles.text}>Report</Text>
+            <Text style={[styles.text, { color: colors.text }]}>Report</Text>
           </Pressable>
           {showBlock && onBlock && (
             <Pressable style={styles.row} onPress={() => { onBlock(); onClose(); }}>
-              <Text style={styles.text}>Block user</Text>
+              <Text style={[styles.text, { color: colors.text }]}>Block user</Text>
             </Pressable>
           )}
-          <Pressable style={[styles.row, styles.cancel]} onPress={onClose}>
-            <Text style={styles.text}>Cancel</Text>
+          <Pressable style={[styles.row, styles.cancel, { borderTopColor: colors.border }]} onPress={onClose}>
+            <Text style={[styles.text, { color: colors.text }]}>Cancel</Text>
           </Pressable>
         </View>
       </Pressable>

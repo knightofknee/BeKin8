@@ -31,6 +31,7 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
+import { useTheme } from '../providers/ThemeProvider';
 
 type Post = {
   id: string;
@@ -91,6 +92,7 @@ async function resolveMyName(uid: string): Promise<string> {
 const ACCESSORY_ID = 'postcomments-accessory';
 
 export default function PostComments({ post, onClose }: Props) {
+  const { colors: tc } = useTheme();
   const me = auth.currentUser;
   const [loading, setLoading] = useState(true);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -98,19 +100,19 @@ export default function PostComments({ post, onClose }: Props) {
   const [sending, setSending] = useState(false);
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
   const [postAuthorName, setPostAuthorName] = useState<string>(post.authorUsername);
+  const [postAuthorColor, setPostAuthorColor] = useState<string>('#2F6FED');
   const [authorCommentsEnabled, setAuthorCommentsEnabled] = useState<boolean | null>(null);
-  const [authorAvatarColor, setAuthorAvatarColor] = useState<string>('#2F6FED');
 
   useEffect(() => {
     let alive = true;
     resolveMyName(post.authorUid).then((n) => { if (alive) setPostAuthorName(n); }).catch(() => {});
-    // Fetch the post author's global comments setting from their Profile
+    // Fetch the post author's global comments setting + profile color from their Profile
     getDoc(doc(db, 'Profiles', post.authorUid)).then((snap) => {
       if (!alive) return;
       if (snap.exists()) {
         const data = snap.data() as any;
         setAuthorCommentsEnabled(data.commentsEnabled === true);
-        if (data.avatarColor) setAuthorAvatarColor(data.avatarColor);
+        if (data.profileColor) setPostAuthorColor(data.profileColor);
       } else {
         setAuthorCommentsEnabled(false);
       }
@@ -275,29 +277,29 @@ export default function PostComments({ post, onClose }: Props) {
   return (
     <>
       {/* Full-screen backdrop — tap outside card to close */}
-      <Pressable style={[StyleSheet.absoluteFill, styles.backdrop]} onPress={onClose} />
+      <Pressable style={[StyleSheet.absoluteFill, styles.backdrop, { backgroundColor: tc.backdrop }]} onPress={onClose} />
 
       {/* Floating card — centered like ChatRoom */}
       <View style={styles.cardOuter} pointerEvents="box-none">
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: tc.card, borderColor: tc.border }]}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={0}
         >
         {/* Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
           <View style={styles.headerLeft}>
-            <View style={[styles.avatar, { backgroundColor: authorAvatarColor }]}>
+            <View style={[styles.avatar, { backgroundColor: postAuthorColor }]}>
               <Text style={styles.avatarTxt}>{(postAuthorName?.[0] || 'F').toUpperCase()}</Text>
             </View>
             <View>
-              <Text style={styles.headerAuthor} numberOfLines={1}>{postAuthorName}</Text>
-              <Text style={styles.headerSub} numberOfLines={1}>{post.content}</Text>
+              <Text style={[styles.headerAuthor, { color: tc.text }]} numberOfLines={1}>{postAuthorName}</Text>
+              <Text style={[styles.headerSub, { color: tc.subtle }]} numberOfLines={1}>{post.content}</Text>
             </View>
           </View>
           <Pressable hitSlop={12} onPress={onClose} style={styles.closeBtn}>
-            <Text style={styles.closeIcon}>✕</Text>
+            <Text style={[styles.closeIcon, { color: tc.subtle }]}>✕</Text>
           </Pressable>
         </View>
 
@@ -323,7 +325,7 @@ export default function PostComments({ post, onClose }: Props) {
                   )}
                   {comments.length === 0 && (
                     <View style={styles.emptyWrap}>
-                      <Text style={styles.emptyText}>No comments yet. Be the first!</Text>
+                      <Text style={[styles.emptyText, { color: tc.subtle }]}>No comments yet. Be the first!</Text>
                     </View>
                   )}
                   <FlatList
@@ -348,11 +350,11 @@ export default function PostComments({ post, onClose }: Props) {
                               hitSlop={8}
                               style={[styles.dotsOutside, { marginRight: 6 }]}
                             >
-                              <Text style={styles.dots}>⋯</Text>
+                              <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
                             </Pressable>
                           )}
-                          <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs, deleted && styles.bubbleDeleted]}>
-                            <Text style={[styles.msgMeta, deleted && styles.deletedMeta]} numberOfLines={1}>
+                          <View style={[styles.bubble, mine ? [styles.bubbleMine, { backgroundColor: tc.bubbleMine, borderColor: tc.bubbleMineBorder }] : [styles.bubbleTheirs, { backgroundColor: tc.bubbleTheirs, borderColor: tc.bubbleTheirsBorder }], deleted && styles.bubbleDeleted]}>
+                            <Text style={[styles.msgMeta, { color: tc.subtle }, deleted && styles.deletedMeta]} numberOfLines={1}>
                               {deleted ? 'Deleted' : (item.authorName || (mine ? 'You' : 'Friend'))}
                               {!deleted && (() => {
                                 const d = item.createdAt;
@@ -362,7 +364,7 @@ export default function PostComments({ post, onClose }: Props) {
                                 return ' · ' + (isToday ? time : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time);
                               })()}
                             </Text>
-                            <Text style={[styles.msgText, deleted && styles.deletedText]}>
+                            <Text style={[styles.msgText, { color: tc.text }, deleted && styles.deletedText]}>
                               {deleted ? '[deleted]' : item.text}
                             </Text>
                           </View>
@@ -372,7 +374,7 @@ export default function PostComments({ post, onClose }: Props) {
                               hitSlop={8}
                               style={[styles.dotsOutside, { marginLeft: 6 }]}
                             >
-                              <Text style={styles.dots}>⋯</Text>
+                              <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
                             </Pressable>
                           )}
                         </View>
@@ -384,13 +386,13 @@ export default function PostComments({ post, onClose }: Props) {
             </View>
 
             {/* Composer */}
-            <View style={styles.inputRow}>
+            <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
               <TextInput
                 value={text}
                 onChangeText={setText}
                 placeholder="Add a comment…"
-                placeholderTextColor="#9CA3AF"
-                style={styles.input}
+                placeholderTextColor={tc.subtle}
+                style={[styles.input, { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text }]}
                 multiline
                 inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
                 blurOnSubmit={false}
@@ -401,7 +403,7 @@ export default function PostComments({ post, onClose }: Props) {
               <Pressable
                 onPress={handleSend}
                 disabled={!canSend}
-                style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+                style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5, backgroundColor: tc.primary }]}
               >
                 {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
               </Pressable>
@@ -411,7 +413,7 @@ export default function PostComments({ post, onClose }: Props) {
           /* Comments are off — hide thread, show banner only */
           <View style={styles.commentsOffWrap}>
             <Text style={styles.commentsOffIcon}>💬</Text>
-            <Text style={styles.commentsOffText}>Comments are turned off</Text>
+            <Text style={[styles.commentsOffText, { color: tc.subtle }]}>Comments are turned off</Text>
           </View>
         )}
         </KeyboardAvoidingView>
@@ -420,22 +422,22 @@ export default function PostComments({ post, onClose }: Props) {
 
       {/* Android menu sheet */}
       {menuFor && Platform.OS !== 'ios' && (
-        <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
-          <View style={styles.menuSheet}>
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: tc.backdrop }]} onPress={() => setMenuFor(null)}>
+          <View style={[styles.menuSheet, { backgroundColor: tc.card }]}>
             <Pressable style={styles.menuItem} onPress={() => { if (menuFor) doReport(menuFor); }}>
-              <Text style={styles.menuText}>Report</Text>
+              <Text style={[styles.menuText, { color: tc.text }]}>Report</Text>
             </Pressable>
             {menuFor && me && menuFor.authorUid === me.uid && (
               <>
-                <View style={styles.menuDivider} />
+                <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
                 <Pressable style={styles.menuItem} onPress={() => { if (menuFor) doDelete(menuFor); }}>
-                  <Text style={[styles.menuText, styles.menuTextDestructive]}>Delete comment</Text>
+                  <Text style={[styles.menuText, styles.menuTextDestructive, { color: tc.danger }]}>Delete comment</Text>
                 </Pressable>
               </>
             )}
-            <View style={styles.menuDivider} />
+            <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
             <Pressable style={styles.menuItem} onPress={() => setMenuFor(null)}>
-              <Text style={styles.menuText}>Cancel</Text>
+              <Text style={[styles.menuText, { color: tc.text }]}>Cancel</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -443,9 +445,9 @@ export default function PostComments({ post, onClose }: Props) {
 
       {Platform.OS === 'ios' && (
         <InputAccessoryView nativeID={ACCESSORY_ID}>
-          <View style={styles.iosAccessory}>
+          <View style={[styles.iosAccessory, { borderTopColor: tc.border, backgroundColor: tc.card }]}>
             <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
-              <Text style={styles.iosDoneText}>Done</Text>
+              <Text style={[styles.iosDoneText, { color: tc.text }]}>Done</Text>
             </Pressable>
           </View>
         </InputAccessoryView>
@@ -492,7 +494,7 @@ const styles = StyleSheet.create({
   headerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 },
   avatar: {
     width: 34, height: 34, borderRadius: 17,
-    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    backgroundColor: '#2F6FED', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
   },
   avatarTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   headerAuthor: { fontWeight: '800', color: '#0B1426', fontSize: 14 },

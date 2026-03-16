@@ -28,6 +28,7 @@ import {
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
 import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
 
 export type FriendGroup = {
   id?: string;
@@ -96,6 +97,8 @@ export default function FriendGroupEditor({
   onSaved,
   onDeleted,
 }: Props) {
+
+  const { colors } = useTheme();
 
   // Editor state
   const [name, setName] = useState(group?.name || "");
@@ -293,19 +296,20 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
         onPress={() => toggleUid(item.uid)}
         style={({ pressed }) => [
           styles.row,
-          checked ? styles.rowChecked : null,
+          { backgroundColor: colors.inputBg, borderColor: colors.border },
+          checked ? [styles.rowChecked, { backgroundColor: colors.bubbleMine, borderColor: colors.bubbleMineBorder }] : null,
           pressed && { opacity: 0.9 },
         ]}
       >
-        <View style={[styles.checkbox, checked && styles.checkboxOn]}>
+        <View style={[styles.checkbox, { borderColor: colors.border, backgroundColor: colors.inputBg }, checked && [styles.checkboxOn, { backgroundColor: colors.primary, borderColor: colors.primary }]]}>
           {checked ? <Text style={styles.checkboxTick}>✓</Text> : null}
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.rowText} numberOfLines={1}>
+          <Text style={[styles.rowText, { color: colors.text }]} numberOfLines={1}>
             {item.displayName || item.username}
           </Text>
           {item.displayName ? (
-            <Text style={styles.rowSubText} numberOfLines={1}>
+            <Text style={[styles.rowSubText, { color: colors.subtle }]} numberOfLines={1}>
               {item.username}
             </Text>
           ) : null}
@@ -316,21 +320,22 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={styles.card}>
+      <View style={[styles.backdrop, { backgroundColor: colors.backdrop }]}>
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
           {/* Header */}
           <View style={styles.headerRow}>
-            <Text style={styles.title}>{group ? "Edit Group" : "New Group"}</Text>
+            <Text style={[styles.title, { color: colors.text }]}>{group ? "Edit Group" : "New Group"}</Text>
             <Pressable onPress={onClose} hitSlop={10}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={[styles.close, { color: colors.subtle }]}>✕</Text>
             </Pressable>
           </View>
 
           {/* Group name */}
-          <Text style={styles.label}>Group name</Text>
+          <Text style={[styles.label, { color: colors.text }]}>Group name</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
             placeholder="e.g., Housemates, Basketball Crew"
+            placeholderTextColor={colors.subtle}
             value={name}
             onChangeText={setName}
             maxLength={48}
@@ -338,7 +343,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
 
           {/* Members */}
           <View style={styles.membersHeaderRow}>
-            <Text style={styles.label}>Members</Text>
+            <Text style={[styles.label, { color: colors.text }]}>Members</Text>
             {group?.id ? (
               <Pressable onPress={confirmDelete} hitSlop={10} style={styles.deleteBtn}>
                 <Text style={styles.deleteText}>Delete</Text>
@@ -369,13 +374,13 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
 
           {/* Actions */}
           <View style={styles.btnRow}>
-            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost]}>
-              <Text style={styles.btnGhostText}>Cancel</Text>
+            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+              <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
             </Pressable>
             <Pressable
               onPress={handleSave}
               disabled={!canSave}
-              style={[styles.btn, styles.btnPrimary, !canSave && { opacity: 0.6 }]}
+              style={[styles.btn, styles.btnPrimary, { backgroundColor: colors.primary, borderColor: colors.primary }, !canSave && { opacity: 0.6 }]}
             >
               {saving ? (
                 <ActivityIndicator color="#fff" />

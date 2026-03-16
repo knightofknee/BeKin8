@@ -3,6 +3,7 @@ import React, { useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Image } from 'expo-image';
 import { Timestamp } from 'firebase/firestore';
+import { useTheme } from '../providers/ThemeProvider';
 
 type Beacon = {
   id: string;
@@ -22,6 +23,7 @@ function sameDay(a: Date, b: Date) {
 }
 
 export default function FriendBeaconChip({ beacon }: { beacon: Beacon }) {
+  const { colors: tc } = useTheme();
   const { isToday, icon, chipStyle } = useMemo(() => {
     const isToday = sameDay(beacon.startAt.toDate(), new Date());
     return {
@@ -42,7 +44,7 @@ export default function FriendBeaconChip({ beacon }: { beacon: Beacon }) {
       ) : (
         <Text style={styles.chipIcon}>{icon}</Text>
       )}
-      <Text style={styles.chipText} numberOfLines={1}>
+      <Text style={[styles.chipText, { color: tc.text }]} numberOfLines={1}>
         {beacon.displayName}
       </Text>
     </View>

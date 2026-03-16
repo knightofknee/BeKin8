@@ -26,22 +26,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { signInWithGoogle } from "../lib/googleAuth";
 import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
-
-const colors = {
-  primary: "#2F6FED",
-  bg: "#F5F8FF",
-  card: "#FFFFFF",
-  text: "#111827",
-  subtle: "#6B7280",
-  border: "#E5E7EB",
-  error: "#B00020",
-};
+import { useTheme } from "../providers/ThemeProvider";
 
 const TOP_OFFSET = 64; // match login offset
 const PW_ACCESSORY_ID = "signup-password-accessory";
 const CONFIRM_ACCESSORY_ID = "signup-confirm-accessory";
 
 export default function SignUp() {
+  const { colors, isDark } = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -71,11 +63,11 @@ export default function SignUp() {
       case "auth/invalid-email":
         return "That email address looks invalid.";
       case "auth/email-already-in-use":
-        return "There’s already an account with that email.";
+        return "There's already an account with that email.";
       case "auth/weak-password":
         return "Password must be at least 6 characters.";
       case "auth/operation-not-allowed":
-        return "Email/password sign-in isn’t enabled for this project.";
+        return "Email/password sign-in isn't enabled for this project.";
       case "auth/network-request-failed":
         return "Network error. Check your connection and try again.";
       default:
@@ -89,7 +81,7 @@ export default function SignUp() {
     const trimmedEmail = email.trim();
     if (!trimmedEmail) return setError("Please enter an email.");
     if (password.length < 6) return setError("Password must be at least 6 characters.");
-    if (password !== confirmPassword) return setError("Passwords don’t match.");
+    if (password !== confirmPassword) return setError("Passwords don't match.");
 
     try {
       setLoading(true);
@@ -151,7 +143,7 @@ export default function SignUp() {
     }
   };
 
-  // Email behaves normally (can suggest user’s addresses)
+  // Email behaves normally (can suggest user's addresses)
   const emailAutoComplete = Platform.select({
     ios: "email",
     android: "email",
@@ -173,7 +165,7 @@ export default function SignUp() {
 
   const pwKeyboardType = Platform.select({
     ios: "default",
-    android: "visible-password", // avoids Android autofill “lock” UI
+    android: "visible-password", // avoids Android autofill "lock" UI
     default: "default",
   }) as any;
 
@@ -198,12 +190,13 @@ export default function SignUp() {
                 paddingTop: insets.top + TOP_OFFSET,
                 // Enough bottom space so Confirm + Sign Up button never sit under the keyboard
                 paddingBottom: 48 + insets.bottom,
+                backgroundColor: colors.bg,
               },
             ]}
           >
             {/* decorative soft circles (match login) */}
-            <View style={styles.blobA} />
-            <View style={styles.blobB} />
+            <View style={[styles.blobA, { backgroundColor: isDark ? "#1E2A4A" : "#e2ebff" }]} />
+            <View style={[styles.blobB, { backgroundColor: isDark ? "#1A2744" : "#d7e4ff" }]} />
 
             {/* header / logo */}
             <View style={styles.header}>
@@ -212,29 +205,33 @@ export default function SignUp() {
                 style={styles.logo}
                 resizeMode="contain"
               />
-              <Text style={styles.title}>Create Account</Text>
-              <Text style={styles.subtitle}>Join BeKin</Text>
+              <Text style={[styles.title, { color: colors.text }]}>Create Account</Text>
+              <Text style={[styles.subtitle, { color: colors.subtle }]}>Join BeKin</Text>
             </View>
 
             {/* card */}
-            <View style={styles.card}>
+            <View style={[styles.card, { backgroundColor: colors.card }]}>
               <View style={styles.topRow}>
                 <Text style={{ color: colors.subtle }}>Already have an account?</Text>
-                <Link href="/" style={styles.link}>
+                <Link href="/" style={[styles.link, { color: colors.primary }]}>
                   Sign in
                 </Link>
               </View>
 
-              {error ? <Text style={styles.error}>{error}</Text> : null}
+              {error ? <Text style={[styles.error, { color: colors.error }]}>{error}</Text> : null}
 
               {/* Email */}
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Email</Text>
+                <Text style={[styles.label, { color: colors.text }]}>Email</Text>
                 <TextInput
                   ref={emailRef}
                   style={[
                     styles.input,
-                    { borderColor: emailFocused ? colors.primary : colors.border },
+                    {
+                      borderColor: emailFocused ? colors.primary : colors.border,
+                      backgroundColor: colors.inputBg,
+                      color: colors.text,
+                    },
                   ]}
                   placeholder="you@example.com"
                   placeholderTextColor={colors.subtle}
@@ -255,17 +252,20 @@ export default function SignUp() {
 
               {/* Password */}
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Password</Text>
+                <Text style={[styles.label, { color: colors.text }]}>Password</Text>
                 <View
                   style={[
                     styles.input,
                     styles.inputRow,
-                    { borderColor: pwFocused ? colors.primary : colors.border },
+                    {
+                      borderColor: pwFocused ? colors.primary : colors.border,
+                      backgroundColor: colors.inputBg,
+                    },
                   ]}
                 >
                   <TextInput
                     ref={passwordRef}
-                    style={{ flex: 1 }}
+                    style={{ flex: 1, color: colors.text }}
                     placeholder="••••••••"
                     placeholderTextColor={colors.subtle}
                     secureTextEntry={!showPw}
@@ -288,24 +288,27 @@ export default function SignUp() {
                     editable={!anyLoading}
                   />
                   <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
-                    <Text style={styles.togglePw}>{showPw ? "Hide" : "Show"}</Text>
+                    <Text style={[styles.togglePw, { color: colors.primary }]}>{showPw ? "Hide" : "Show"}</Text>
                   </Pressable>
                 </View>
               </View>
 
               {/* Confirm Password */}
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Confirm Password</Text>
+                <Text style={[styles.label, { color: colors.text }]}>Confirm Password</Text>
                 <View
                   style={[
                     styles.input,
                     styles.inputRow,
-                    { borderColor: pw2Focused ? colors.primary : colors.border },
+                    {
+                      borderColor: pw2Focused ? colors.primary : colors.border,
+                      backgroundColor: colors.inputBg,
+                    },
                   ]}
                 >
                   <TextInput
                     ref={confirmRef}
-                    style={{ flex: 1 }}
+                    style={{ flex: 1, color: colors.text }}
                     placeholder="••••••••"
                     placeholderTextColor={colors.subtle}
                     secureTextEntry={!showPw2}
@@ -328,7 +331,7 @@ export default function SignUp() {
                     editable={!anyLoading}
                   />
                   <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
-                    <Text style={styles.togglePw}>{showPw2 ? "Hide" : "Show"}</Text>
+                    <Text style={[styles.togglePw, { color: colors.primary }]}>{showPw2 ? "Hide" : "Show"}</Text>
                   </Pressable>
                 </View>
               </View>
@@ -339,6 +342,7 @@ export default function SignUp() {
                 disabled={anyLoading}
                 style={({ pressed }) => [
                   styles.primaryBtn,
+                  { backgroundColor: colors.primary },
                   pressed && { opacity: 0.9 },
                   anyLoading && { opacity: 0.7 },
                 ]}
@@ -352,9 +356,9 @@ export default function SignUp() {
 
               {/* SSO divider */}
               <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or sign up with</Text>
-                <View style={styles.dividerLine} />
+                <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+                <Text style={[styles.dividerText, { color: colors.subtle }]}>or sign up with</Text>
+                <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
               </View>
 
               <View style={styles.ssoRow}>
@@ -363,6 +367,7 @@ export default function SignUp() {
                   disabled={anyLoading}
                   style={({ pressed }) => [
                     styles.googleBtn,
+                    { borderColor: colors.border, backgroundColor: colors.inputBg },
                     pressed && { opacity: 0.85 },
                     anyLoading && { opacity: 0.7 },
                   ]}
@@ -374,7 +379,7 @@ export default function SignUp() {
                   ) : (
                     <View style={styles.ssoBtnInner}>
                       <GoogleLogo size={22} />
-                      <Text style={styles.googleBtnText}>Google</Text>
+                      <Text style={[styles.googleBtnText, { color: colors.text }]}>Google</Text>
                     </View>
                   )}
                 </Pressable>
@@ -384,6 +389,7 @@ export default function SignUp() {
                   disabled={anyLoading}
                   style={({ pressed }) => [
                     styles.appleBtn,
+                    { backgroundColor: isDark ? "#FFFFFF" : "#000" },
                     pressed && { opacity: 0.85 },
                     anyLoading && { opacity: 0.7 },
                   ]}
@@ -391,11 +397,11 @@ export default function SignUp() {
                   accessibilityLabel="Continue with Apple"
                 >
                   {appleLoading ? (
-                    <ActivityIndicator color="#FFF" />
+                    <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
                   ) : (
                     <View style={styles.ssoBtnInner}>
-                      <Ionicons name="logo-apple" size={22} color="#FFF" />
-                      <Text style={styles.appleBtnText}>Apple</Text>
+                      <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
+                      <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
                     </View>
                   )}
                 </Pressable>
@@ -403,11 +409,11 @@ export default function SignUp() {
 
               {/* Terms / Privacy notice */}
               <View style={styles.termsRow}>
-                <Text style={styles.termsText}>By signing up you agree to our </Text>
-                <Link href="/legal/terms" style={styles.link}>Terms</Link>
-                <Text style={styles.termsText}> and </Text>
-                <Link href="/legal/privacy" style={styles.link}>Privacy Policy</Link>
-                <Text style={styles.termsText}>.</Text>
+                <Text style={[styles.termsText, { color: colors.subtle }]}>By signing up you agree to our </Text>
+                <Link href="/legal/terms" style={[styles.link, { color: colors.primary }]}>Terms</Link>
+                <Text style={[styles.termsText, { color: colors.subtle }]}> and </Text>
+                <Link href="/legal/privacy" style={[styles.link, { color: colors.primary }]}>Privacy Policy</Link>
+                <Text style={[styles.termsText, { color: colors.subtle }]}>.</Text>
               </View>
 
             </View>
@@ -431,14 +437,13 @@ export default function SignUp() {
 }
 
 const styles = StyleSheet.create({
-  container: { flexGrow: 1, paddingHorizontal: 20, backgroundColor: colors.bg },
+  container: { flexGrow: 1, paddingHorizontal: 20 },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
-  title: { fontSize: 28, fontWeight: "800", color: colors.text },
-  subtitle: { marginTop: 6, fontSize: 16, color: colors.subtle },
+  title: { fontSize: 28, fontWeight: "800" },
+  subtitle: { marginTop: 6, fontSize: 16 },
 
   card: {
-    backgroundColor: colors.card,
     borderRadius: 16,
     padding: 18,
     shadowColor: "#000",
@@ -449,21 +454,18 @@ const styles = StyleSheet.create({
   },
 
   inputGroup: { marginBottom: 14 },
-  label: { fontWeight: "600", marginBottom: 8, color: colors.text },
+  label: { fontWeight: "600", marginBottom: 8 },
   input: {
     borderWidth: 1,
-    borderColor: colors.border,
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: "#FFF",
   },
   inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
 
-  togglePw: { fontWeight: "700", color: colors.primary },
+  togglePw: { fontWeight: "700" },
 
   primaryBtn: {
-    backgroundColor: colors.primary,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -478,10 +480,10 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     justifyContent: "center",
   },
-  termsText: { color: colors.subtle, fontSize: 12 },
+  termsText: { fontSize: 12 },
 
   topRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginBottom: 14 },
-  link: { color: colors.primary, fontWeight: "700" },
+  link: { fontWeight: "700" },
 
   dividerRow: {
     flexDirection: "row",
@@ -492,11 +494,9 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: colors.border,
   },
   dividerText: {
     marginHorizontal: 12,
-    color: colors.subtle,
     fontSize: 14,
     fontWeight: "600",
   },
@@ -508,8 +508,6 @@ const styles = StyleSheet.create({
   googleBtn: {
     flex: 1,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: "#FFF",
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -517,7 +515,6 @@ const styles = StyleSheet.create({
   },
   appleBtn: {
     flex: 1,
-    backgroundColor: "#000",
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -531,16 +528,13 @@ const styles = StyleSheet.create({
   googleBtnText: {
     fontSize: 16,
     fontWeight: "700",
-    color: colors.text,
   },
   appleBtnText: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#FFF",
   },
 
   error: {
-    color: colors.error,
     textAlign: "center",
     marginBottom: 12,
     fontWeight: "600",
@@ -552,7 +546,6 @@ const styles = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: "#e2ebff",
     top: -60,
     right: -40,
   },
@@ -561,7 +554,6 @@ const styles = StyleSheet.create({
     width: 160,
     height: 160,
     borderRadius: 999,
-    backgroundColor: "#d7e4ff",
     bottom: -40,
     left: -30,
   },

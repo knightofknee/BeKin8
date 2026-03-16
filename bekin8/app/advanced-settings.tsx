@@ -17,20 +17,11 @@ import { signOut, EmailAuthProvider, linkWithCredential } from "firebase/auth";
 import { Ionicons } from "@expo/vector-icons";
 import BottomBar from "../components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
 import GoogleLogo from "../components/GoogleLogo";
 
-const colors = {
-  primary: "#2F6FED",
-  bg: "#F5F8FF",
-  card: "#FFFFFF",
-  text: "#111827",
-  subtle: "#6B7280",
-  border: "#E5E7EB",
-  danger: "#B00020",
-  success: "#059669",
-};
-
 export default function AdvancedSettingsScreen() {
+  const { colors } = useTheme();
   const { user } = useAuth();
   const router = useRouter();
   const functions = getFunctions();
@@ -177,53 +168,39 @@ export default function AdvancedSettingsScreen() {
 
   return (
     <>
-      <SafeAreaView style={s.safe} edges={["top", "left", "right"]}>
-        {/* Header */}
-        <View style={s.header}>
+      <SafeAreaView style={[s.safe, { backgroundColor: colors.bg }]} edges={["top", "left", "right"]}>
+        <View style={[s.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
           <Pressable onPress={() => router.back()} hitSlop={8}>
-            <Text style={s.back}>{`← Back`}</Text>
+            <Text style={[s.back, { color: colors.primary }]}>{`← Back`}</Text>
           </Pressable>
-          <Text style={s.title}>Advanced</Text>
+          <Text style={[s.title, { color: colors.text }]}>Advanced</Text>
           <View style={{ width: 48 }} />
         </View>
 
-        <ScrollView
-          style={s.body}
-          contentContainerStyle={s.bodyContent}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Linked Accounts */}
-          <Text style={s.h2}>Linked Accounts</Text>
-          <Text style={s.subtleText}>
-            Sign-in methods connected to your account.
-          </Text>
+        <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled">
+          <Text style={[s.h2, { color: colors.text }]}>Linked Accounts</Text>
+          <Text style={[s.subtleText, { color: colors.subtle }]}>Sign-in methods connected to your account.</Text>
 
           {providers.map((id) => (
-            <View key={id} style={[s.row, s.rowBetween]}>
+            <View key={id} style={[s.row, s.rowBetween, { borderBottomColor: colors.border }]}>
               <View style={s.providerRow}>
                 {providerIcon(id)}
-                <Text style={s.providerLabel}>{providerLabel(id)}</Text>
+                <Text style={[s.providerLabel, { color: colors.text }]}>{providerLabel(id)}</Text>
               </View>
               <View style={s.badge}>
-                <Ionicons
-                  name="checkmark-circle"
-                  size={18}
-                  color={colors.success}
-                />
-                <Text style={s.badgeText}>Connected</Text>
+                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                <Text style={[s.badgeText, { color: colors.success }]}>Connected</Text>
               </View>
             </View>
           ))}
 
           {showLinkSection && (
-            <View style={s.infoCard}>
-              <Text style={s.infoText}>
-                If you have an older email/password account, enter its
-                credentials below to port your friends and posts to this
-                account.
+            <View style={[s.infoCard, { backgroundColor: colors.card }]}>
+              <Text style={[s.infoText, { color: colors.text }]}>
+                If you have an older email/password account, enter its credentials below to port your friends and posts to this account.
               </Text>
               <TextInput
-                style={s.input}
+                style={[s.input, { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
                 placeholder="Email address"
                 placeholderTextColor={colors.subtle}
                 value={linkEmail}
@@ -234,7 +211,7 @@ export default function AdvancedSettingsScreen() {
                 editable={!linkBusy}
               />
               <TextInput
-                style={[s.input, { marginTop: 10 }]}
+                style={[s.input, { marginTop: 10, borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
                 placeholder="Password (min 6 characters)"
                 placeholderTextColor={colors.subtle}
                 value={linkPassword}
@@ -243,55 +220,35 @@ export default function AdvancedSettingsScreen() {
                 autoCapitalize="none"
                 editable={!linkBusy}
               />
-              {linkError && <Text style={s.err}>{linkError}</Text>}
+              {linkError && <Text style={[s.err, { color: colors.error }]}>{linkError}</Text>}
               <Pressable
-                style={[s.button, s.primaryBtn, linkBusy && { opacity: 0.7 }]}
+                style={[s.button, { backgroundColor: colors.primary, marginTop: 12 }, linkBusy && { opacity: 0.7 }]}
                 onPress={handlePortAccount}
                 disabled={linkBusy}
               >
-                {linkBusy ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={s.buttonText}>Port Account Data</Text>
-                )}
+                {linkBusy ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>Port Account Data</Text>}
               </Pressable>
             </View>
           )}
 
-          <View style={s.divider} />
+          <View style={[s.divider, { backgroundColor: colors.border }]} />
 
-          {/* Legal */}
-          <Text style={s.h2}>Legal</Text>
-          <Pressable
-            style={s.row}
-            onPress={() => router.push("/legal/privacy")}
-          >
-            <Text style={s.link}>Privacy Policy</Text>
+          <Text style={[s.h2, { color: colors.text }]}>Legal</Text>
+          <Pressable style={[s.row, { borderBottomColor: colors.border }]} onPress={() => router.push("/legal/privacy")}>
+            <Text style={[s.link, { color: colors.primary }]}>Privacy Policy</Text>
           </Pressable>
-          <Pressable style={s.row} onPress={() => router.push("/legal/terms")}>
-            <Text style={s.link}>Terms of Service</Text>
+          <Pressable style={[s.row, { borderBottomColor: colors.border }]} onPress={() => router.push("/legal/terms")}>
+            <Text style={[s.link, { color: colors.primary }]}>Terms of Service</Text>
           </Pressable>
-          <Pressable
-            style={s.row}
-            onPress={() => router.push("/legal/guidelines")}
-          >
-            <Text style={s.link}>Community Guidelines</Text>
+          <Pressable style={[s.row, { borderBottomColor: colors.border }]} onPress={() => router.push("/legal/guidelines")}>
+            <Text style={[s.link, { color: colors.primary }]}>Community Guidelines</Text>
           </Pressable>
 
-          <View style={s.divider} />
+          <View style={[s.divider, { backgroundColor: colors.border }]} />
 
-          {/* Danger Zone */}
-          <Text style={s.h2}>Danger zone</Text>
-          <Pressable
-            style={[s.button, s.dangerBtn]}
-            onPress={confirmDelete}
-            disabled={deleteBusy}
-          >
-            {deleteBusy ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={s.buttonText}>Delete Account</Text>
-            )}
+          <Text style={[s.h2, { color: colors.text }]}>Danger zone</Text>
+          <Pressable style={[s.button, { backgroundColor: colors.danger }]} onPress={confirmDelete} disabled={deleteBusy}>
+            {deleteBusy ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>Delete Account</Text>}
           </Pressable>
         </ScrollView>
       </SafeAreaView>
@@ -301,80 +258,29 @@ export default function AdvancedSettingsScreen() {
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.bg },
+  safe: { flex: 1 },
   header: {
-    height: 52,
-    paddingHorizontal: 12,
-    borderBottomColor: colors.border,
-    borderBottomWidth: 1,
-    backgroundColor: colors.card,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    height: 52, paddingHorizontal: 12, borderBottomWidth: 1,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
   },
-  back: {
-    color: colors.primary,
-    fontWeight: "800",
-    fontSize: 16,
-    width: 48,
-  },
-  title: {
-    color: colors.text,
-    fontWeight: "800",
-    fontSize: 18,
-    textAlign: "center",
-  },
-
+  back: { fontWeight: "800", fontSize: 16, width: 48 },
+  title: { fontWeight: "800", fontSize: 18, textAlign: "center" },
   body: { flex: 1 },
   bodyContent: { padding: 16, paddingBottom: 120 },
-
-  h2: { fontSize: 18, fontWeight: "800", marginBottom: 6, color: colors.text },
-  subtleText: { color: colors.subtle, fontSize: 14, marginBottom: 8 },
-
-  row: {
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  rowBetween: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  link: { color: colors.primary, fontSize: 16, fontWeight: "700" },
-  divider: { height: 1, backgroundColor: colors.border, marginVertical: 20 },
-
+  h2: { fontSize: 18, fontWeight: "800", marginBottom: 6 },
+  subtleText: { fontSize: 14, marginBottom: 8 },
+  row: { paddingVertical: 14, borderBottomWidth: 1 },
+  rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  link: { fontSize: 16, fontWeight: "700" },
+  divider: { height: 1, marginVertical: 20 },
   providerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  providerLabel: { fontSize: 16, fontWeight: "600", color: colors.text },
+  providerLabel: { fontSize: 16, fontWeight: "600" },
   badge: { flexDirection: "row", alignItems: "center", gap: 4 },
-  badgeText: { fontSize: 14, color: colors.success, fontWeight: "600" },
-
-  infoCard: {
-    backgroundColor: "#EBF2FF",
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 12,
-  },
-  infoText: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.text,
-    marginBottom: 12,
-  },
-
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
-    padding: 12,
-    borderRadius: 10,
-    fontSize: 16,
-    color: colors.text,
-  },
-  err: { color: colors.danger, fontSize: 13, marginTop: 6 },
-
+  badgeText: { fontSize: 14, fontWeight: "600" },
+  infoCard: { borderRadius: 12, padding: 16, marginTop: 12 },
+  infoText: { fontSize: 14, lineHeight: 20, marginBottom: 12 },
+  input: { borderWidth: 1, padding: 12, borderRadius: 10, fontSize: 16 },
+  err: { fontSize: 13, marginTop: 6 },
   button: { padding: 14, borderRadius: 12, alignItems: "center" },
-  primaryBtn: { backgroundColor: colors.primary, marginTop: 12 },
-  dangerBtn: { backgroundColor: colors.danger },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
 });
