@@ -148,6 +148,10 @@ export default function ProfileScreen() {
   const [editItems, setEditItems] = useState<ListItem[]>([]);
   const [showColorPicker, setShowColorPicker] = useState(false);
 
+  // Display name editing
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
+
   // Post menu
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
@@ -296,6 +300,29 @@ export default function ProfileScreen() {
     }
   };
 
+  // ── Display Name ──
+  const handleEditDisplayName = () => {
+    setDisplayNameDraft(displayName === resolvedUsername ? '' : displayName);
+    setEditingDisplayName(true);
+  };
+
+  const handleSaveDisplayName = async () => {
+    press();
+    if (!me || !resolvedUid || me.uid !== resolvedUid) return;
+    const trimmed = displayNameDraft.trim();
+    if (trimmed && (trimmed.length < 3 || trimmed.length > 40)) {
+      Alert.alert('Invalid', 'Display name must be 3–40 characters, or empty to use your username.');
+      return;
+    }
+    try {
+      await setDoc(doc(db, 'Profiles', me.uid), { displayName: trimmed || '' }, { merge: true });
+      setDisplayName(trimmed || resolvedUsername);
+      setEditingDisplayName(false);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not save display name.');
+    }
+  };
+
   // ── List CRUD ──
   const handleAddList = () => {
     const hasLists = lists.length > 0;
@@ -336,7 +363,10 @@ export default function ProfileScreen() {
     }
     const items = editItems
       .filter((i) => i.text.trim())
-      .map((i) => ({ text: i.text.trim(), link: (i.link || '').trim() || undefined }));
+      .map((i) => {
+        const link = (i.link || '').trim();
+        return link ? { text: i.text.trim(), link } : { text: i.text.trim() };
+      });
 
     try {
       if (editingList.id) {
@@ -512,8 +542,33 @@ export default function ProfileScreen() {
             <Text style={styles.heroInitial}>{initial}</Text>
           </View>
         </Pressable>
-        <Text style={[styles.heroDisplayName, { color: colors.text }]}>{displayName || resolvedUsername}</Text>
-        {displayName && resolvedUsername && displayName !== resolvedUsername && (
+        {editingDisplayName ? (
+          <View style={styles.displayNameEditWrap}>
+            <TextInput
+              style={[styles.displayNameInput, { borderColor: colors.border, color: colors.text }]}
+              placeholder="Display name (or empty for username)"
+              placeholderTextColor={colors.subtle}
+              value={displayNameDraft}
+              onChangeText={setDisplayNameDraft}
+              maxLength={40}
+              autoFocus
+            />
+            <View style={styles.bioActions}>
+              <Pressable onPress={() => { tap(); setEditingDisplayName(false); }} style={[styles.bioCancelBtn, { backgroundColor: colors.inputBg }]}>
+                <Text style={[styles.bioCancelTxt, { color: colors.subtle }]}>Cancel</Text>
+              </Pressable>
+              <Pressable onPress={handleSaveDisplayName} style={[styles.bioSaveBtn, { backgroundColor: colors.primary }]}>
+                <Text style={styles.bioSaveTxt}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <Pressable onPress={isOwnProfile ? handleEditDisplayName : undefined} disabled={!isOwnProfile}>
+            <Text style={[styles.heroDisplayName, { color: colors.text }]}>{displayName || resolvedUsername}</Text>
+            {isOwnProfile && <Text style={[styles.bioEditHint, { color: colors.subtle, textAlign: 'center' }]}>Tap to edit</Text>}
+          </Pressable>
+        )}
+        {!editingDisplayName && displayName && resolvedUsername && displayName !== resolvedUsername && (
           <Text style={[styles.heroUsername, { color: colors.subtle }]}>@{resolvedUsername}</Text>
         )}
 
@@ -889,6 +944,21 @@ const styles = StyleSheet.create({
   heroUsername: {
     fontSize: 15,
     marginTop: 2,
+  },
+
+  // ── Display name editor ──
+  displayNameEditWrap: {
+    width: '100%',
+    paddingHorizontal: 24,
+    marginTop: 4,
+  },
+  displayNameInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 16,
+    textAlign: 'center',
   },
 
   // ── Color picker ──

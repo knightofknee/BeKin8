@@ -62,13 +62,20 @@ async function subDocEnabled(recipientUid: string, ownerUid: string): Promise<bo
   return d.exists ? !!d.data()?.enabled : false;
 }
 
-/** Decide if a recipient should get pushes for ownerUid (new OR legacy flag). */
+/** Check if recipient has the master "notify all beacons" toggle enabled. */
+async function notifyAllEnabled(recipientUid: string): Promise<boolean> {
+  const profileDoc = await db.collection('Profiles').doc(recipientUid).get();
+  return profileDoc.exists ? !!profileDoc.data()?.notifyAllBeacons : false;
+}
+
+/** Decide if a recipient should get pushes for ownerUid (master toggle, new, OR legacy flag). */
 async function recipientWantsNotify(recipientUid: string, ownerUid: string): Promise<boolean> {
-  const [a, b] = await Promise.all([
+  const [all, a, b] = await Promise.all([
+    notifyAllEnabled(recipientUid),
     subDocEnabled(recipientUid, ownerUid),
     legacyNotifyEnabled(recipientUid, ownerUid),
   ]);
-  return a || b;
+  return all || a || b;
 }
 
 /** All friend UIDs for an owner (from FriendEdges, regardless of state). */

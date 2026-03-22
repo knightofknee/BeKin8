@@ -1,5 +1,5 @@
 // app/friends.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -10,6 +10,7 @@ import {
   Alert,
   Linking,
   Pressable,
+  Switch,
 } from "react-native";
 import { signOut } from "firebase/auth";
 import { useRouter } from "expo-router";
@@ -57,6 +58,8 @@ export default function FriendsScreen() {
   const { user, initialized, profile, profileLoaded } = useAuth();
   const { colors: tc } = useTheme();
   const [notifyByUid, setNotifyByUid] = useState<Record<string, boolean>>({});
+  const [notifyAllBeacons, setNotifyAllBeacons] = useState(false);
+  const [notifyAllBusy, setNotifyAllBusy] = useState(false);
   const router = useRouter();
 
   // Username state — seeded from cached profile, editable locally
@@ -88,6 +91,8 @@ export default function FriendsScreen() {
 
   // Username cache for UIDs from edges
   const nameCacheRef = useRef<Record<string, string>>({});
+  // Display name cache
+  const displayNameCacheRef = useRef<Record<string, string>>({});
   // Profile color cache
   const colorCacheRef = useRef<Record<string, string>>({});
 
@@ -130,11 +135,24 @@ export default function FriendsScreen() {
       const key = uid ? `uid:${uid}` : `name:${username.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ uid, username });
+      const displayName = (f?.displayName ?? "").toString().trim() || undefined;
+      out.push({ uid, username, displayName });
     }
     out.sort((a, b) => a.username.localeCompare(b.username));
     return out;
   };
+
+  // Seed notifyAllBeacons from profile doc
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) return;
+    const unsub = onSnapshot(doc(db, "Profiles", uid), (snap) => {
+      if (snap.exists()) {
+        setNotifyAllBeacons(!!(snap.data() as any)?.notifyAllBeacons);
+      }
+    });
+    return unsub;
+  }, [user?.uid]);
 
   // Seed username from cached profile
   useEffect(() => {
@@ -160,6 +178,7 @@ export default function FriendsScreen() {
             const data = prof.data() as any;
             const uname = data?.username || data?.usernameLower;
             if (uname) nameCacheRef.current[uid] = String(uname);
+            if (data?.displayName) displayNameCacheRef.current[uid] = String(data.displayName);
             if (data?.profileColor) colorCacheRef.current[uid] = data.profileColor;
           }
         } catch {
@@ -315,6 +334,7 @@ export default function FriendsScreen() {
     const makeFriend = (uid: string, username: string): Friend => ({
       uid,
       username,
+      displayName: displayNameCacheRef.current[uid] || undefined,
       profileColor: colorCacheRef.current[uid] || undefined,
     });
 
@@ -530,6 +550,19 @@ export default function FriendsScreen() {
 
       nameCacheRef.current[otherUid] = otherUsername;
 
+      // Auto-enable notifications for new friend when master toggle is ON
+      if (notifyAllBeacons) {
+        try {
+          await setDoc(
+            doc(db, "users", me.uid, "friends", otherUid),
+            { notify: true, updatedAt: serverTimestamp() },
+            { merge: true }
+          );
+          await subscribeToFriendNotifications(otherUid);
+          setNotifyByUid((prev) => ({ ...prev, [otherUid]: true }));
+        } catch {}
+      }
+
       showMessage("Friend added!", "success");
     } catch (e) {
       if (__DEV__) console.error("acceptRequest error", e);
@@ -665,6 +698,20 @@ export default function FriendsScreen() {
   // NEW: filter out blocked users from the displayed list
   const visibleFriends = friends.filter((f) => !(f.uid && blockedUids.has(f.uid)));
 
+  // Detect duplicate display names so we can show @username disambiguator
+  const duplicateDisplayNames = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const f of visibleFriends) {
+      const name = (f.displayName || f.username).toLowerCase();
+      counts[name] = (counts[name] || 0) + 1;
+    }
+    const dupes = new Set<string>();
+    for (const [name, count] of Object.entries(counts)) {
+      if (count > 1) dupes.add(name);
+    }
+    return dupes;
+  }, [visibleFriends]);
+
   // "Add Brian" — first-friend suggestion (only shown when user has zero friends)
   const [addingBrian, setAddingBrian] = useState(false);
   const handleAddBrian = async () => {
@@ -751,6 +798,56 @@ export default function FriendsScreen() {
       showMessage("Failed to send request.", "error");
     } finally {
       setAddingBrian(false);
+    }
+  };
+
+  // --- Master "notify all beacons" toggle ---
+  const handleToggleNotifyAll = async (nextValue: boolean) => {
+    const me = auth.currentUser;
+    if (!me || notifyAllBusy) return;
+
+    if (nextValue) {
+      // Check notification permissions first
+      const perm = await Notifications.getPermissionsAsync();
+      if (!perm.granted) {
+        if (perm.canAskAgain) {
+          const ok = await confirmAsync(
+            "Enable notifications?",
+            "Turn on notifications to get alerts when any friend lights a beacon.",
+          );
+          if (!ok) return;
+          const req = await Notifications.requestPermissionsAsync();
+          if (!req.granted) {
+            Alert.alert("Notifications Off", "You can enable notifications later from this screen.");
+            return;
+          }
+        } else {
+          await new Promise<void>((resolve) => {
+            Alert.alert(
+              "Notifications Off",
+              Platform.OS === "ios"
+                ? "To enable, open Settings → BeKin → Notifications and turn on Allow Notifications."
+                : "To enable, open Settings → Apps → BeKin → Notifications and turn them on.",
+              [
+                { text: "Cancel", style: "cancel", onPress: () => resolve() },
+                { text: "Open Settings", onPress: async () => { try { await Linking.openSettings(); } catch {} resolve(); } },
+              ]
+            );
+          });
+          return;
+        }
+      }
+      try { await syncPushTokenIfGranted(); } catch {}
+    }
+
+    setNotifyAllBusy(true);
+    try {
+      await setDoc(doc(db, "Profiles", me.uid), { notifyAllBeacons: nextValue, updatedAt: serverTimestamp() }, { merge: true });
+      setNotifyAllBeacons(nextValue);
+    } catch {
+      Alert.alert("Error", "Could not update preference.");
+    } finally {
+      setNotifyAllBusy(false);
     }
   };
 
@@ -884,7 +981,7 @@ export default function FriendsScreen() {
             item={item}
             busy={busy}
             onRemove={() => confirmRemove(item)}
-            onBlock={() => confirmBlock(item)} // NEW
+            onBlock={() => confirmBlock(item)}
             notify={!!(item.uid && notifyByUid[item.uid])}
             onToggleNotify={(v) => {
               if (!item.uid) return;
@@ -892,6 +989,8 @@ export default function FriendsScreen() {
             }}
             onPressName={item.username ? () => { tap(); router.push(`/profile/${item.username}`); } : undefined}
             onDoubleTap={item.username ? () => { tap(); router.push(`/profile/${item.username}`); } : undefined}
+            showUsername={duplicateDisplayNames.has((item.displayName || item.username).toLowerCase())}
+            notifyDisabled={notifyAllBeacons}
           />
         )}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
@@ -964,6 +1063,20 @@ export default function FriendsScreen() {
             {/* Friends section title */}
             <View style={[styles.card, { marginBottom: 0, backgroundColor: tc.card, shadowColor: tc.dark }]}>
               <Text style={[styles.sectionTitle, { color: tc.text }]}>My Friends</Text>
+
+              {/* Master notify-all toggle */}
+              <View style={styles.notifyAllRow}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={[styles.notifyAllLabel, { color: tc.text }]}>Beacon notifications from all friends</Text>
+                </View>
+                <Switch
+                  value={notifyAllBeacons}
+                  onValueChange={handleToggleNotifyAll}
+                  disabled={notifyAllBusy}
+                  trackColor={{ false: tc.border, true: tc.primary }}
+                  thumbColor="#fff"
+                />
+              </View>
               {visibleFriends.length === 0 && (
                 <>
                   <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet — search for a username above to send a request.</Text>
@@ -1050,6 +1163,16 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   sectionTitle: { fontSize: 18, fontWeight: "800", marginBottom: 8, color: colors.text },
+  notifyAllRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  notifyAllLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
   subtle: { color: colors.subtle },
 
   // Groups section

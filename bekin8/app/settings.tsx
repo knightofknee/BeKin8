@@ -1,15 +1,15 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput, Switch, Platform, Linking, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, Switch, Platform, Linking, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
-import { doc, onSnapshot, setDoc, serverTimestamp, deleteField } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 import * as Notifications from "expo-notifications";
 import BottomBar from "../components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { syncPushTokenIfGranted } from "../lib/push";
-import { tap, press, selection } from '../utils/haptics';
+import { tap, selection } from '../utils/haptics';
 
 /** Returns true if notifications are (or become) granted. Shows OS prompt if needed. */
 async function ensureNotifyPermission(): Promise<boolean> {
@@ -66,12 +66,6 @@ const colors = {
 export default function SettingsScreen() {
   const { colors: tc, isDark, toggleTheme } = useTheme();
   const { profile, profileLoaded, updateProfile } = useAuth();
-  const [editingName, setEditingName] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [initialDisplayName, setInitialDisplayName] = useState("");
-  const [savingName, setSavingName] = useState(false);
-  const [attemptedSave, setAttemptedSave] = useState(false);
-  const [nameError, setNameError] = useState<string | null>(null);
   const [commentsEnabled, setCommentsEnabled] = useState(false);
   const [commentsBusy, setCommentsBusy] = useState(false);
   // Notification toggles
@@ -111,19 +105,6 @@ export default function SettingsScreen() {
     });
     return () => { unsubUser(); unsubProfile(); };
   }, []);
-
-  const currentDisplayName = profile
-    ? (profile.displayName || profile.username)
-    : "";
-
-  const startEditDisplayName = () => {
-    setEditingName(true);
-    setSavingName(false);
-    setNameError(null);
-    const effective = profile ? (profile.displayName || profile.username) : "";
-    setDisplayName(effective);
-    setInitialDisplayName(effective);
-  };
 
   const handleToggleComments = async (val: boolean) => {
     selection();
@@ -218,39 +199,6 @@ export default function SettingsScreen() {
     }
   };
 
-  const validateName = (val: string) => {
-    const t = (val ?? "").trim();
-    if (t.length === 0) { setNameError(null); return true; } // empty allowed -> fallback to username
-    if (t.length < 3)   { setNameError("Must be at least 3 characters."); return false; }
-    if (t.length > 40)  { setNameError("Keep it under 40 characters."); return false; }
-    setNameError(null);
-    return true;
-  };
-
-  const saveDisplayName = async () => {
-    press();
-    const t = (displayName ?? "").trim().replace(/\s+/g, " ");
-    setAttemptedSave(true);
-    if (!validateName(t)) return;
-    const uid = auth.currentUser?.uid;
-    if (!uid) { setNameError("You must be signed in."); return; }
-    try {
-      setSavingName(true);
-      const payload = t.length === 0
-        ? { displayName: deleteField(), updatedAt: serverTimestamp() }
-        : { displayName: t, updatedAt: serverTimestamp() };
-      await setDoc(doc(db, "Profiles", uid), payload, { merge: true });
-      updateProfile({ displayName: t });
-      setInitialDisplayName(t);
-      setEditingName(false);
-      Alert.alert("Saved", t.length === 0 ? "Display name cleared. We'll show your username." : "Your display name was updated.");
-    } catch (e: any) {
-      setNameError(e?.message ?? "Failed to save name.");
-    } finally {
-      setSavingName(false);
-    }
-  };
-
   if (!profileLoaded) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: tc.bg }}>
@@ -272,46 +220,6 @@ export default function SettingsScreen() {
         </View>
 
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
-          {/* Profile */}
-          <Pressable style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]} onPress={() => { tap(); startEditDisplayName(); }}>
-            <Text style={[s.link, { color: tc.primary }]}>Edit Display Name</Text>
-            <Text style={[s.subtle, { color: tc.subtle }]}>{currentDisplayName || "— uses username —"}</Text>
-          </Pressable>
-
-          {/* Inline editor panel */}
-          {editingName && (
-            <View style={s.editor}>
-              <Text style={[s.h2, { color: tc.text }]}>Edit Display Name</Text>
-              <TextInput
-                style={[s.input, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
-                placeholder="Your display name"
-                placeholderTextColor={tc.subtle}
-                value={displayName}
-                onChangeText={(t) => { setDisplayName(t); if (attemptedSave) validateName(t); }}
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={40}
-              />
-              {attemptedSave && !!nameError && <Text style={[s.err, { color: tc.error }]}>{nameError}</Text>}
-              <View style={s.rowBtns}>
-                <Pressable
-                  style={[s.button, s.ghostBtn, { borderColor: tc.border }]}
-                  onPress={() => { tap(); setEditingName(false); setDisplayName(initialDisplayName); setNameError(null); }}
-                  disabled={savingName}
-                >
-                  <Text style={[s.ghostTxt, { color: tc.text }]}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={[s.button, nameError ? s.disabledBtn : { backgroundColor: tc.primary }]}
-                  onPress={saveDisplayName}
-                  disabled={!!nameError || savingName}
-                >
-                  {savingName ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>Save</Text>}
-                </Pressable>
-              </View>
-            </View>
-          )}
-
           {/* Allow comments on my posts */}
           <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1 }}>
@@ -387,26 +295,34 @@ export default function SettingsScreen() {
             />
           </View>
 
-          {/* Dark mode */}
-          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={[s.link, { color: tc.primary }]}>Dark mode</Text>
-              <Text style={[s.subtle, { color: tc.subtle }]}>Switch to a darker color scheme</Text>
-            </View>
-            <Switch
-              value={isDark}
-              onValueChange={() => { selection(); toggleTheme(); }}
-              trackColor={{ false: tc.border, true: tc.primary }}
-              thumbColor="#fff"
-            />
-          </View>
+          {/* Push bottom actions down */}
+          <View style={{ flexGrow: 1 }} />
 
+          {/* Edit Profile — primary action */}
+          <Pressable
+            style={[s.prominentBtn, { backgroundColor: tc.primary }]}
+            onPress={() => { tap(); if (profile?.username) router.push(`/profile/${profile.username}`); }}
+          >
+            <Text style={s.prominentBtnTxt}>Edit Profile</Text>
+          </Pressable>
+
+          {/* Dark mode — inverse color scheme */}
+          <Pressable
+            style={[s.prominentBtn, { backgroundColor: isDark ? '#FFFFFF' : '#111827' }]}
+            onPress={() => { selection(); toggleTheme(); }}
+          >
+            <Text style={[s.prominentBtnTxt, { color: isDark ? '#111827' : '#FFFFFF' }]}>
+              {isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
+            </Text>
+          </Pressable>
+
+          {/* Advanced Settings */}
           <Pressable
             style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
             onPress={() => { tap(); router.push("/advanced-settings"); }}
           >
             <Text style={[s.link, { color: tc.primary }]}>Advanced Settings</Text>
-            <Text style={[s.subtle, { color: tc.subtle }]}>{"→"}</Text>
+            <Text style={[s.subtle, { color: tc.subtle }]}>›</Text>
           </Pressable>
         </ScrollView>
       </SafeAreaView>
@@ -431,27 +347,24 @@ const s = StyleSheet.create({
   title: { color: colors.text, fontWeight: "800", fontSize: 18, textAlign: "center" },
 
   body: { flex: 1 },
-  bodyContent: { padding: 16, paddingBottom: 120 },
+  bodyContent: { flexGrow: 1, padding: 16, paddingBottom: 120 },
   row: {
     paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
   link: { color: colors.primary, fontSize: 16, fontWeight: "700" },
-  h2: { fontSize: 18, fontWeight: "800", marginBottom: 10, color: colors.text },
-  button: { padding: 14, borderRadius: 12, alignItems: "center" },
-  buttonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
-  editor: { paddingVertical: 12, gap: 8 },
-  input: {
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
-    padding: 12, borderRadius: 10, fontSize: 16, color: colors.text
-  },
-  err: { color: colors.danger, fontSize: 13 },
-  rowBtns: { flexDirection: "row", justifyContent: "flex-end", gap: 12, marginTop: 4, marginBottom: 12 },
-  ghostBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.border },
-  ghostTxt: { color: colors.text, fontSize: 16, fontWeight: "800" },
-  primary: { backgroundColor: colors.primary },
-  disabledBtn: { backgroundColor: "#9CA3AF" },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   subtle: { color: colors.subtle, fontSize: 14 },
+  prominentBtn: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  prominentBtnTxt: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "800",
+  },
 });

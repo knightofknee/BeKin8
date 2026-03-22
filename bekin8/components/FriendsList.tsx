@@ -15,9 +15,11 @@ type RowProps = {
   onToggleNotify?: (value: boolean) => void;
   onPressName?: () => void;
   onDoubleTap?: () => void;
+  showUsername?: boolean; // show @username disambiguator when displayNames collide
+  notifyDisabled?: boolean; // master "notify all" is ON — show as on but grayed out
 };
 
-function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap }: RowProps) {
+function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap, showUsername, notifyDisabled }: RowProps) {
   const { colors } = useTheme();
   const disabled = busy || !item.uid;
   const lastTapRef = useRef(0);
@@ -42,22 +44,25 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
         style={[styles.avatar, { backgroundColor: item.profileColor || colors.primary }, onPressName && styles.avatarTappable]}
       >
         <Text style={{ color: "#fff", fontWeight: "800" }}>
-          {item.username?.[0]?.toUpperCase() || "?"}
+          {(item.displayName || item.username)?.[0]?.toUpperCase() || "?"}
         </Text>
       </Pressable>
 
       {/* Name */}
       <View style={{ flex: 1 }}>
-        <Text style={[styles.rowTitle, { color: colors.text }]}>{item.username}</Text>
+        <Text style={[styles.rowTitle, { color: colors.text }]}>{item.displayName || item.username}</Text>
+        {showUsername && item.displayName && (
+          <Text style={[styles.rowSubtitle, { color: colors.subtle }]}>@{item.username}</Text>
+        )}
       </View>
 
       {/* Notifications toggle (minimal, inline) */}
-      <View style={styles.notifyWrap}>
+      <View style={[styles.notifyWrap, notifyDisabled && { opacity: 0.4 }]}>
         <Text style={[styles.notifyLabel, { color: colors.subtle }]}>Notifications?</Text>
         <Switch
-          value={!!notify}
+          value={notifyDisabled ? true : !!notify}
           onValueChange={(v) => { selection(); onToggleNotify && onToggleNotify(v); }}
-          disabled={disabled}
+          disabled={disabled || notifyDisabled}
         />
       </View>
 
@@ -99,6 +104,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
   },
   rowTitle: { fontWeight: "700", color: colors.text },
+  rowSubtitle: { fontSize: 12, marginTop: 1 },
   avatar: {
     width: 36,
     height: 36,
