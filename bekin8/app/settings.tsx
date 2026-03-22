@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput, Switch, Platform, Linking } from "react-native";
+import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, TextInput, Switch, Platform, Linking, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
@@ -271,7 +271,7 @@ export default function SettingsScreen() {
           <View style={{ width: 48 }} />
         </View>
 
-        <View style={s.body}>
+        <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
           {/* Profile */}
           <Pressable style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]} onPress={() => { tap(); startEditDisplayName(); }}>
             <Text style={[s.link, { color: tc.primary }]}>Edit Display Name</Text>
@@ -401,8 +401,6 @@ export default function SettingsScreen() {
             />
           </View>
 
-          <View style={s.spacer} />
-
           <Pressable
             style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
             onPress={() => { tap(); router.push("/advanced-settings"); }}
@@ -410,7 +408,7 @@ export default function SettingsScreen() {
             <Text style={[s.link, { color: tc.primary }]}>Advanced Settings</Text>
             <Text style={[s.subtle, { color: tc.subtle }]}>{"→"}</Text>
           </Pressable>
-        </View>
+        </ScrollView>
       </SafeAreaView>
       <BottomBar />
     </>
@@ -432,7 +430,8 @@ const s = StyleSheet.create({
   back: { color: colors.primary, fontWeight: "800", fontSize: 16, width: 48 },
   title: { color: colors.text, fontWeight: "800", fontSize: 18, textAlign: "center" },
 
-  body: { flex: 1, padding: 16, paddingBottom: 100 },
+  body: { flex: 1 },
+  bodyContent: { padding: 16, paddingBottom: 120 },
   row: {
     paddingVertical: 14,
     borderBottomWidth: 1,
@@ -453,7 +452,6 @@ const s = StyleSheet.create({
   ghostTxt: { color: colors.text, fontSize: 16, fontWeight: "800" },
   primary: { backgroundColor: colors.primary },
   disabledBtn: { backgroundColor: "#9CA3AF" },
-  spacer: { flex: 1 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   subtle: { color: colors.subtle, fontSize: 14 },
 });

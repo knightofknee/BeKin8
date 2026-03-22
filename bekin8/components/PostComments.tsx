@@ -3,8 +3,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   StyleSheet,
@@ -274,9 +274,44 @@ export default function PostComments({ post, onClose }: Props) {
     }
   };
 
+  // ---- Only-lift-by-overlap logic (iOS) ----
+  const cardRef = useRef<View>(null);
+  const lastKbTopRef = useRef<number | null>(null);
+  const [lift, setLift] = useState(0);
+
+  const recalcLift = useCallback((kbTop?: number | null) => {
+    if (Platform.OS !== 'ios') return;
+    if (typeof kbTop === 'number') {
+      if (kbTop === lastKbTopRef.current) return; // no change — skip
+      lastKbTopRef.current = kbTop;
+    }
+    requestAnimationFrame(() => {
+      cardRef.current?.measureInWindow((_x, y, _w, h) => {
+        const panelBottom = y + h;
+        const keyboardTop =
+          typeof (kbTop ?? lastKbTopRef.current) === 'number'
+            ? (kbTop ?? lastKbTopRef.current)!
+            : Dimensions.get('window').height;
+        const overlap = panelBottom - keyboardTop;
+        setLift(overlap > 0 ? overlap : 0);
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const onWillShow = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
+    const onWillHide = () => { lastKbTopRef.current = null; setLift(0); };
+    const s1 = Keyboard.addListener('keyboardWillShow', onWillShow);
+    const s2 = Keyboard.addListener('keyboardWillHide', onWillHide);
+    return () => { s1.remove(); s2.remove(); };
+  }, [recalcLift]);
+
   // Comments are on only if: per-post flag is enabled AND author's global setting allows comments
   // authorCommentsEnabled=null means still loading — show composer optimistically if per-post is enabled
   const commentsOn = post.commentsEnabled !== false && (authorCommentsEnabled === null || authorCommentsEnabled === true);
+
+  const translated = Platform.OS === 'ios' && lift > 0 ? { transform: [{ translateY: -lift }] as const } : null;
 
   return (
     <>
@@ -285,12 +320,7 @@ export default function PostComments({ post, onClose }: Props) {
 
       {/* Floating card — centered like ChatRoom */}
       <View style={styles.cardOuter} pointerEvents="box-none">
-        <View style={[styles.card, { backgroundColor: tc.card, borderColor: tc.border }]}>
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={0}
-        >
+        <View ref={cardRef} style={[styles.card, { backgroundColor: tc.card, borderColor: tc.border }, translated]}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
           <View style={styles.headerLeft}>
@@ -420,7 +450,6 @@ export default function PostComments({ post, onClose }: Props) {
             <Text style={[styles.commentsOffText, { color: tc.subtle }]}>Comments are turned off</Text>
           </View>
         )}
-        </KeyboardAvoidingView>
         </View>{/* end card */}
       </View>{/* end cardOuter */}
 

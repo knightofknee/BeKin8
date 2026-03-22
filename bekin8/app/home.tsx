@@ -557,10 +557,13 @@ export default function HomeScreen() {
         updatedAt: serverTimestamp(),
       });
 
-      const name = profile?.displayName || profile?.username || null;
+      const name = profile?.displayName || profile?.username || 'Someone';
       await addDoc(collection(db, 'Beacons', b.id, 'ChatMessages'), {
         type: 'system',
-        text: `${name || 'Someone'} is in`,
+        subtype: 'im-in',
+        actorUid: user.uid,
+        actorName: name,
+        text: `${name} is in`,
         createdAt: serverTimestamp(),
       });
     } catch (e) {

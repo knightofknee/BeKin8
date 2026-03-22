@@ -147,7 +147,10 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
   const recalcLift = (kbTop?: number | null) => {
     if (Platform.OS !== 'ios') return;
-    if (typeof kbTop === 'number') lastKbTopRef.current = kbTop;
+    if (typeof kbTop === 'number') {
+      if (kbTop === lastKbTopRef.current) return; // no change — skip
+      lastKbTopRef.current = kbTop;
+    }
     requestAnimationFrame(() => {
       containerRef.current?.measureInWindow((_x, y, _w, h) => {
         const panelBottom = y + h;
@@ -164,23 +167,18 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
     const onWillShow = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
-    const onWillChange = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
     const onWillHide = () => {
       lastKbTopRef.current = null;
       setLift(0);
     };
     const s1 = Keyboard.addListener('keyboardWillShow', onWillShow);
-    const s2 = Keyboard.addListener('keyboardWillChangeFrame', onWillChange);
-    const s3 = Keyboard.addListener('keyboardWillHide', onWillHide);
+    const s2 = Keyboard.addListener('keyboardWillHide', onWillHide);
     return () => {
       s1.remove();
       s2.remove();
-      s3.remove();
     };
   }, []);
 
-  // Recompute after layout changes too
-  const onContainerLayout = () => recalcLift(null);
 
   // ---- Data subscriptions ----
   useEffect(() => {
@@ -593,6 +591,16 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
   // ----- Render (apply only-overlap lift) -----
   const translated = Platform.OS === 'ios' && lift > 0 ? { transform: [{ translateY: -lift }] } : null;
 
+  const DoneAccessory = Platform.OS === 'ios' ? (
+    <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
+      <View style={[styles.iosAccessory, { borderTopColor: tc.border, backgroundColor: tc.card }]}>
+        <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
+          <Text style={[styles.iosDoneText, { color: tc.text }]}>Done</Text>
+        </Pressable>
+      </View>
+    </InputAccessoryView>
+  ) : null;
+
   if (onClose) {
     return (
       <>
@@ -604,6 +612,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
             <View style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
           </View>
         </View>
+        {DoneAccessory}
       </>
     );
   }
@@ -620,11 +629,11 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     <>
       <View
         ref={containerRef}
-        onLayout={onContainerLayout}
-        style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style, translated]}
+               style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style, translated]}
       >
         {PanelBody}
       </View>
+      {DoneAccessory}
     </>
   );
 }

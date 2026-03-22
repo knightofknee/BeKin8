@@ -438,13 +438,13 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
           <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={[styles.beaconOwner, { color: tc.text }]} numberOfLines={1}>
+          <Text style={styles.beaconOwner} numberOfLines={1}>
             {ownerLabel}
           </Text>
-          <Text style={[styles.beaconWhen, { color: tc.subtle }]} numberOfLines={1}>
+          <Text style={styles.beaconWhen} numberOfLines={1}>
             {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
           </Text>
-          <Text style={[styles.beaconMsg, { color: tc.text }]} numberOfLines={2}>
+          <Text style={styles.beaconMsg} numberOfLines={2}>
             {beacon.message}
           </Text>
         </View>
