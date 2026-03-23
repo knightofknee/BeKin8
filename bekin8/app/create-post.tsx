@@ -289,8 +289,8 @@ export default function CreatePostScreen() {
     }
   };
 
-  // ── Loading states ────────────────────────────────────────────────────────
-  if (!profileLoaded || checkingLimit) {
+  // ── Loading state — only wait for profile, not rate-limit check ──────────
+  if (!profileLoaded) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.bg }]}>
         <ActivityIndicator color={colors.primary} />
@@ -372,16 +372,16 @@ export default function CreatePostScreen() {
                 {/* Post button */}
                 <Pressable
                   onPress={handleSubmit}
-                  disabled={submitting || isLimited}
+                  disabled={submitting || isLimited || checkingLimit}
                   style={({ pressed }) => [
                     styles.submitBtn,
                     styles.submitBtnFlex,
                     { backgroundColor: colors.primary, shadowColor: colors.primary },
-                    (submitting || isLimited) && [styles.submitBtnDisabled, { backgroundColor: colors.border }],
-                    pressed && !isLimited && { opacity: 0.88 },
+                    (submitting || isLimited || checkingLimit) && [styles.submitBtnDisabled, { backgroundColor: colors.border }],
+                    pressed && !isLimited && !checkingLimit && { opacity: 0.88 },
                   ]}
                 >
-                  {submitting
+                  {submitting || checkingLimit
                     ? <ActivityIndicator color="#fff" />
                     : <Text style={styles.submitTxt}>Post</Text>
                   }

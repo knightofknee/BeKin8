@@ -478,10 +478,13 @@ export default function Feed() {
     return (
       <>
         <SafeAreaView style={{ flex: 1, backgroundColor: tc.bg }} edges={['top', 'left', 'right']}>
-          <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
-            <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
-          </View>
-          <View style={[styles.list, { backgroundColor: tc.bg }]}>
+          <View style={[styles.list, { flex: 1, backgroundColor: tc.bg }]}>
+            <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
+              <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
+              <View style={[styles.toggleBtn, { backgroundColor: tc.primary, opacity: 0.4 }]}>
+                <Text style={styles.toggleBtnText}>Show my posts</Text>
+              </View>
+            </View>
             <SkeletonCard cardBg={tc.card} cardBorder={tc.border} shimmer={tc.skeleton} />
             <SkeletonCard cardBg={tc.card} cardBorder={tc.border} shimmer={tc.skeleton} />
             <SkeletonCard cardBg={tc.card} cardBorder={tc.border} shimmer={tc.skeleton} />
