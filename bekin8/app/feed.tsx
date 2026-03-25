@@ -376,7 +376,11 @@ export default function Feed() {
           try {
             await addDoc(collection(db, 'Reports'), {
               targetType: 'post', targetId: p.id, targetOwnerUid: p.authorUid,
+              targetOwnerUsername: p.authorUsername || null,
               reporterUid: me, createdAt: serverTimestamp(), status: 'open',
+              snippet: String(p.title || '').slice(0, 100),
+              contentSnippet: String(p.content || '').slice(0, 300),
+              url: p.url || null,
             });
             Alert.alert('Thanks', 'We received your report.');
           } catch (e: any) { Alert.alert('Report failed', e?.message ?? 'Try again.'); }

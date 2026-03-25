@@ -213,10 +213,12 @@ export default function PostComments({ post, onClose }: Props) {
               targetType: 'comment',
               targetId: comment.id,
               targetOwnerUid: comment.authorUid,
+              targetOwnerName: comment.authorName || null,
               postId: post.id,
               reporterUid: me.uid,
               createdAt: serverTimestamp(),
               status: 'open',
+              snippet: String(comment.text || '').slice(0, 300),
             });
             Alert.alert('Thanks', 'We received your report.');
           } catch (e: any) {
@@ -329,7 +331,6 @@ export default function PostComments({ post, onClose }: Props) {
             </View>
             <View>
               <Text style={[styles.headerAuthor, { color: tc.text }]} numberOfLines={1}>{postAuthorName}</Text>
-              <Text style={[styles.headerSub, { color: tc.subtle }]} numberOfLines={1}>{post.content}</Text>
             </View>
           </View>
           <Pressable hitSlop={12} onPress={() => { tap(); onClose(); }} style={styles.closeBtn}>

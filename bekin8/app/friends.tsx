@@ -1005,6 +1005,8 @@ export default function FriendsScreen() {
               onChangeUsername={setUsernameInput}
               onSaveUsername={handleSetUsername}
               busyUsername={busyUsername}
+              displayName={profile?.displayName || null}
+              onPressDisplayName={() => { if (currentUsername) { tap(); router.push(`/profile/${currentUsername}`); } }}
               nameInput={name}
               onChangeName={setName}
               hasProfileUsername={!!currentUsername?.trim()}

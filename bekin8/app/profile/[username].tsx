@@ -101,6 +101,8 @@ interface UserList {
   id: string;
   title: string;
   items: ListItem[];
+  order?: number;
+  style?: 'bullets' | 'numbers';
 }
 
 function toDate(rawTs: any): Date {
@@ -152,6 +154,10 @@ export default function ProfileScreen() {
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [displayNameDraft, setDisplayNameDraft] = useState('');
 
+  // List menu
+  const [listMenuFor, setListMenuFor] = useState<UserList | null>(null);
+  const listTapRef = useRef(0);
+
   // Post menu
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
@@ -197,7 +203,7 @@ export default function ProfileScreen() {
     if (!resolvedUid) return;
     const col = collection(db, 'Profiles', resolvedUid, 'lists');
     const unsub = onSnapshot(
-      query(col, orderBy('createdAt', 'asc')),
+      col,
       (snap) => {
         const arr: UserList[] = [];
         snap.forEach((d) => {
@@ -206,8 +212,12 @@ export default function ProfileScreen() {
             id: d.id,
             title: data.title || '',
             items: Array.isArray(data.items) ? data.items : [],
+            order: typeof data.order === 'number' ? data.order : (data.createdAt || 0),
+            style: data.style === 'numbers' ? 'numbers' : 'bullets',
           });
         });
+        // Fallback sort for lists without order field
+        arr.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         setLists(arr);
       },
       () => {}
@@ -353,12 +363,21 @@ export default function ProfileScreen() {
     ]);
   };
 
+  const [savingList, setSavingList] = useState(false);
   const handleSaveList = async () => {
     press();
-    if (!me || !resolvedUid || !editingList) return;
+    if (!me || !resolvedUid || !editingList || savingList) return;
     const title = editTitle.trim();
     if (!title) {
       Alert.alert('Title required', 'Please enter a list title.');
+      return;
+    }
+    // Prevent duplicate titles (allow same title when editing the same list)
+    const duplicate = lists.find(
+      (l) => l.title.toLowerCase() === title.toLowerCase() && l.id !== editingList.id
+    );
+    if (duplicate) {
+      Alert.alert('Duplicate title', 'You already have a list with that name.');
       return;
     }
     const items = editItems
@@ -368,39 +387,67 @@ export default function ProfileScreen() {
         return link ? { text: i.text.trim(), link } : { text: i.text.trim() };
       });
 
+    setSavingList(true);
     try {
       if (editingList.id) {
-        // Update existing
         await setDoc(
           doc(db, 'Profiles', me.uid, 'lists', editingList.id),
           { title, items },
           { merge: true }
         );
       } else {
-        // Create new
         const newId = `list_${Date.now()}`;
+        const maxOrder = lists.reduce((max, l) => Math.max(max, l.order ?? 0), 0);
         await setDoc(doc(db, 'Profiles', me.uid, 'lists', newId), {
           title,
           items,
+          order: maxOrder + 1,
           createdAt: Date.now(),
         });
       }
       setEditingList(null);
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Could not save list.');
+    } finally {
+      setSavingList(false);
     }
   };
 
+  const editScrollRef = useRef<ScrollView>(null);
   const addEditItem = () => {
     setEditItems((prev) => [...prev, { text: '', link: '' }]);
+    setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 150);
   };
 
   const removeEditItem = (index: number) => {
-    setEditItems((prev) => prev.filter((_, i) => i !== index));
+    const item = editItems[index];
+    if (item?.text?.trim()) {
+      Alert.alert('Remove item?', `Delete "${item.text.trim()}"?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => setEditItems((prev) => prev.filter((_, i) => i !== index)) },
+      ]);
+    } else {
+      setEditItems((prev) => prev.filter((_, i) => i !== index));
+    }
   };
 
   const updateEditItem = (index: number, field: 'text' | 'link', value: string) => {
     setEditItems((prev) => prev.map((item, i) => i === index ? { ...item, [field]: value } : item));
+  };
+
+  const swapLists = async (indexA: number, indexB: number) => {
+    if (!me || indexA < 0 || indexB < 0 || indexA >= lists.length || indexB >= lists.length) return;
+    const a = lists[indexA];
+    const b = lists[indexB];
+    const orderA = a.order ?? indexA;
+    const orderB = b.order ?? indexB;
+    tap();
+    try {
+      await Promise.all([
+        setDoc(doc(db, 'Profiles', me.uid, 'lists', a.id), { order: orderB }, { merge: true }),
+        setDoc(doc(db, 'Profiles', me.uid, 'lists', b.id), { order: orderA }, { merge: true }),
+      ]);
+    } catch {}
   };
 
   // ── Post actions ──
@@ -482,22 +529,54 @@ export default function ProfileScreen() {
           </Text>
         )}
 
-        {lists.map((list) => {
+        {lists.map((list, listIndex) => {
           const expanded = expandedListId === list.id;
           const visibleItems = expanded ? list.items : list.items.slice(0, 3);
           const hasMore = list.items.length > 3;
 
           return (
-            <View key={list.id} style={[styles.listCard, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
+            <Pressable
+              key={list.id}
+              onPress={() => {
+                if (!isOwnProfile) return;
+                const now = Date.now();
+                if (now - listTapRef.current < 350) {
+                  tap();
+                  handleEditList(list);
+                  listTapRef.current = 0;
+                } else {
+                  listTapRef.current = now;
+                }
+              }}
+              onLongPress={() => { if (isOwnProfile) { tap(); handleEditList(list); } }}
+              style={[styles.listCard, { borderColor: colors.border, backgroundColor: colors.inputBg }]}
+            >
               <View style={styles.listCardHeader}>
                 <Text style={[styles.listTitle, { color: colors.text }]}>{list.title}</Text>
                 {isOwnProfile && (
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <Pressable onPress={() => handleEditList(list)} hitSlop={8}>
-                      <Text style={[styles.listAction, { color: colors.primary }]}>Edit</Text>
-                    </Pressable>
-                    <Pressable onPress={() => handleDeleteList(list)} hitSlop={8}>
-                      <Text style={[styles.listAction, { color: colors.error }]}>Remove</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    {lists.length > 1 && (
+                      <View style={{ flexDirection: 'row', gap: 4 }}>
+                        <Pressable
+                          onPress={(e) => { e.stopPropagation(); swapLists(listIndex, listIndex - 1); }}
+                          hitSlop={8}
+                          style={[styles.reorderBtn, { opacity: listIndex === 0 ? 0.2 : 1 }]}
+                          disabled={listIndex === 0}
+                        >
+                          <Text style={{ fontSize: 16, color: colors.subtle }}>▲</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={(e) => { e.stopPropagation(); swapLists(listIndex, listIndex + 1); }}
+                          hitSlop={8}
+                          style={[styles.reorderBtn, { opacity: listIndex === lists.length - 1 ? 0.2 : 1 }]}
+                          disabled={listIndex === lists.length - 1}
+                        >
+                          <Text style={{ fontSize: 16, color: colors.subtle }}>▼</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                    <Pressable onPress={() => { tap(); setListMenuFor(list); }} hitSlop={10} style={{ padding: 4 }}>
+                      <Text style={{ fontSize: 18, color: colors.subtle }}>⋯</Text>
                     </Pressable>
                   </View>
                 )}
@@ -505,17 +584,22 @@ export default function ProfileScreen() {
 
               {visibleItems.map((item, i) => (
                 <View key={i} style={styles.listItemRow}>
-                  <Text style={[styles.listItemText, { color: colors.text }]}>{item.text}</Text>
-                  {item.link ? (
-                    <Pressable
-                      onPress={() => Linking.openURL(
-                        /^https?:\/\//i.test(item.link!) ? item.link! : `https://${item.link}`
-                      )}
-                      hitSlop={6}
-                    >
-                      <Text style={[styles.listItemLink, { color: colors.primary }]}>Link</Text>
-                    </Pressable>
-                  ) : null}
+                  <Text style={[styles.listItemText, { color: colors.text }]} numberOfLines={0}>
+                    {list.style === 'numbers' ? `${i + 1}. ` : '• '}{item.text}
+                    {item.link ? (
+                      <>
+                        <Text style={{ color: colors.text }}>{' - '}</Text>
+                        <Text
+                          style={[styles.listItemLink, { color: colors.primary }]}
+                          onPress={() => Linking.openURL(
+                            /^https?:\/\//i.test(item.link!) ? item.link! : `https://${item.link}`
+                          )}
+                        >
+                          {item.link}
+                        </Text>
+                      </>
+                    ) : null}
+                  </Text>
                 </View>
               ))}
 
@@ -526,7 +610,7 @@ export default function ProfileScreen() {
                   </Text>
                 </Pressable>
               )}
-            </View>
+            </Pressable>
           );
         })}
       </View>
@@ -781,9 +865,26 @@ export default function ProfileScreen() {
               maxLength={100}
             />
 
-            <ScrollView style={{ maxHeight: 300 }}>
+            <ScrollView style={{ maxHeight: 650 }} keyboardShouldPersistTaps="handled" ref={editScrollRef}>
               {editItems.map((item, i) => (
                 <View key={i} style={[styles.editItemRow, { borderBottomColor: colors.border }]}>
+                  {/* Reorder arrows */}
+                  <View style={styles.reorderBtns}>
+                    <Pressable
+                      onPress={() => { if (i === 0) return; tap(); setEditItems((prev) => { const next = [...prev]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next; }); }}
+                      hitSlop={10}
+                      style={[styles.reorderBtn, { opacity: i === 0 ? 0.2 : 1 }]}
+                    >
+                      <Text style={{ fontSize: 20, color: colors.subtle }}>▲</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => { if (i === editItems.length - 1) return; tap(); setEditItems((prev) => { const next = [...prev]; [next[i], next[i + 1]] = [next[i + 1], next[i]]; return next; }); }}
+                      hitSlop={10}
+                      style={[styles.reorderBtn, { opacity: i === editItems.length - 1 ? 0.2 : 1 }]}
+                    >
+                      <Text style={{ fontSize: 20, color: colors.subtle }}>▼</Text>
+                    </Pressable>
+                  </View>
                   <View style={{ flex: 1, gap: 6 }}>
                     <TextInput
                       style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
@@ -791,7 +892,7 @@ export default function ProfileScreen() {
                       placeholderTextColor={colors.subtle}
                       value={item.text}
                       onChangeText={(v) => updateEditItem(i, 'text', v)}
-                      maxLength={200}
+                      multiline
                     />
                     <TextInput
                       style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
@@ -801,7 +902,6 @@ export default function ProfileScreen() {
                       onChangeText={(v) => updateEditItem(i, 'link', v)}
                       autoCapitalize="none"
                       keyboardType="url"
-                      maxLength={500}
                     />
                   </View>
                   <Pressable onPress={() => removeEditItem(i)} hitSlop={8} style={styles.removeItemBtn}>
@@ -819,8 +919,8 @@ export default function ProfileScreen() {
               <Pressable onPress={() => { tap(); setEditingList(null); }} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
                 <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={handleSaveList} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }]}>
-                <Text style={styles.modalSaveTxt}>Save</Text>
+              <Pressable onPress={handleSaveList} disabled={savingList} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, savingList && { opacity: 0.5 }]}>
+                <Text style={styles.modalSaveTxt}>{savingList ? 'Saving...' : 'Save'}</Text>
               </Pressable>
             </View>
           </View>
@@ -843,6 +943,37 @@ export default function ProfileScreen() {
               </Pressable>
             )}
             <Pressable style={[styles.menuRow, { borderTopWidth: 1, borderTopColor: colors.border }]} onPress={() => { tap(); setMenuFor(null); }}>
+              <Text style={[styles.menuText, { color: colors.subtle }]}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* List menu modal */}
+      <Modal visible={!!listMenuFor} animationType="fade" transparent onRequestClose={() => setListMenuFor(null)}>
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: colors.backdrop }]} onPress={() => { tap(); setListMenuFor(null); }}>
+          <Pressable style={[styles.menuSheet, { backgroundColor: colors.card }]} onPress={(e) => e.stopPropagation()}>
+            <Pressable style={styles.menuRow} onPress={() => { const l = listMenuFor; setListMenuFor(null); if (l) handleEditList(l); }}>
+              <Text style={[styles.menuText, { color: colors.text }]}>Edit list</Text>
+            </Pressable>
+            <Pressable style={styles.menuRow} onPress={async () => {
+              const l = listMenuFor;
+              if (!l || !me) return;
+              const newStyle = l.style === 'numbers' ? 'bullets' : 'numbers';
+              tap();
+              setListMenuFor(null);
+              try {
+                await setDoc(doc(db, 'Profiles', me.uid, 'lists', l.id), { style: newStyle }, { merge: true });
+              } catch {}
+            }}>
+              <Text style={[styles.menuText, { color: colors.text }]}>
+                Switch to {listMenuFor?.style === 'numbers' ? 'bullets' : 'numbers'}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.menuRow} onPress={() => { const l = listMenuFor; setListMenuFor(null); if (l) handleDeleteList(l); }}>
+              <Text style={[styles.menuText, { color: colors.error }]}>Delete list</Text>
+            </Pressable>
+            <Pressable style={[styles.menuRow, { borderTopWidth: 1, borderTopColor: colors.border }]} onPress={() => { tap(); setListMenuFor(null); }}>
               <Text style={[styles.menuText, { color: colors.subtle }]}>Cancel</Text>
             </Pressable>
           </Pressable>
@@ -1080,19 +1211,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   listItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingVertical: 4,
   },
   listItemText: {
     fontSize: 14,
-    flex: 1,
+    flexWrap: 'wrap',
   },
   listItemLink: {
-    fontWeight: '600',
     fontSize: 13,
-    marginLeft: 8,
+    textDecorationLine: 'underline',
   },
   expandBtn: {
     fontWeight: '600',
@@ -1142,7 +1269,7 @@ const styles = StyleSheet.create({
   modalCard: {
     borderRadius: 16,
     padding: 20,
-    maxHeight: '80%',
+    maxHeight: '90%',
   },
   modalTitle: {
     fontSize: 18,
@@ -1164,6 +1291,18 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingBottom: 12,
     borderBottomWidth: 1,
+  },
+  reorderBtns: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingTop: 8,
+  },
+  reorderBtn: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   removeItemBtn: {
     width: 32,

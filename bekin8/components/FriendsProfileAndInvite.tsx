@@ -13,6 +13,9 @@ type Props = {
   onSaveUsername: () => void;
   busyUsername: boolean;
 
+  displayName: string | null;
+  onPressDisplayName: () => void;
+
   nameInput: string;
   onChangeName: (v: string) => void;
   hasProfileUsername: boolean;
@@ -28,6 +31,8 @@ export default function FriendsProfileAndInvite({
   onChangeUsername,
   onSaveUsername,
   busyUsername,
+  displayName,
+  onPressDisplayName,
   nameInput,
   onChangeName,
   hasProfileUsername,
@@ -38,11 +43,21 @@ export default function FriendsProfileAndInvite({
   const { colors } = useTheme();
   return (
     <View style={[styles.card, { backgroundColor: colors.card }]}>
-      {/* Username */}
+      {/* Username + display name */}
       {currentUsername ? (
         <>
-          <Text style={[styles.label, { color: colors.text }]}>Your username</Text>
-          <Text style={[styles.rowTitle, { color: colors.text }]}>{currentUsername}</Text>
+          <View style={styles.usernameRow}>
+            <View>
+              <Text style={[styles.label, { color: colors.text, marginBottom: 4 }]}>Your username</Text>
+              <Text style={[styles.rowTitle, { color: colors.text }]}>{currentUsername}</Text>
+            </View>
+            <Pressable onPress={() => { press(); onPressDisplayName(); }} hitSlop={8}>
+              <Text style={[styles.label, { color: colors.text, marginBottom: 4 }]}>Display name</Text>
+              <Text style={[styles.displayNameLink, { color: colors.primary }]}>
+                {displayName || 'Set display name'}
+              </Text>
+            </Pressable>
+          </View>
         </>
       ) : (
         <>
@@ -147,6 +162,8 @@ const styles = StyleSheet.create({
   },
   btnText: { color: "#fff", fontWeight: "800" },
   message: { marginTop: 10, fontWeight: "600" },
+  usernameRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  displayNameLink: { fontWeight: "700", textDecorationLine: "underline" },
   rowTitle: { fontWeight: "700", color: colors.text },
   subtle: { color: colors.subtle },
 });

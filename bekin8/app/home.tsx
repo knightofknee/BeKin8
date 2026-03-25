@@ -98,6 +98,7 @@ export default function HomeScreen() {
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   // Friend groups state for scheduler
   const [groups, setGroups] = useState<FriendGroup[]>([]);
@@ -596,17 +597,25 @@ export default function HomeScreen() {
 
           <View style={[styles.controls, { backgroundColor: colors.bg }]}>
             <View style={styles.myBeaconColumn}>
-              <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
-                {isLit ? (
-                  <Image
-                    source={require('../assets/images/beacon-fire.gif')}
-                    style={styles.beaconGif}
-                    contentFit="contain"
-                  />
-                ) : (
-                  <Text style={styles.beaconIcon}>🪵</Text>
+              <View style={{ position: 'relative' }}>
+                <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
+                  {isLit ? (
+                    <Image
+                      source={require('../assets/images/beacon-fire.gif')}
+                      style={styles.beaconGif}
+                      contentFit="contain"
+                    />
+                  ) : (
+                    <Text style={styles.beaconIcon}>🪵</Text>
+                  )}
+                </TouchableOpacity>
+
+                {!showHelp && (
+                  <Pressable onPress={() => setShowHelp(true)} hitSlop={12} style={styles.helpBtn}>
+                    <Text style={[styles.helpIcon, { color: colors.subtle }]}>?</Text>
+                  </Pressable>
                 )}
-              </TouchableOpacity>
+              </View>
 
               {isLit && myActiveBeacon ? (
                 <TouchableOpacity
@@ -789,6 +798,34 @@ export default function HomeScreen() {
       </SafeAreaView>
 
       <BottomBar />
+
+      {/* Help modal */}
+      <Modal visible={showHelp} transparent animationType="fade" onRequestClose={() => setShowHelp(false)}>
+        <Pressable style={styles.helpOverlay} onPress={() => setShowHelp(false)}>
+          <View style={[styles.helpCard, { backgroundColor: colors.card }]}>
+            <Text style={[styles.helpTitle, { color: colors.text }]}>How Beacons Work</Text>
+
+            <Text style={[styles.helpBody, { color: colors.text }]}>
+              A Beacon is a signal to your friends that you're free to hang out.
+            </Text>
+
+            <Text style={[styles.helpBody, { color: colors.text }]}>
+              {"\u2022"} Tap the logs to light your Beacon{"\n"}
+              {"\u2022"} Pick a day, choose which friends can see it, and add an optional note{"\n"}
+              {"\u2022"} Friends with notifications enabled get a push notification{"\n"}
+              {"\u2022"} Friends can tap "I'm in" to join, and you can chat in the Beacon
+            </Text>
+
+            <Text style={[styles.helpBody, { color: colors.text }]}>
+              To get notifications when friends light their Beacons, go to the Friends tab and turn on notifications for each friend or use the "Beacon notifications from all friends" toggle at the top.
+            </Text>
+
+            <Pressable onPress={() => setShowHelp(false)} style={[styles.helpClose, { backgroundColor: colors.primary }]}>
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>Got it</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </>
   );
 }
@@ -813,6 +850,52 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 24,
     marginBottom: 72, // lift above BottomBar
+  },
+  helpBtn: {
+    position: 'absolute',
+    top: 0,
+    right: -32,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: 'rgba(128,128,128,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  helpIcon: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  helpOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  helpCard: {
+    width: '100%',
+    borderRadius: 20,
+    padding: 28,
+  },
+  helpTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  helpBody: {
+    fontSize: 17,
+    lineHeight: 26,
+    marginBottom: 16,
+  },
+  helpClose: {
+    alignSelf: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginTop: 8,
   },
   myBeaconColumn: {
     alignItems: 'center',
