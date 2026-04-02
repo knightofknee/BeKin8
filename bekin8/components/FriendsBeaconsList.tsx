@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useTheme } from '../providers/ThemeProvider';
 import { auth, db } from '../firebase.config';
+import { SCREEN_PAD } from './ui/layout';
 import {
   collection,
   doc,
@@ -527,8 +528,8 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
 
 const styles = StyleSheet.create({
   friendsSection: {
-    paddingHorizontal: 24,
-    paddingTop: 16,
+    paddingHorizontal: SCREEN_PAD,
+    paddingTop: 12,
   },
   friendActiveHeader: {
     fontSize: 16,

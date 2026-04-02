@@ -6,6 +6,7 @@ import { auth, db } from "../firebase.config";
 import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 import * as Notifications from "expo-notifications";
 import BottomBar from "../components/BottomBar";
+import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { syncPushTokenIfGranted } from "../lib/push";
@@ -347,7 +348,7 @@ const s = StyleSheet.create({
   title: { color: colors.text, fontWeight: "800", fontSize: 18, textAlign: "center" },
 
   body: { flex: 1 },
-  bodyContent: { flexGrow: 1, padding: 16, paddingBottom: 120 },
+  bodyContent: { flexGrow: 1, padding: SCREEN_PAD, paddingBottom: 120 },
   row: {
     paddingVertical: 14,
     borderBottomWidth: 1,

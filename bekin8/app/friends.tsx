@@ -31,6 +31,7 @@ import {
   orderBy,
 } from "firebase/firestore";
 import { colors } from "@/components/ui/colors";
+import { SCREEN_PAD } from "@/components/ui/layout";
 import { Friend, FriendRequest, Edge, MessageState } from "@/components/types";
 import FriendsProfileAndInvite from "@/components/FriendsProfileAndInvite";
 import FriendRequestsSection from "@/components/FriendRequestsSection";
@@ -1124,7 +1125,7 @@ export default function FriendsScreen() {
           </View>
         }
         contentContainerStyle={{
-          padding: 20,
+          padding: SCREEN_PAD,
           paddingTop: 70,
           paddingBottom: BOTTOM_BAR_SPACE, // ✅ ensures logout clears BottomBar
           rowGap: 14,

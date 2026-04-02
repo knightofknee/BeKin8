@@ -33,8 +33,9 @@ import {
   serverTimestamp,
   DocumentSnapshot,
 } from 'firebase/firestore';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
+import { SCREEN_PAD } from '../components/ui/layout';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import PostComments from '../components/PostComments';
 import { useAuth } from '../providers/AuthProvider';
@@ -125,6 +126,8 @@ function toTimestamp(rawTs: any): number {
 export default function Feed() {
   const { colors: tc } = useTheme();
   const { profile } = useAuth();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ postId?: string }>();
 
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,6 +135,46 @@ export default function Feed() {
   const [hasMore, setHasMore] = useState(true);
   const [showMine, setShowMine] = useState(false);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const listRef = useRef<FlatList<Post>>(null);
+
+  // Deep link: open post comments from notification
+  useEffect(() => {
+    const pid = params.postId;
+    if (!pid) return;
+    router.setParams({ postId: undefined as any });
+    // Try to find in loaded posts first, otherwise fetch from Firestore
+    const found = posts.find((p) => p.id === pid);
+    if (found) {
+      setSelectedPost(found);
+      const idx = posts.indexOf(found);
+      if (idx >= 0) {
+        requestAnimationFrame(() => listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 }));
+      }
+    } else if (!loading) {
+      (async () => {
+        try {
+          const snap = await getDoc(doc(db, 'Posts', pid));
+          if (!snap.exists()) return;
+          const d: any = snap.data();
+          const ts = d?.createdAt?.toMillis?.() || d?.createdAt?.seconds * 1000 || Date.now();
+          setSelectedPost({
+            id: pid,
+            authorUid: d?.authorUid || '',
+            authorUsername: d?.authorUsername || '',
+            authorUsernameSlug: d?.authorUsernameSlug || d?.authorUsername || '',
+            content: d?.content || '',
+            title: d?.title,
+            createdAt: new Date(ts),
+            url: d?.url,
+            commentsEnabled: d?.commentsEnabled,
+            authorCommentsEnabled: d?.authorCommentsEnabled,
+            _timestamp: ts,
+          });
+        } catch {}
+      })();
+    }
+  }, [params.postId, loading]);
+
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -147,8 +190,6 @@ export default function Feed() {
   const friendUids = useRef<Set<string>>(new Set());
   // oldest timestamp loaded so far (for pagination cursor)
   const oldestTs = useRef<number>(Date.now());
-
-  const router = useRouter();
 
   // my global comments setting — from cached profile, no extra read
   const myGlobalCommentsEnabled = profile?.commentsEnabled ?? false;
@@ -503,6 +544,7 @@ export default function Feed() {
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: tc.bg }} edges={['top', 'left', 'right']}>
         <FlatList
+          ref={listRef}
           style={{ flex: 1, backgroundColor: tc.bg }}
           data={displayedPosts}
           keyExtractor={(item) => item.id}
@@ -699,7 +741,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16 },
 
   headerCol: {
-    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8,
+    paddingHorizontal: SCREEN_PAD, paddingTop: 12, paddingBottom: 8,
     borderBottomWidth: 1, borderBottomColor: '#E5E7EB', backgroundColor: '#fff',
   },
   headerTitle: { fontSize: 18, fontWeight: '800', color: '#111827', textAlign: 'center', marginBottom: 6 },
@@ -707,7 +749,7 @@ const styles = StyleSheet.create({
   toggleBtn: { alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#2F6FED' },
   toggleBtnText: { color: '#fff', fontWeight: '800' },
 
-  list: { padding: 16, backgroundColor: '#fff' },
+  list: { padding: SCREEN_PAD, backgroundColor: '#fff' },
   postContainer: { marginBottom: 16, padding: 16, backgroundColor: '#f9f9f9', borderRadius: 8, borderWidth: 1, borderColor: '#eee' },
 
   postHeaderRow: { flexDirection: 'row', alignItems: 'center' },

@@ -16,6 +16,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { signOut, EmailAuthProvider, linkWithCredential } from "firebase/auth";
 import { Ionicons } from "@expo/vector-icons";
 import BottomBar from "../components/BottomBar";
+import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import GoogleLogo from "../components/GoogleLogo";
@@ -266,7 +267,7 @@ const s = StyleSheet.create({
   back: { fontWeight: "800", fontSize: 16, width: 48 },
   title: { fontWeight: "800", fontSize: 18, textAlign: "center" },
   body: { flex: 1 },
-  bodyContent: { padding: 16, paddingBottom: 120 },
+  bodyContent: { padding: SCREEN_PAD, paddingBottom: 120 },
   h2: { fontSize: 18, fontWeight: "800", marginBottom: 6 },
   subtleText: { fontSize: 14, marginBottom: 8 },
   row: { paddingVertical: 14, borderBottomWidth: 1 },

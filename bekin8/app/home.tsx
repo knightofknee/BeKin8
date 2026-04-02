@@ -17,13 +17,14 @@ import {
   ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import {
   addDoc,
   arrayUnion,
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   query,
@@ -36,6 +37,7 @@ import {
 import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
+import { SCREEN_PAD } from '@/components/ui/layout';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted } from '../lib/push';
 import { useAuth } from '../providers/AuthProvider';
@@ -84,6 +86,7 @@ type FriendGroup = {
 
 export default function HomeScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ beaconId?: string }>();
   const { profile } = useAuth();
   const { colors } = useTheme();
 
@@ -99,6 +102,32 @@ export default function HomeScreen() {
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+
+  // Deep link: open beacon chatroom from notification
+  useEffect(() => {
+    const bid = params.beaconId;
+    if (!bid) return;
+    // Clear the param so it doesn't re-trigger
+    router.setParams({ beaconId: undefined as any });
+    // Fetch beacon data and open modal
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'Beacons', bid));
+        if (!snap.exists()) return;
+        const d: any = snap.data();
+        const stMs = getMillis(d?.startAt);
+        setSelectedBeacon({
+          id: bid,
+          ownerUid: d?.ownerUid || '',
+          displayName: d?.ownerName || '',
+          startAt: stMs ? new Date(stMs) : new Date(),
+          active: d?.active === true,
+          scheduled: d?.scheduled === true,
+          message: d?.message || '',
+        });
+      } catch {}
+    })();
+  }, [params.beaconId]);
 
   // Friend groups state for scheduler
   const [groups, setGroups] = useState<FriendGroup[]>([]);
@@ -786,11 +815,9 @@ export default function HomeScreen() {
               </View>
 
               {selectedBeacon && (
-                <>
-                  <View style={{ marginTop: 12 }}>
-                    <ChatRoom beaconId={selectedBeacon.id} maxHeight={420} />
-                  </View>
-                </>
+                <View style={{ flex: 1, marginTop: 4 }}>
+                  <ChatRoom beaconId={selectedBeacon.id} style={{ flex: 1 }} />
+                </View>
               )}
             </View>
           </View>
@@ -846,7 +873,7 @@ const styles = StyleSheet.create({
   controls: {
     backgroundColor: '#fff',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: SCREEN_PAD,
     paddingTop: 12,
     paddingBottom: 24,
     marginBottom: 72, // lift above BottomBar
@@ -993,12 +1020,15 @@ const styles = StyleSheet.create({
   modalBackdropCenter: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.28)',
-    justifyContent: 'center',
-    padding: 22,
+    justifyContent: 'flex-end',
+    paddingHorizontal: SCREEN_PAD,
+    paddingTop: 130,
+    paddingBottom: 80,
   },
   detailCard: {
+    flex: 1,
     backgroundColor: '#fff',
-    padding: 18,
+    padding: 8,
     borderRadius: 14,
   },
   detailOwner: { fontSize: 18, fontWeight: '800', marginTop: 2 },

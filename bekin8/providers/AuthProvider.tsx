@@ -14,6 +14,7 @@ export type UserProfile = {
 type AuthCtx = {
   user: User | null;
   initialized: boolean;
+  loading: boolean;
   profile: UserProfile | null;      // null = not yet loaded
   profileLoaded: boolean;
   refreshProfile: () => Promise<void>;
@@ -23,6 +24,7 @@ type AuthCtx = {
 const AuthContext = createContext<AuthCtx>({
   user: null,
   initialized: false,
+  loading: true,
   profile: null,
   profileLoaded: false,
   refreshProfile: async () => {},
@@ -85,7 +87,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, [user?.uid]);
 
   const value = useMemo(
-    () => ({ user, initialized, profile, profileLoaded, refreshProfile, updateProfile }),
+    () => ({ user, initialized, loading: !initialized, profile, profileLoaded, refreshProfile, updateProfile }),
     [user, initialized, profile, profileLoaded, refreshProfile, updateProfile]
   );
 

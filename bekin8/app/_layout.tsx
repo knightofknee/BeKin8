@@ -1,8 +1,9 @@
 // app/_layout.tsx
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { Stack, usePathname, useRouter, useRootNavigationState } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
+import * as Notifications from "expo-notifications";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
 import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
 
@@ -41,6 +42,38 @@ function Gate() {
     // hide splash only once we can safely render/navigate
     SplashScreen.hideAsync().catch(() => {});
   }, [initialized, navState?.key, user, pathname, router]);
+
+  // --- Notification deep linking ---
+  const handledColdStart = useRef(false);
+
+  useEffect(() => {
+    if (!initialized || !navState?.key || !user) return;
+
+    const routeForNotification = (data: Record<string, any> | undefined) => {
+      if (!data?.type) return;
+      const t = String(data.type);
+      if ((t === "beacon" || t === "beacon_comment") && data.beaconId) {
+        router.push(`/home?beaconId=${data.beaconId}`);
+      } else if ((t === "post_comment" || t === "new_post") && data.postId) {
+        router.push(`/feed?postId=${data.postId}`);
+      }
+    };
+
+    // Handle tap while app is running (foreground / background)
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      routeForNotification(response.notification.request.content.data);
+    });
+
+    // Handle cold start (app was killed, user tapped notification to launch)
+    if (!handledColdStart.current) {
+      handledColdStart.current = true;
+      Notifications.getLastNotificationResponseAsync().then((response) => {
+        if (response) routeForNotification(response.notification.request.content.data);
+      });
+    }
+
+    return () => sub.remove();
+  }, [initialized, navState?.key, user, router]);
 
   if (!initialized || !navState?.key) {
     return (

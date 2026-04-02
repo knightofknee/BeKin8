@@ -21,6 +21,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
+import { SCREEN_PAD } from './ui/layout';
 import {
   addDoc,
   collection,
@@ -95,7 +96,7 @@ async function resolveMyName(uid: string): Promise<string> {
 
 const CHAT_ACCESSORY_ID = 'chatroom-accessory';
 
-export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: ChatRoomProps) {
+export default function ChatRoom({ beaconId, maxHeight, onClose, style }: ChatRoomProps) {
   const { colors: tc } = useTheme();
   const me = auth.currentUser;
 
@@ -108,6 +109,9 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
   const [startLabel, setStartLabel] = useState<string>('');
   const [ownerName, setOwnerName] = useState<string>('');
+  const [beaconMessage, setBeaconMessage] = useState<string>('');
+  const [msgExpanded, setMsgExpanded] = useState(false);
+  const [msgTruncated, setMsgTruncated] = useState(false);
   const expiresAtRef = useRef<number | null>(null);
 
   const listRef = useRef<FlatList<ChatMessage>>(null);
@@ -179,6 +183,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     };
   }, []);
 
+  const onContainerLayout = () => recalcLift(null);
 
   // ---- Data subscriptions ----
   useEffect(() => {
@@ -206,6 +211,10 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         } else {
           setStartLabel('');
         }
+
+        // Capture beacon message
+        const msg = typeof data?.message === 'string' ? data.message.trim() : '';
+        setBeaconMessage(msg);
 
         // Resolve owner display name
         const oUid = data?.ownerUid;
@@ -462,6 +471,27 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
         )}
       </View>
 
+      {!!beaconMessage && (
+        <View style={[styles.beaconMsgSection, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
+          <Text
+            style={[styles.beaconMsgText, { color: tc.subtle }]}
+            numberOfLines={msgExpanded ? undefined : 5}
+            onTextLayout={(e) => {
+              if (!msgExpanded && e.nativeEvent.lines.length > 5) {
+                setMsgTruncated(true);
+              }
+            }}
+          >
+            {beaconMessage}
+          </Text>
+          {(msgTruncated || msgExpanded) && (
+            <Pressable onPress={() => setMsgExpanded((v) => !v)} hitSlop={6}>
+              <Text style={[styles.beaconMsgToggle, { color: tc.primary }]}>{msgExpanded ? 'See less' : 'See more'}</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
       <View
         style={styles.listArea}
         onLayout={(e) => setListViewportH(e.nativeEvent.layout.height)}
@@ -485,7 +515,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           ref={listRef}
           data={messages}
           keyExtractor={(m) => m.id}
-          contentContainerStyle={{ padding: 8, gap: 8, paddingBottom: 8 }}
+          contentContainerStyle={{ padding: 6, gap: 6, paddingBottom: 6 }}
           keyboardShouldPersistTaps="handled"
           scrollEventThrottle={32}
           onScroll={onListScroll}
@@ -504,45 +534,31 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
             return (
               <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
-                {!mine && (
-                  <Pressable
-                    onPress={() => openMenu(item)}
-                    hitSlop={8}
-                    style={[styles.dotsOutside, { marginRight: 6 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Message options"
-                  >
-                    <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
-                  </Pressable>
-                )}
-
                 <View style={[styles.bubble, mine ? [styles.bubbleMine, { backgroundColor: tc.bubbleMine, borderColor: tc.bubbleMineBorder }] : [styles.bubbleTheirs, { backgroundColor: tc.bubbleTheirs, borderColor: tc.bubbleTheirsBorder }]]}>
-                  <Text style={[styles.msgMeta, { color: tc.subtle }]} numberOfLines={1} ellipsizeMode="tail">
-                    {(item.authorName || (mine ? 'You' : 'Friend'))}
-                    {' • '}
-                    {(() => {
-                      const d = item.createdAt;
-                      const now = new Date();
-                      const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-                      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                      if (isToday) return time;
-                      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
-                    })()}
-                  </Text>
+                  <View style={styles.metaRow}>
+                    <Text style={[styles.msgMeta, { color: tc.subtle }]} numberOfLines={1} ellipsizeMode="tail">
+                      {(item.authorName || (mine ? 'You' : 'Friend'))}
+                      {' • '}
+                      {(() => {
+                        const d = item.createdAt;
+                        const now = new Date();
+                        const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+                        const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        if (isToday) return time;
+                        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
+                      })()}
+                    </Text>
+                    <Pressable
+                      onPress={() => openMenu(item)}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel="Message options"
+                    >
+                      <Text style={[styles.dotsInline, { color: tc.subtle }]}>⋯</Text>
+                    </Pressable>
+                  </View>
                   <Text selectable style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
                 </View>
-
-                {mine && (
-                  <Pressable
-                    onPress={() => openMenu(item)}
-                    hitSlop={8}
-                    style={[styles.dotsOutside, { marginLeft: 6 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Message options"
-                  >
-                    <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
-                  </Pressable>
-                )}
               </View>
             );
           }}
@@ -609,7 +625,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
           <View ref={containerRef} onLayout={onContainerLayout} style={[styles.cardWrap, { backgroundColor: tc.card }, translated]}>
-            <View style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
+            <View style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
           </View>
         </View>
         {DoneAccessory}
@@ -619,7 +635,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
 
   if (loading) {
     return (
-      <View style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }]}>
+      <View style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style]}>
         <ActivityIndicator />
       </View>
     );
@@ -629,7 +645,7 @@ export default function ChatRoom({ beaconId, maxHeight = 420, onClose, style }: 
     <>
       <View
         ref={containerRef}
-               style={[styles.wrap, { height: maxHeight, backgroundColor: tc.card, borderColor: tc.border }, style, translated]}
+               style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style, translated]}
       >
         {PanelBody}
       </View>
@@ -661,7 +677,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.28)',
     justifyContent: 'center',
-    padding: 16,
+    padding: SCREEN_PAD,
   },
   cardWrap: {
     backgroundColor: '#fff',
@@ -686,7 +702,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
@@ -717,6 +733,25 @@ const styles = StyleSheet.create({
   imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
   imInTextDone: { color: '#065F46' },
 
+  beaconMsgSection: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    backgroundColor: '#F8FAFF',
+  },
+  beaconMsgText: {
+    fontSize: 14,
+    color: '#334155',
+    lineHeight: 20,
+  },
+  beaconMsgToggle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2F6FED',
+    marginTop: 4,
+  },
+
   listArea: {
     flex: 1,
     position: 'relative',
@@ -738,9 +773,9 @@ const styles = StyleSheet.create({
   msgRowTheirs: { justifyContent: 'flex-start' },
 
   bubble: {
-    maxWidth: '78%',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    maxWidth: '90%',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1,
   },
@@ -750,14 +785,13 @@ const styles = StyleSheet.create({
   msgMeta: { fontSize: 11, color: '#94A3B8', marginBottom: 3, fontWeight: '500' },
   msgText: { color: '#0B1426', fontSize: 15, lineHeight: 21 },
 
-  dotsOutside: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  metaRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
   },
-  dots: { fontSize: 16, color: '#64748B' },
+  dotsInline: { fontSize: 14, color: '#94A3B8', paddingLeft: 4 },
 
   systemRow: {
     alignItems: 'center',
@@ -774,7 +808,7 @@ const styles = StyleSheet.create({
     gap: 8,
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
-    padding: 10,
+    padding: 8,
     backgroundColor: '#FAFBFF',
   },
   input: {

@@ -22,6 +22,7 @@ import { auth, db } from '../firebase.config';
 import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import BottomBar from '@/components/BottomBar';
+import { SCREEN_PAD } from '@/components/ui/layout';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
@@ -462,7 +463,7 @@ export default function CreatePostScreen() {
 }
 
 const styles = StyleSheet.create({
-  container:   { padding: 20 },
+  container:   { padding: SCREEN_PAD },
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   h1:          { fontSize: 26, fontWeight: '700', marginBottom: 4, textAlign: 'center' },
