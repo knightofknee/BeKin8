@@ -317,7 +317,7 @@ export default function CreatePostScreen() {
             {/* Header */}
             <Text style={[styles.h1, { color: colors.text }]}>New Post</Text>
             <Text style={[styles.rateNote, { color: colors.subtle }]}>
-              1 post per day max · Bank up to 10 bonus posts by taking days off
+              1 post per day · Bank up to 3 bonus posts by taking days off
             </Text>
 
             <View style={[styles.form, { flex: 1 }]}>

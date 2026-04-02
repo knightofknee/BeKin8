@@ -113,7 +113,7 @@ export const dailyBonusAccrual = onSchedule('0 6 * * *', async () => {
         }
 
         // ── Both conditions satisfied → increment ──────────────────────────
-        const newBonus = Math.min((bonusPosts as number) + 1, 10);
+        const newBonus = Math.min((bonusPosts as number) + 1, 3);
         batch.set(userDoc.ref, {
           bonusPosts: newBonus,
           lastBonusAccrualDate: todayStr,
