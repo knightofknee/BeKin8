@@ -50,6 +50,7 @@ export async function signInWithGoogle() {
       email: user.email,
       username: null,
       hasUsername: false,
+      bonusPosts: 3,
       createdAt: serverTimestamp(),
     });
   }

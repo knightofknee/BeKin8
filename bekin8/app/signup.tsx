@@ -92,6 +92,7 @@ export default function SignUp() {
         email: trimmedEmail,
         username: null,
         hasUsername: false,
+        bonusPosts: 3,
         createdAt: serverTimestamp(),
       });
 

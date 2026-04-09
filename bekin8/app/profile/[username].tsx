@@ -13,9 +13,11 @@ import {
   Alert,
   ScrollView,
   Animated,
+  Platform,
+  Keyboard,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../../firebase.config';
 import {
   collection,
@@ -413,7 +415,23 @@ export default function ProfileScreen() {
     }
   };
 
+  const insets = useSafeAreaInsets();
   const editScrollRef = useRef<ScrollView>(null);
+  const lastInputFocusedRef = useRef(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+      if (lastInputFocusedRef.current) {
+        setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 50);
+        setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 250);
+      }
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
   const addEditItem = () => {
     setEditItems((prev) => [...prev, { text: '', link: '' }]);
     setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 150);
@@ -518,7 +536,7 @@ export default function ProfileScreen() {
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Lists</Text>
           {isOwnProfile && (
             <Pressable onPress={handleAddList} hitSlop={8}>
-              <Text style={[styles.addBtn, { color: colors.primary }]}>+ Add</Text>
+              <Text style={[styles.addBtn, { color: colors.primary }]}>+ Add List</Text>
             </Pressable>
           )}
         </View>
@@ -850,81 +868,128 @@ export default function ProfileScreen() {
         transparent
         onRequestClose={() => setEditingList(null)}
       >
-        <View style={[styles.modalBackdrop, { backgroundColor: colors.backdrop }]}>
-          <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>
-              {editingList?.id ? 'Edit List' : 'New List'}
-            </Text>
+        <View style={[styles.modalBackdrop, { backgroundColor: colors.backdrop, paddingTop: insets.top + 8, paddingBottom: keyboardHeight }]}>
+            <View style={[styles.modalCard, { backgroundColor: colors.card, maxHeight: '100%', paddingBottom: keyboardHeight > 0 ? 0 : Math.max(insets.bottom, 16) }]}>
+              <View style={styles.modalHeaderRow}>
+                <Pressable
+                  onPress={() => { tap(); Keyboard.dismiss(); setEditingList(null); }}
+                  hitSlop={10}
+                  style={styles.modalHeaderSideLeft}
+                >
+                  <Text style={[styles.modalCloseTxt, { color: colors.subtle }]}>✕</Text>
+                </Pressable>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>
+                  {editingList?.id ? 'Edit List' : 'New List'}
+                </Text>
+                <View style={styles.modalHeaderSide} />
+              </View>
 
-            <TextInput
-              style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
-              placeholder="List title"
-              placeholderTextColor={colors.subtle}
-              value={editTitle}
-              onChangeText={setEditTitle}
-              maxLength={100}
-            />
+              <TextInput
+                style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
+                placeholder="List title"
+                placeholderTextColor={colors.subtle}
+                value={editTitle}
+                onChangeText={setEditTitle}
+                maxLength={100}
+              />
 
-            <ScrollView style={{ maxHeight: 650 }} keyboardShouldPersistTaps="handled" ref={editScrollRef}>
-              {editItems.map((item, i) => (
-                <View key={i} style={[styles.editItemRow, { borderBottomColor: colors.border }]}>
-                  {/* Reorder arrows */}
-                  <View style={styles.reorderBtns}>
-                    <Pressable
-                      onPress={() => { if (i === 0) return; tap(); setEditItems((prev) => { const next = [...prev]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next; }); }}
-                      hitSlop={10}
-                      style={[styles.reorderBtn, { opacity: i === 0 ? 0.2 : 1 }]}
-                    >
-                      <Text style={{ fontSize: 20, color: colors.subtle }}>▲</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => { if (i === editItems.length - 1) return; tap(); setEditItems((prev) => { const next = [...prev]; [next[i], next[i + 1]] = [next[i + 1], next[i]]; return next; }); }}
-                      hitSlop={10}
-                      style={[styles.reorderBtn, { opacity: i === editItems.length - 1 ? 0.2 : 1 }]}
-                    >
-                      <Text style={{ fontSize: 20, color: colors.subtle }}>▼</Text>
+              <ScrollView
+                style={styles.editItemsScroll}
+                keyboardShouldPersistTaps="handled"
+                ref={editScrollRef}
+                onContentSizeChange={() => {
+                  if (lastInputFocusedRef.current) {
+                    editScrollRef.current?.scrollToEnd({ animated: true });
+                  }
+                }}
+              >
+                {editItems.map((item, i) => (
+                  <View key={i} style={[styles.editItemRow, { borderBottomColor: colors.border }]}>
+                    {/* Reorder arrows */}
+                    <View style={styles.reorderBtns}>
+                      <Pressable
+                        onPress={() => { if (i === 0) return; tap(); setEditItems((prev) => { const next = [...prev]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next; }); }}
+                        hitSlop={10}
+                        style={[styles.reorderBtn, { opacity: i === 0 ? 0.2 : 1 }]}
+                      >
+                        <Text style={{ fontSize: 20, color: colors.subtle }}>▲</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => { if (i === editItems.length - 1) return; tap(); setEditItems((prev) => { const next = [...prev]; [next[i], next[i + 1]] = [next[i + 1], next[i]]; return next; }); }}
+                        hitSlop={10}
+                        style={[styles.reorderBtn, { opacity: i === editItems.length - 1 ? 0.2 : 1 }]}
+                      >
+                        <Text style={{ fontSize: 20, color: colors.subtle }}>▼</Text>
+                      </Pressable>
+                    </View>
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <TextInput
+                        style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
+                        placeholder="Item text"
+                        placeholderTextColor={colors.subtle}
+                        value={item.text}
+                        onChangeText={(v) => updateEditItem(i, 'text', v)}
+                        multiline
+                        onFocus={() => {
+                          lastInputFocusedRef.current = i >= editItems.length - 1;
+                          if (i >= editItems.length - 1) {
+                            setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 100);
+                            setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 350);
+                          }
+                        }}
+                        onBlur={() => { lastInputFocusedRef.current = false; }}
+                      />
+                      <TextInput
+                        style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
+                        placeholder="Link (optional)"
+                        placeholderTextColor={colors.subtle}
+                        value={item.link || ''}
+                        onChangeText={(v) => updateEditItem(i, 'link', v)}
+                        autoCapitalize="none"
+                        keyboardType="url"
+                        onFocus={() => {
+                          lastInputFocusedRef.current = i >= editItems.length - 1;
+                          if (i >= editItems.length - 1) {
+                            setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 100);
+                            setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 350);
+                          }
+                        }}
+                        onBlur={() => { lastInputFocusedRef.current = false; }}
+                      />
+                    </View>
+                    <Pressable onPress={() => removeEditItem(i)} hitSlop={8} style={styles.removeItemBtn}>
+                      <Text style={{ color: colors.error, fontWeight: '700', fontSize: 18 }}>x</Text>
                     </Pressable>
                   </View>
-                  <View style={{ flex: 1, gap: 6 }}>
-                    <TextInput
-                      style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
-                      placeholder="Item text"
-                      placeholderTextColor={colors.subtle}
-                      value={item.text}
-                      onChangeText={(v) => updateEditItem(i, 'text', v)}
-                      multiline
-                    />
-                    <TextInput
-                      style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
-                      placeholder="Link (optional)"
-                      placeholderTextColor={colors.subtle}
-                      value={item.link || ''}
-                      onChangeText={(v) => updateEditItem(i, 'link', v)}
-                      autoCapitalize="none"
-                      keyboardType="url"
-                    />
-                  </View>
-                  <Pressable onPress={() => removeEditItem(i)} hitSlop={8} style={styles.removeItemBtn}>
-                    <Text style={{ color: colors.error, fontWeight: '700', fontSize: 18 }}>x</Text>
+                ))}
+
+                <Pressable onPress={addEditItem} style={styles.addItemBtn}>
+                  <Text style={[styles.addItemTxt, { color: colors.primary }]}>+ Add item</Text>
+                </Pressable>
+              </ScrollView>
+
+              {keyboardHeight > 0 ? (
+                <View style={[styles.kbAccessoryBar, { backgroundColor: colors.inputBg, borderTopColor: colors.border }]}>
+                  <Pressable
+                    onPress={() => { tap(); Keyboard.dismiss(); }}
+                    hitSlop={10}
+                    style={styles.kbDoneBtn}
+                  >
+                    <Text style={[styles.kbDoneTxt, { color: colors.primary }]}>Done</Text>
                   </Pressable>
                 </View>
-              ))}
-            </ScrollView>
-
-            <Pressable onPress={addEditItem} style={styles.addItemBtn}>
-              <Text style={[styles.addItemTxt, { color: colors.primary }]}>+ Add item</Text>
-            </Pressable>
-
-            <View style={styles.modalActions}>
-              <Pressable onPress={() => { tap(); setEditingList(null); }} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
-                <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
-              </Pressable>
-              <Pressable onPress={handleSaveList} disabled={savingList} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, savingList && { opacity: 0.5 }]}>
-                <Text style={styles.modalSaveTxt}>{savingList ? 'Saving...' : 'Save'}</Text>
-              </Pressable>
+              ) : (
+                <View style={styles.modalActions}>
+                  <Pressable onPress={() => { tap(); setEditingList(null); }} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
+                    <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
+                  </Pressable>
+                  <Pressable onPress={handleSaveList} disabled={savingList} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, savingList && { opacity: 0.5 }]}>
+                    {savingList ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSaveTxt}>Save</Text>}
+                  </Pressable>
+                </View>
+              )}
             </View>
           </View>
-        </View>
       </Modal>
 
       {/* Post menu modal */}
@@ -1263,19 +1328,42 @@ const styles = StyleSheet.create({
   // ── List editor modal ──
   modalBackdrop: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 20,
+    justifyContent: 'flex-end',
+    paddingHorizontal: 20,
+    paddingTop: 20,
   },
   modalCard: {
-    borderRadius: 16,
-    padding: 20,
-    maxHeight: '90%',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 0,
+    overflow: 'hidden',
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: '700',
     marginBottom: 16,
     textAlign: 'center',
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modalHeaderSide: {
+    minWidth: 32,
+    alignItems: 'flex-end',
+    paddingVertical: 4,
+  },
+  modalHeaderSideLeft: {
+    minWidth: 32,
+    alignItems: 'flex-start',
+    paddingVertical: 4,
+  },
+  modalCloseTxt: {
+    fontSize: 22,
+    fontWeight: '600',
   },
   modalInput: {
     borderWidth: 1,
@@ -1345,6 +1433,27 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 15,
+  },
+  editItemsScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  kbAccessoryBar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginHorizontal: -20,
+  },
+  kbDoneBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  kbDoneTxt: {
+    fontSize: 16,
+    fontWeight: '700',
   },
 
   // ── Post menu ──
