@@ -127,7 +127,7 @@ export default function Feed() {
   const { colors: tc } = useTheme();
   const { profile } = useAuth();
   const router = useRouter();
-  const params = useLocalSearchParams<{ postId?: string }>();
+  const params = useLocalSearchParams<{ postId?: string; commentId?: string; scrollToPostId?: string }>();
 
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,45 +135,10 @@ export default function Feed() {
   const [hasMore, setHasMore] = useState(true);
   const [showMine, setShowMine] = useState(false);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const [targetCommentId, setTargetCommentId] = useState<string | undefined>(undefined);
   const listRef = useRef<FlatList<Post>>(null);
-
-  // Deep link: open post comments from notification
-  useEffect(() => {
-    const pid = params.postId;
-    if (!pid) return;
-    router.setParams({ postId: undefined as any });
-    // Try to find in loaded posts first, otherwise fetch from Firestore
-    const found = posts.find((p) => p.id === pid);
-    if (found) {
-      setSelectedPost(found);
-      const idx = posts.indexOf(found);
-      if (idx >= 0) {
-        requestAnimationFrame(() => listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 }));
-      }
-    } else if (!loading) {
-      (async () => {
-        try {
-          const snap = await getDoc(doc(db, 'Posts', pid));
-          if (!snap.exists()) return;
-          const d: any = snap.data();
-          const ts = d?.createdAt?.toMillis?.() || d?.createdAt?.seconds * 1000 || Date.now();
-          setSelectedPost({
-            id: pid,
-            authorUid: d?.authorUid || '',
-            authorUsername: d?.authorUsername || '',
-            authorUsernameSlug: d?.authorUsernameSlug || d?.authorUsername || '',
-            content: d?.content || '',
-            title: d?.title,
-            createdAt: new Date(ts),
-            url: d?.url,
-            commentsEnabled: d?.commentsEnabled,
-            authorCommentsEnabled: d?.authorCommentsEnabled,
-            _timestamp: ts,
-          });
-        } catch {}
-      })();
-    }
-  }, [params.postId, loading]);
+  const handledPostIdRef = useRef<string | null>(null);
+  const handledScrollIdRef = useRef<string | null>(null);
 
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
@@ -404,6 +369,87 @@ export default function Feed() {
     return blockedUids.size ? base.filter((p) => !blockedUids.has(p.authorUid)) : base;
   }, [posts, showMine, blockedUids]);
 
+  // ── deep link: post comment notification ────────────────────────────────────
+  // Opens the comments modal for the target post, scrolls feed to it, and
+  // forwards an optional commentId so the modal can scroll to the comment.
+  useEffect(() => {
+    const pid = params.postId;
+    if (!pid) {
+      handledPostIdRef.current = null;
+      return;
+    }
+    if (handledPostIdRef.current === pid) return;
+
+    const found = posts.find((p) => p.id === pid);
+    if (found) {
+      handledPostIdRef.current = pid;
+      setSelectedPost(found);
+      setTargetCommentId(params.commentId || undefined);
+      const idx = displayedPosts.findIndex((p) => p.id === pid);
+      if (idx >= 0) {
+        requestAnimationFrame(() =>
+          listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 })
+        );
+      }
+      router.setParams({ postId: undefined as any, commentId: undefined as any });
+      return;
+    }
+    if (loading) return;
+
+    handledPostIdRef.current = pid;
+    const cid = params.commentId || undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'Posts', pid));
+        if (cancelled || !snap.exists()) return;
+        const d: any = snap.data();
+        const ts = d?.createdAt?.toMillis?.() || d?.createdAt?.seconds * 1000 || Date.now();
+        setSelectedPost({
+          id: pid,
+          authorUid: d?.authorUid || '',
+          authorUsername: d?.authorUsername || '',
+          authorUsernameSlug: d?.authorUsernameSlug || d?.authorUsername || '',
+          content: d?.content || '',
+          title: d?.title,
+          createdAt: new Date(ts),
+          url: d?.url,
+          commentsEnabled: d?.commentsEnabled,
+          authorCommentsEnabled: d?.authorCommentsEnabled,
+          _timestamp: ts,
+        });
+        setTargetCommentId(cid);
+      } catch {}
+      if (!cancelled) router.setParams({ postId: undefined as any, commentId: undefined as any });
+    })();
+    return () => { cancelled = true; };
+  }, [params.postId, params.commentId, loading, posts, displayedPosts, router]);
+
+  // ── deep link: new post notification (scroll only, no modal) ────────────────
+  useEffect(() => {
+    const pid = params.scrollToPostId;
+    if (!pid) {
+      handledScrollIdRef.current = null;
+      return;
+    }
+    if (handledScrollIdRef.current === pid) return;
+
+    const idx = displayedPosts.findIndex((p) => p.id === pid);
+    if (idx >= 0) {
+      handledScrollIdRef.current = pid;
+      requestAnimationFrame(() =>
+        listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 })
+      );
+      router.setParams({ scrollToPostId: undefined as any });
+      return;
+    }
+    if (loading) return;
+
+    // Posts loaded but not in feed (paginated past or hidden by filter). Give up.
+    handledScrollIdRef.current = pid;
+    router.setParams({ scrollToPostId: undefined as any });
+  }, [params.scrollToPostId, loading, displayedPosts, router]);
+
   // ── actions ─────────────────────────────────────────────────────────────────
   const handleReport = useCallback((p: Post) => {
     Alert.alert('Report post?', 'Are you sure you want to report this post?', [
@@ -549,6 +595,14 @@ export default function Feed() {
           data={displayedPosts}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[styles.list, { paddingBottom: 100, flexGrow: 1, backgroundColor: tc.bg }]}
+          onScrollToIndexFailed={(info) => {
+            // Item not yet measured (off-screen). Estimate offset, then retry.
+            const offset = info.averageItemLength * info.index;
+            listRef.current?.scrollToOffset({ offset, animated: false });
+            setTimeout(() => {
+              listRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.3 });
+            }, 100);
+          }}
           ListHeaderComponent={
             <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
               <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
@@ -638,7 +692,7 @@ export default function Feed() {
 
       {/* Comments Modal */}
       <Modal visible={!!selectedPost} animationType="fade" transparent onRequestClose={() => setSelectedPost(null)}>
-        {selectedPost && <PostComments post={selectedPost} onClose={() => setSelectedPost(null)} />}
+        {selectedPost && <PostComments post={selectedPost} targetCommentId={targetCommentId} onClose={() => { setSelectedPost(null); setTargetCommentId(undefined); }} />}
       </Modal>
 
       {/* Post Action Menu */}

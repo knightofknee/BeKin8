@@ -17,6 +17,8 @@ import {
   ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { Ionicons } from '@expo/vector-icons';
+import UnlitLogs from '../components/UnlitLogs';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import {
@@ -40,6 +42,7 @@ import BottomBar from '@/components/BottomBar';
 import { SCREEN_PAD } from '@/components/ui/layout';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted } from '../lib/push';
+import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { tap, press, selection } from '../utils/haptics';
@@ -86,7 +89,7 @@ type FriendGroup = {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ beaconId?: string }>();
+  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string }>();
   const { profile } = useAuth();
   const { colors } = useTheme();
 
@@ -101,14 +104,20 @@ export default function HomeScreen() {
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
+  const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
+
+  // Prefetch messages for the user's own active beacon so tapping
+  // "Open my beacon details" renders chat instantly from cache.
+  usePrefetchBeaconMessages([myActiveBeacon?.id]);
 
   // Deep link: open beacon chatroom from notification
   useEffect(() => {
     const bid = params.beaconId;
     if (!bid) return;
-    // Clear the param so it doesn't re-trigger
-    router.setParams({ beaconId: undefined as any });
+    const mid = params.messageId || undefined;
+    // Clear the params so they don't re-trigger
+    router.setParams({ beaconId: undefined as any, messageId: undefined as any });
     // Fetch beacon data and open modal
     (async () => {
       try {
@@ -125,9 +134,10 @@ export default function HomeScreen() {
           scheduled: d?.scheduled === true,
           message: d?.message || '',
         });
+        setSelectedBeaconMessageId(mid);
       } catch {}
     })();
-  }, [params.beaconId]);
+  }, [params.beaconId, params.messageId]);
 
   // Friend groups state for scheduler
   const [groups, setGroups] = useState<FriendGroup[]>([]);
@@ -635,13 +645,15 @@ export default function HomeScreen() {
                       contentFit="contain"
                     />
                   ) : (
-                    <Text style={styles.beaconIcon}>🪵</Text>
+                    <View style={styles.beaconIcon}>
+                      <UnlitLogs size={180} />
+                    </View>
                   )}
                 </TouchableOpacity>
 
                 {!showHelp && (
                   <Pressable onPress={() => setShowHelp(true)} hitSlop={12} style={styles.helpBtn}>
-                    <Text style={[styles.helpIcon, { color: colors.subtle }]}>?</Text>
+                    <Ionicons name="help-circle" size={28} color={colors.primary} />
                   </Pressable>
                 )}
               </View>
@@ -650,9 +662,9 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
                   activeOpacity={0.8}
-                  style={[styles.myChatBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+                  style={[styles.myChatBtn, { backgroundColor: colors.primary }]}
                 >
-                  <Text style={[styles.myChatBtnTxt, { color: colors.text }]}>Open my beacon details</Text>
+                  <Text style={[styles.myChatBtnTxt, { color: '#fff' }]}>Open beacon chat</Text>
                 </TouchableOpacity>
               ) : (
                 <Text style={[styles.logHint, { color: colors.subtle }]}>Tap the logs to light your Beacon</Text>
@@ -661,9 +673,7 @@ export default function HomeScreen() {
 
             {isLit && myActiveBeacon ? (
               <Text style={[styles.statusActive, { color: colors.success }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
-            ) : (
-              <Text style={[styles.statusActive, { opacity: 0, color: colors.success }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
-            )}
+            ) : null}
 
             <Pressable
               onPress={openOptions}
@@ -671,14 +681,17 @@ export default function HomeScreen() {
               style={({ pressed }) => [styles.optionsCta, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.optionsCtaPressed]}
               android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
             >
-              <View style={styles.optionsCtaIconWrap}>
-                <Text style={styles.optionsCtaIcon}>🗓️</Text>
+              <View style={[styles.optionsCtaIconWrap, { backgroundColor: colors.primary }]}>
+                <Ionicons name="calendar" size={20} color="#fff" />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.optionsCtaTitle, { color: colors.text }]}>Beacon options</Text>
+                {/* Invisible placeholder reserves the title's vertical space so the card height doesn't change */}
+                <Text style={[styles.optionsCtaTitle, { opacity: 0 }]}>Beacon options</Text>
                 <Text style={[styles.optionsCtaSubtitle, { color: colors.subtle }]}>Pick a day • choose friends • add a note</Text>
               </View>
-              <Text style={[styles.optionsCtaChevron, { color: colors.primary }]}>›</Text>
+              <Ionicons name="chevron-forward" size={22} color={colors.primary} style={{ marginLeft: 4, marginRight: 2 }} />
+              {/* Title centered to the screen horizontally, same vertical position as before */}
+              <Text style={[styles.optionsCtaTitle, styles.optionsCtaTitleAbs, { color: colors.text }]}>Beacon options</Text>
             </Pressable>
 
             <Text style={[styles.status, { color: colors.subtle }]}>Your beacon is set for {scheduledLabel}</Text>
@@ -696,8 +709,8 @@ export default function HomeScreen() {
               <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
                 <View style={styles.modalHeader}>
                   <Text style={[styles.modalTitle, { color: colors.text }]}>Schedule / Edit Beacon</Text>
-                  <Pressable onPress={() => { tap(); setOptionsOpen(false); }}>
-                    <Text style={[styles.close, { color: colors.text }]}>✕</Text>
+                  <Pressable onPress={() => { tap(); setOptionsOpen(false); }} hitSlop={8} style={styles.closeBtn}>
+                    <Ionicons name="close" size={24} color={colors.text} />
                   </Pressable>
                 </View>
 
@@ -803,20 +816,20 @@ export default function HomeScreen() {
           visible={!!selectedBeacon}
           animationType="fade"
           transparent
-          onRequestClose={() => setSelectedBeacon(null)}
+          onRequestClose={() => { setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }}
         >
           <View style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop }]}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={() => { tap(); setSelectedBeacon(null); }} />
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} />
             <View style={[styles.detailCard, { backgroundColor: colors.card }]} pointerEvents="box-none">
               <View style={styles.modalHeader}>
-                <Pressable onPress={() => { tap(); setSelectedBeacon(null); }}>
-                  <Text style={[styles.close, { color: colors.text }]}>✕</Text>
+                <Pressable onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} hitSlop={8} style={styles.closeBtn}>
+                  <Ionicons name="close" size={24} color={colors.text} />
                 </Pressable>
               </View>
 
               {selectedBeacon && (
                 <View style={{ flex: 1, marginTop: 4 }}>
-                  <ChatRoom beaconId={selectedBeacon.id} style={{ flex: 1 }} />
+                  <ChatRoom beaconId={selectedBeacon.id} targetMessageId={selectedBeaconMessageId} style={{ flex: 1 }} />
                 </View>
               )}
             </View>
@@ -880,19 +893,10 @@ const styles = StyleSheet.create({
   },
   helpBtn: {
     position: 'absolute',
-    top: 0,
-    right: -32,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: 'rgba(128,128,128,0.4)',
+    top: -2,
+    right: -36,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  helpIcon: {
-    fontSize: 16,
-    fontWeight: '700',
   },
   helpOverlay: {
     flex: 1,
@@ -926,17 +930,21 @@ const styles = StyleSheet.create({
   },
   myBeaconColumn: {
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 0,
   },
   beaconContainer: {
     alignItems: 'center',
   },
   beaconIcon: {
-    fontSize: 64,
+    paddingVertical: 8,
+  },
+  closeBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   beaconGif: {
-    width: 80,
-    height: 120,
+    width: 180,
+    height: 180,
   },
   logHint: {
     fontSize: 13,
@@ -947,17 +955,20 @@ const styles = StyleSheet.create({
     minHeight: 34,
   },
   myChatBtn: {
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-    marginTop: 4,
-    minHeight: 34,
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 14,
+    marginTop: 12,
+    minHeight: 52,
     justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
-  myChatBtnTxt: { fontWeight: '700', color: '#0B1426', textAlign: 'center' },
+  myChatBtnTxt: { fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
 
   status: { fontSize: 16, color: '#555' },
   statusActive: { fontSize: 18, fontWeight: '600', color: 'green', marginBottom: 12 },
@@ -976,7 +987,6 @@ const styles = StyleSheet.create({
   },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { fontSize: 18, fontWeight: '800' },
-  close: { fontSize: 22, paddingHorizontal: 8 },
   modalLabel: { fontSize: 14, fontWeight: '600', marginTop: 8, marginBottom: 6 },
 
   daysWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
@@ -1052,9 +1062,9 @@ const styles = StyleSheet.create({
     borderColor: '#D8E3FF',
     borderWidth: 1,
     borderRadius: 14,
-    paddingVertical: 12,
+    paddingVertical: 22,
     paddingHorizontal: 14,
-    marginTop: 4,
+    marginTop: 0,
     marginBottom: 12,
     shadowColor: '#000',
     shadowOpacity: 0.08,
@@ -1064,8 +1074,7 @@ const styles = StyleSheet.create({
   },
   optionsCtaPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
   optionsCtaIconWrap: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  optionsCtaIcon: { color: '#fff', fontSize: 18, fontWeight: '800' },
-  optionsCtaTitle: { fontSize: 16, fontWeight: '800', color: '#0B1426' },
+  optionsCtaTitle: { fontSize: 19, fontWeight: '800', color: '#0B1426' },
+  optionsCtaTitleAbs: { position: 'absolute', left: 0, right: 0, top: 22, textAlign: 'center' },
   optionsCtaSubtitle: { marginTop: 2, color: '#48608C' },
-  optionsCtaChevron: { fontSize: 22, color: '#2F6FED', marginLeft: 4, marginRight: 2 },
 });

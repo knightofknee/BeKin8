@@ -155,6 +155,21 @@ export default function ProfileScreen() {
   // Display name editing
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [displayNameDraft, setDisplayNameDraft] = useState('');
+  const displayNameInputRef = useRef<TextInput>(null);
+  const bioInputRef = useRef<TextInput>(null);
+
+  // Imperatively focus edit inputs after they mount — autoFocus is unreliable
+  // when the TextInput is rendered inside a FlatList ListHeaderComponent.
+  useEffect(() => {
+    if (!editingDisplayName) return;
+    const t = setTimeout(() => displayNameInputRef.current?.focus(), 50);
+    return () => clearTimeout(t);
+  }, [editingDisplayName]);
+  useEffect(() => {
+    if (!editingBio) return;
+    const t = setTimeout(() => bioInputRef.current?.focus(), 50);
+    return () => clearTimeout(t);
+  }, [editingBio]);
 
   // List menu
   const [listMenuFor, setListMenuFor] = useState<UserList | null>(null);
@@ -303,6 +318,11 @@ export default function ProfileScreen() {
     press();
     if (!me || !resolvedUid || me.uid !== resolvedUid) return;
     const trimmed = bioDraft.trim();
+    // No-op when nothing changed — just dismiss the editor.
+    if (trimmed === (bio || '').trim()) {
+      setEditingBio(false);
+      return;
+    }
     try {
       await setDoc(doc(db, 'Profiles', me.uid), { bio: trimmed }, { merge: true });
       setBio(trimmed);
@@ -324,6 +344,12 @@ export default function ProfileScreen() {
     const trimmed = displayNameDraft.trim();
     if (trimmed && (trimmed.length < 3 || trimmed.length > 40)) {
       Alert.alert('Invalid', 'Display name must be 3–40 characters, or empty to use your username.');
+      return;
+    }
+    // No-op when nothing changed — just dismiss the editor (saves a Firestore write).
+    const currentNormalized = displayName === resolvedUsername ? '' : displayName;
+    if (trimmed === currentNormalized) {
+      setEditingDisplayName(false);
       return;
     }
     try {
@@ -499,11 +525,20 @@ export default function ProfileScreen() {
     if (!editingPost) return;
     const content = editPostContent.trim();
     if (!content) { Alert.alert('Content required'); return; }
+    const nextTitle = editPostTitle.trim();
+    const nextUrl = editPostUrl.trim();
+    // No-op when nothing changed — just dismiss (saves a Firestore write).
+    const currTitle = (editingPost.title || '').trim();
+    const currContent = (editingPost.content || '').trim();
+    const currUrl = (editingPost.url || '').trim();
+    if (content === currContent && nextTitle === currTitle && nextUrl === currUrl) {
+      setEditingPost(null);
+      return;
+    }
     setEditPostSaving(true);
     try {
-      const updates: any = { content, title: editPostTitle.trim() || '' };
-      if (editPostUrl.trim()) updates.url = editPostUrl.trim();
-      else updates.url = '';
+      const updates: any = { content, title: nextTitle };
+      updates.url = nextUrl;
       await updateDoc(doc(db, 'Posts', editingPost.id), updates);
       setPosts((prev) => prev.map((p) => p.id === editingPost.id
         ? { ...p, content, title: updates.title, url: updates.url || undefined } : p));
@@ -647,13 +682,13 @@ export default function ProfileScreen() {
         {editingDisplayName ? (
           <View style={styles.displayNameEditWrap}>
             <TextInput
+              ref={displayNameInputRef}
               style={[styles.displayNameInput, { borderColor: colors.border, color: colors.text }]}
               placeholder="Display name (or empty for username)"
               placeholderTextColor={colors.subtle}
               value={displayNameDraft}
               onChangeText={setDisplayNameDraft}
               maxLength={40}
-              autoFocus
             />
             <View style={styles.bioActions}>
               <Pressable onPress={() => { tap(); setEditingDisplayName(false); }} style={[styles.bioCancelBtn, { backgroundColor: colors.inputBg }]}>
@@ -698,6 +733,7 @@ export default function ProfileScreen() {
           {editingBio ? (
             <View style={styles.bioEditWrap}>
               <TextInput
+                ref={bioInputRef}
                 style={[styles.bioInput, { borderColor: colors.border, color: colors.text }]}
                 placeholder="Write a short bio..."
                 placeholderTextColor={colors.subtle}
@@ -705,7 +741,6 @@ export default function ProfileScreen() {
                 onChangeText={setBioDraft}
                 multiline
                 maxLength={300}
-                autoFocus
               />
               <View style={styles.bioActions}>
                 <Pressable onPress={() => { tap(); setEditingBio(false); }} style={[styles.bioCancelBtn, { backgroundColor: colors.inputBg }]}>
@@ -768,6 +803,7 @@ export default function ProfileScreen() {
             data={posts}
             keyExtractor={(item) => item.id}
             contentContainerStyle={[styles.list, { backgroundColor: colors.bg }]}
+            keyboardShouldPersistTaps="handled"
             ListHeaderComponent={renderHeader}
             ListEmptyComponent={
               <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 20 }}>

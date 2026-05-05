@@ -56,6 +56,7 @@ type Comment = {
 type Props = {
   post: Post;
   onClose: () => void;
+  targetCommentId?: string;
 };
 
 function getMillis(v: any): number {
@@ -92,7 +93,7 @@ async function resolveMyName(uid: string): Promise<string> {
 
 const ACCESSORY_ID = 'postcomments-accessory';
 
-export default function PostComments({ post, onClose }: Props) {
+export default function PostComments({ post, onClose, targetCommentId }: Props) {
   const { colors: tc } = useTheme();
   const me = auth.currentUser;
   const [loading, setLoading] = useState(true);
@@ -153,8 +154,15 @@ export default function PostComments({ post, onClose }: Props) {
 
   useEffect(() => {
     if (comments.length > 0 && !didInitialScrollRef.current) {
+      const targetIdx = targetCommentId
+        ? comments.findIndex((c) => c.id === targetCommentId)
+        : -1;
       requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated: false });
+        if (targetIdx >= 0) {
+          listRef.current?.scrollToIndex({ index: targetIdx, animated: false, viewPosition: 0.3 });
+        } else {
+          listRef.current?.scrollToEnd({ animated: false });
+        }
         didInitialScrollRef.current = true;
       });
       return;
@@ -165,7 +173,7 @@ export default function PostComments({ post, onClose }: Props) {
         pendingScrollRef.current = false;
       });
     }
-  }, [comments]);
+  }, [comments, targetCommentId]);
 
   const onContentSizeChange = (_w: number, h: number) => {
     setContentHeight(h);
@@ -374,6 +382,13 @@ export default function PostComments({ post, onClose }: Props) {
                     onScroll={onListScroll}
                     onContentSizeChange={onContentSizeChange}
                     onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
+                    onScrollToIndexFailed={(info) => {
+                      const offset = info.averageItemLength * info.index;
+                      listRef.current?.scrollToOffset({ offset, animated: false });
+                      setTimeout(() => {
+                        listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.3 });
+                      }, 100);
+                    }}
                     renderItem={({ item }) => {
                       const mine = item.authorUid === me?.uid;
                       const deleted = item.deleted === true;

@@ -1,18 +1,28 @@
 import React, { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, Platform, Keyboard } from "react-native";
 import { usePathname, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../providers/ThemeProvider";
 import { tap } from "../utils/haptics";
 
 type TabKey = "home" | "feed" | "friends" | "create-post" | "settings";
-type Tab = { key: TabKey; label: string; emoji: string; href: `/${string}` };
+type IoniconName = keyof typeof Ionicons.glyphMap;
+type Tab = {
+  key: TabKey;
+  label: string;
+  icon: IoniconName;
+  iconActive: IoniconName;
+  color: string;
+  href: `/${string}`;
+};
 
+// Each tab keeps its own brand color so the bar reads as colorful, not gray.
 const TABS: Tab[] = [
-  { key: "home",        label: "Home",     emoji: "🏠", href: "/home" },
-  { key: "feed",        label: "Feed",     emoji: "📰", href: "/feed" },
-  { key: "friends",     label: "Friends",  emoji: "👥", href: "/friends" },
-  { key: "create-post", label: "Post",     emoji: "✍️", href: "/create-post" },
-  { key: "settings",    label: "Settings", emoji: "⚙️", href: "/settings" },
+  { key: "home",        label: "Home",     icon: "home-outline",      iconActive: "home",      color: "#2F6FED", href: "/home" },
+  { key: "feed",        label: "Feed",     icon: "newspaper-outline", iconActive: "newspaper", color: "#F97316", href: "/feed" },
+  { key: "friends",     label: "Friends",  icon: "people-outline",    iconActive: "people",    color: "#10B981", href: "/friends" },
+  { key: "create-post", label: "Post",     icon: "create-outline",    iconActive: "create",    color: "#A855F7", href: "/create-post" },
+  { key: "settings",    label: "Settings", icon: "settings-outline",  iconActive: "settings",  color: "#64748B", href: "/settings" },
 ];
 
 export default function BottomBar() {
@@ -48,11 +58,23 @@ export default function BottomBar() {
               android_ripple={{ color: colors.border, borderless: true }}
               hitSlop={6}
             >
-              <Text style={[styles.emoji, active && styles.emojiActive]}>{tab.emoji}</Text>
-              <Text style={[styles.label, { color: colors.tabInactive }, active && { color: colors.primary }]} numberOfLines={1}>
+              <Ionicons
+                name={active ? tab.iconActive : tab.icon}
+                size={24}
+                color={tab.color}
+                style={[styles.icon, !active && styles.iconInactive]}
+              />
+              <Text
+                style={[
+                  styles.label,
+                  { color: colors.tabInactive },
+                  active && { color: tab.color },
+                ]}
+                numberOfLines={1}
+              >
                 {tab.label}
               </Text>
-              {active ? <View style={[styles.activePill, { backgroundColor: colors.primary }]} /> : null}
+              {active ? <View style={[styles.activePill, { backgroundColor: tab.color }]} /> : null}
             </Pressable>
           );
         })}
@@ -82,10 +104,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  tab: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 6 },
-  emoji: { fontSize: 20, marginBottom: 2, opacity: 0.7 },
-  emojiActive: { opacity: 1 },
+  tab: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 6, paddingBottom: 10 },
+  icon: { marginBottom: 2 },
+  iconInactive: { opacity: 0.55 },
   label: { fontSize: 11, fontWeight: "700" },
-  activePill: { position: "absolute", bottom: 6, width: 26, height: 3, borderRadius: 999 },
+  activePill: { position: "absolute", bottom: 2, width: 26, height: 3, borderRadius: 999 },
   bottomInset: { height: Platform.select({ ios: 8, android: 0 }) },
 });

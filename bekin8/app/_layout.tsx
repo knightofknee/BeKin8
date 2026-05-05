@@ -52,10 +52,26 @@ function Gate() {
     const routeForNotification = (data: Record<string, any> | undefined) => {
       if (!data?.type) return;
       const t = String(data.type);
+      const enc = (v: any) => encodeURIComponent(String(v));
       if ((t === "beacon" || t === "beacon_comment") && data.beaconId) {
-        router.push(`/home?beaconId=${data.beaconId}`);
-      } else if ((t === "post_comment" || t === "new_post") && data.postId) {
-        router.push(`/feed?postId=${data.postId}`);
+        const beaconId = enc(data.beaconId);
+        if (t === "beacon_comment" && data.messageId) {
+          const messageId = enc(data.messageId);
+          router.replace(`/home?beaconId=${beaconId}&messageId=${messageId}`);
+        } else {
+          router.replace(`/home?beaconId=${beaconId}`);
+        }
+      } else if (t === "post_comment" && data.postId) {
+        const postId = enc(data.postId);
+        if (data.commentId) {
+          const commentId = enc(data.commentId);
+          router.replace(`/feed?postId=${postId}&commentId=${commentId}`);
+        } else {
+          router.replace(`/feed?postId=${postId}`);
+        }
+      } else if (t === "new_post" && data.postId) {
+        const postId = enc(data.postId);
+        router.replace(`/feed?scrollToPostId=${postId}`);
       }
     };
 

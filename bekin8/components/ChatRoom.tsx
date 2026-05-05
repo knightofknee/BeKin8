@@ -55,6 +55,7 @@ type ChatRoomProps = {
   maxHeight?: number;
   onClose?: () => void;
   style?: StyleProp<ViewStyle>;
+  targetMessageId?: string;
 };
 
 function getMillis(v: any): number {
@@ -96,11 +97,12 @@ async function resolveMyName(uid: string): Promise<string> {
 
 const CHAT_ACCESSORY_ID = 'chatroom-accessory';
 
-export default function ChatRoom({ beaconId, maxHeight, onClose, style }: ChatRoomProps) {
+export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId }: ChatRoomProps) {
   const { colors: tc } = useTheme();
   const me = auth.currentUser;
 
   const [loading, setLoading] = useState(true);
+  const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -237,36 +239,49 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style }: ChatRo
   }, [beaconId]);
 
   useEffect(() => {
+    setMessagesLoaded(false);
     const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
     const q = query(col, orderBy('createdAt', 'asc'), limit(300));
-    const unsub = onSnapshot(q, (snap) => {
-      const arr: ChatMessage[] = [];
-      snap.forEach((d) => {
-        const data: any = d.data();
-        const createdAtMs = getMillis(data?.createdAt) || 0;
-        arr.push({
-          id: d.id,
-          text: (data?.text || '').toString(),
-          authorUid: data?.authorUid ? String(data.authorUid) : undefined,
-          authorName: data?.authorName ? String(data.authorName) : undefined,
-          createdAt: createdAtMs ? new Date(createdAtMs) : new Date(0),
-          type: (data?.type as any) || 'user',
-          subtype: data?.subtype ? String(data.subtype) : undefined,
-          actorUid: data?.actorUid ? String(data.actorUid) : undefined,
-          actorName: data?.actorName ? String(data.actorName) : undefined,
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const arr: ChatMessage[] = [];
+        snap.forEach((d) => {
+          const data: any = d.data();
+          const createdAtMs = getMillis(data?.createdAt) || 0;
+          arr.push({
+            id: d.id,
+            text: (data?.text || '').toString(),
+            authorUid: data?.authorUid ? String(data.authorUid) : undefined,
+            authorName: data?.authorName ? String(data.authorName) : undefined,
+            createdAt: createdAtMs ? new Date(createdAtMs) : new Date(0),
+            type: (data?.type as any) || 'user',
+            subtype: data?.subtype ? String(data.subtype) : undefined,
+            actorUid: data?.actorUid ? String(data.actorUid) : undefined,
+            actorName: data?.actorName ? String(data.actorName) : undefined,
+          });
         });
-      });
-      setMessages(arr);
-    });
+        setMessages(arr);
+        setMessagesLoaded(true);
+      },
+      () => setMessagesLoaded(true)
+    );
 
     return () => unsub();
   }, [beaconId]);
 
-  // Scroll-to-bottom behaviors
+  // Scroll-to-bottom (or to targetMessageId on initial load)
   useEffect(() => {
     if (messages.length > 0 && !didInitialScrollRef.current) {
+      const targetIdx = targetMessageId
+        ? messages.findIndex((m) => m.id === targetMessageId)
+        : -1;
       requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated: false });
+        if (targetIdx >= 0) {
+          listRef.current?.scrollToIndex({ index: targetIdx, animated: false, viewPosition: 0.3 });
+        } else {
+          listRef.current?.scrollToEnd({ animated: false });
+        }
         didInitialScrollRef.current = true;
       });
       return;
@@ -277,7 +292,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style }: ChatRo
         pendingScrollRef.current = false;
       });
     }
-  }, [messages]);
+  }, [messages, targetMessageId]);
 
   const iAmIn = useMemo(() => {
     if (!me) return false;
@@ -515,12 +530,30 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style }: ChatRo
           ref={listRef}
           data={messages}
           keyExtractor={(m) => m.id}
-          contentContainerStyle={{ padding: 6, gap: 6, paddingBottom: 6 }}
+          contentContainerStyle={
+            messages.length === 0
+              ? { flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }
+              : { padding: 6, gap: 6, paddingBottom: 6 }
+          }
           keyboardShouldPersistTaps="handled"
           scrollEventThrottle={32}
           onScroll={onListScroll}
           onContentSizeChange={(_w, h) => setListContentH(h)}
+          onScrollToIndexFailed={(info) => {
+            const offset = info.averageItemLength * info.index;
+            listRef.current?.scrollToOffset({ offset, animated: false });
+            setTimeout(() => {
+              listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.3 });
+            }, 100);
+          }}
           style={{ flex: 1 }}
+          ListEmptyComponent={
+            !messagesLoaded ? (
+              <ActivityIndicator />
+            ) : (
+              <Text style={{ color: tc.subtle, fontSize: 13 }}>No messages yet</Text>
+            )
+          }
           renderItem={({ item }) => {
             if (item.type === 'system') {
               return (

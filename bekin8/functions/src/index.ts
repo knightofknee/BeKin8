@@ -292,6 +292,7 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
           body,
           sound: 'default',
           priority: 'high',
+          channelId: 'default',
           data: { type: 'beacon', beaconId, ownerUid },
         }]);
         await saveTickets(tickets, {
@@ -487,6 +488,7 @@ export const onBeaconCommentNotify = onDocumentCreated(
     if (!authorUid) return;
 
     const beaconId = event.params.beaconId as string;
+    const messageId = event.params.messageId as string;
 
     // Get beacon to find owner
     const beaconSnap = await db.collection('Beacons').doc(beaconId).get();
@@ -536,7 +538,8 @@ export const onBeaconCommentNotify = onDocumentCreated(
         body,
         sound: 'default',
         priority: 'high',
-        data: { type: 'beacon_comment', beaconId, authorUid },
+        channelId: 'default',
+        data: { type: 'beacon_comment', beaconId, messageId, authorUid },
       }));
 
       const chunks = expo.chunkPushNotifications(messages);
@@ -581,6 +584,7 @@ export const onPostCommentNotify = onDocumentCreated(
     if (!authorUid) return;
 
     const postId = event.params.postId as string;
+    const commentId = event.params.commentId as string;
 
     // Get post to find owner
     const postSnap = await db.collection('Posts').doc(postId).get();
@@ -632,7 +636,8 @@ export const onPostCommentNotify = onDocumentCreated(
             body,
             sound: 'default',
             priority: 'high',
-            data: { type: 'post_comment', postId, authorUid },
+            channelId: 'default',
+            data: { type: 'post_comment', postId, commentId, authorUid },
           }]);
           await saveTickets(tickets, {
             subscriberUid: recipientUid,
@@ -711,6 +716,7 @@ export const onPostCreatedNotify = onDocumentCreated('Posts/{postId}', async (ev
           body,
           sound: 'default',
           priority: 'high',
+          channelId: 'default',
           data: { type: 'new_post', postId, authorUid },
         }]);
         await saveTickets(tickets, {

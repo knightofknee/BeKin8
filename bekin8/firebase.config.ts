@@ -3,7 +3,13 @@ import { initializeApp, getApps, type FirebaseApp } from "firebase/app";
 import { initializeAuth, type Auth } from "firebase/auth";
 // @ts-expect-error — getReactNativePersistence exists at runtime but is not in firebase/auth type declarations for v12+
 import { getReactNativePersistence } from "firebase/auth";
-import { getFirestore, type Firestore } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  type Firestore,
+} from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ---- Avoid duplicate inits across Fast Refresh (HMR) ----
@@ -41,7 +47,18 @@ const auth: Auth =
     persistence: getReactNativePersistence(AsyncStorage),
   }));
 
-// ---- Firestore singleton ----
-const db: Firestore = g.__BEKIN_FIREBASE__.db ?? (g.__BEKIN_FIREBASE__.db = getFirestore(app));
+// ---- Firestore singleton (with persistent local cache) ----
+// Uses initializeFirestore on first call; falls back to getFirestore if already initialized
+// (e.g., during Fast Refresh) so we don't throw the "already initialized" error.
+function initDb(): Firestore {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    return getFirestore(app);
+  }
+}
+const db: Firestore = g.__BEKIN_FIREBASE__.db ?? (g.__BEKIN_FIREBASE__.db = initDb());
 
 export { app, auth, db }; // note: we do NOT export onAuthStateChanged

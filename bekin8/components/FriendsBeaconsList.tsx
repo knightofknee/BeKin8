@@ -12,6 +12,7 @@ import {
   query,
   where,
 } from 'firebase/firestore';
+import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
 
 export type FriendBeacon = {
   id: string;
@@ -108,6 +109,10 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const [friendsListReady, setFriendsListReady] = useState(false);
   const [edgesReady, setEdgesReady] = useState(false);
   const [beaconsReady, setBeaconsReady] = useState(false);
+
+  // Warm the Firestore cache for every visible beacon's ChatMessages so that
+  // opening details renders instantly from cache. Dedupes internally.
+  usePrefetchBeaconMessages(beacons.map((b) => b.id));
   // delay empty-state text to avoid flash
   const [emptyReady, setEmptyReady] = useState(false);
 
