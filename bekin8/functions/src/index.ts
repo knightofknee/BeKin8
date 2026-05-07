@@ -142,35 +142,15 @@ async function getPushTokensFromSubcollection(uid: string): Promise<string[]> {
   return Array.from(set);
 }
 
-/** Legacy fallbacks: Profiles/{uid}.expoPushToken, users/{uid}.expoPushToken, users/{uid}.pushToken */
-async function getLegacySingleToken(uid: string): Promise<string[]> {
-  const out: string[] = [];
-
-  // Profiles/{uid}.expoPushToken
-  const prof = await db.collection('Profiles').doc(uid).get();
-  const pTok = prof.exists ? (prof.data()?.expoPushToken as string | undefined) : undefined;
-  if (pTok && Expo.isExpoPushToken(pTok)) out.push(pTok);
-
-  // users/{uid}.expoPushToken and users/{uid}.pushToken (older)
-  const userDoc = await db.collection('users').doc(uid).get();
-  if (userDoc.exists) {
-    const u = userDoc.data() || {};
-    const uExpo = u.expoPushToken as string | undefined;
-    const uOld  = u.pushToken as string | undefined; // ← State A fallback
-    if (uExpo && Expo.isExpoPushToken(uExpo)) out.push(uExpo);
-    if (uOld  && Expo.isExpoPushToken(uOld))  out.push(uOld);
-  }
-
-  return out;
-}
-
-/** Gather all unique Expo tokens for a user (new + legacy). */
+/**
+ * Gather all unique Expo tokens for a user.
+ * Reads only from the canonical per-installation subcollection. Legacy single-token
+ * fields (Profiles.expoPushToken, users.expoPushToken, users.pushToken) are no longer
+ * read — they were causing duplicate sends when a uid had stale entries in multiple
+ * legacy locations alongside the modern subcollection token.
+ */
 async function getAllExpoTokens(uid: string): Promise<string[]> {
-  const [multi, legacy] = await Promise.all([
-    getPushTokensFromSubcollection(uid),
-    getLegacySingleToken(uid),
-  ]);
-  return Array.from(new Set([...multi, ...legacy]));
+  return getPushTokensFromSubcollection(uid);
 }
 
 /** Remove a token from users/{uid}/pushTokens/* and clear legacy single-token fields if they match. */

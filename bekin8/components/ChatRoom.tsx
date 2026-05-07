@@ -119,6 +119,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const pendingScrollRef = useRef(false);
   const didInitialScrollRef = useRef(false);
+  const lastScrolledTargetRef = useRef<string | undefined>(undefined);
 
   // Scroll-to-top arrow (only when list is scrollable and user has scrolled down)
   const [listViewportH, setListViewportH] = useState(0);
@@ -144,6 +145,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     setListContentH(0);
     pendingScrollRef.current = false;
     didInitialScrollRef.current = false;
+    lastScrolledTargetRef.current = undefined;
   }, [beaconId]);
 
   // ---- Only-lift-by-overlap logic (iOS) ----
@@ -270,15 +272,20 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     return () => unsub();
   }, [beaconId]);
 
-  // Scroll-to-bottom (or to targetMessageId on initial load)
+  // Scroll-to-bottom on first load, OR to targetMessageId (initial or when it changes
+  // to a new value after a follow-up notification arrives while the modal is open).
   useEffect(() => {
-    if (messages.length > 0 && !didInitialScrollRef.current) {
+    if (messages.length === 0) return;
+
+    // Initial scroll: to target if provided, otherwise to end.
+    if (!didInitialScrollRef.current) {
       const targetIdx = targetMessageId
         ? messages.findIndex((m) => m.id === targetMessageId)
         : -1;
       requestAnimationFrame(() => {
         if (targetIdx >= 0) {
           listRef.current?.scrollToIndex({ index: targetIdx, animated: false, viewPosition: 0.3 });
+          lastScrolledTargetRef.current = targetMessageId;
         } else {
           listRef.current?.scrollToEnd({ animated: false });
         }
@@ -286,6 +293,19 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       });
       return;
     }
+
+    // Subsequent scroll-to-target: a follow-up notification arrived, targetMessageId changed.
+    if (targetMessageId && targetMessageId !== lastScrolledTargetRef.current) {
+      const idx = messages.findIndex((m) => m.id === targetMessageId);
+      if (idx >= 0) {
+        requestAnimationFrame(() => {
+          listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
+          lastScrolledTargetRef.current = targetMessageId;
+        });
+        return;
+      }
+    }
+
     if (pendingScrollRef.current) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });

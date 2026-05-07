@@ -125,6 +125,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
   const listRef = useRef<FlatList<Comment>>(null);
   const didInitialScrollRef = useRef(false);
   const pendingScrollRef = useRef(false);
+  const lastScrolledTargetRef = useRef<string | undefined>(undefined);
 
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [contentHeight, setContentHeight] = useState(0);
@@ -152,14 +153,19 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
     return () => unsub();
   }, [post.id]);
 
+  // Initial scroll on load (to targetCommentId or end), and re-scroll if a follow-up
+  // notification changes targetCommentId while the modal is already open.
   useEffect(() => {
-    if (comments.length > 0 && !didInitialScrollRef.current) {
+    if (comments.length === 0) return;
+
+    if (!didInitialScrollRef.current) {
       const targetIdx = targetCommentId
         ? comments.findIndex((c) => c.id === targetCommentId)
         : -1;
       requestAnimationFrame(() => {
         if (targetIdx >= 0) {
           listRef.current?.scrollToIndex({ index: targetIdx, animated: false, viewPosition: 0.3 });
+          lastScrolledTargetRef.current = targetCommentId;
         } else {
           listRef.current?.scrollToEnd({ animated: false });
         }
@@ -167,6 +173,18 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
       });
       return;
     }
+
+    if (targetCommentId && targetCommentId !== lastScrolledTargetRef.current) {
+      const idx = comments.findIndex((c) => c.id === targetCommentId);
+      if (idx >= 0) {
+        requestAnimationFrame(() => {
+          listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
+          lastScrolledTargetRef.current = targetCommentId;
+        });
+        return;
+      }
+    }
+
     if (pendingScrollRef.current) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });

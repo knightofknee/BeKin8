@@ -9,14 +9,16 @@ import {
   doc,
   setDoc,
   deleteDoc,
+  deleteField,
   serverTimestamp,
 } from "firebase/firestore";
 
 /**
  * NOTES:
  * - Canonical write: users/{uid}/pushTokens/{installationId} { token, platform, ... }
- * - Legacy mirrors (for current Functions/queries): users/{uid}.expoPushToken and Profiles/{uid}.expoPushToken
- * - EXTRA legacy mirror for older data: users/{uid}.pushToken (temporary until server is fully normalized)
+ * - Legacy single-token fields (Profiles.expoPushToken, users.expoPushToken, users.pushToken)
+ *   are deprecated. We actively delete them on every successful registration so stale entries
+ *   stop accumulating duplicate-send risk for users who upgrade through multiple app versions.
  */
 
 // --- Public API ---
@@ -81,7 +83,8 @@ export async function ensurePushPermissionsAndToken(): Promise<{
   if (user && token) {
     const installationId = await getInstallationId();
 
-    // 1) Canonical: per-installation token (multi-device safe)
+    // Canonical: per-installation token (multi-device safe). The cloud functions
+    // only read from this subcollection.
     await setDoc(
       doc(db, "users", user.uid, "pushTokens", installationId),
       {
@@ -98,30 +101,31 @@ export async function ensurePushPermissionsAndToken(): Promise<{
       { merge: true }
     );
 
-    // 2) Legacy/back-compat single-token fields so existing Functions can find it
-    await setDoc(
-      doc(db, "Profiles", user.uid),
-      {
-        expoPushToken: token,
-        expoPlatform: Platform.OS,
-        expoUpdatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-
-    await setDoc(
-      doc(db, "users", user.uid),
-      {
-        // modern legacy mirror (preferred)
-        expoPushToken: token,
-        expoPlatform: Platform.OS,
-        expoUpdatedAt: serverTimestamp(),
-
-        // ultra-legacy mirror (temporary; covers old queries that expect `pushToken`)
-        pushToken: token,
-      },
-      { merge: true }
-    );
+    // Drain any legacy single-token mirrors so they can't generate duplicate sends.
+    // Failures here are non-fatal — fields may not exist yet, or the user may lack write
+    // perms on legacy fields; either way, the canonical subcollection write above is
+    // what matters for delivery.
+    await Promise.all([
+      setDoc(
+        doc(db, "Profiles", user.uid),
+        {
+          expoPushToken: deleteField(),
+          expoPlatform: deleteField(),
+          expoUpdatedAt: deleteField(),
+        },
+        { merge: true }
+      ).catch(() => {}),
+      setDoc(
+        doc(db, "users", user.uid),
+        {
+          expoPushToken: deleteField(),
+          expoPlatform: deleteField(),
+          expoUpdatedAt: deleteField(),
+          pushToken: deleteField(),
+        },
+        { merge: true }
+      ).catch(() => {}),
+    ]);
   }
 
   return { granted: true, token };
