@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   FlatList,
   Platform,
   Pressable,
@@ -16,6 +15,7 @@ import {
   NativeScrollEvent,
   InputAccessoryView,
   Keyboard,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import {
@@ -304,53 +304,29 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
     }
   };
 
-  // ---- Only-lift-by-overlap logic (iOS) ----
-  const cardRef = useRef<View>(null);
-  const lastKbTopRef = useRef<number | null>(null);
-  const [lift, setLift] = useState(0);
-
-  const recalcLift = useCallback((kbTop?: number | null) => {
-    if (Platform.OS !== 'ios') return;
-    if (typeof kbTop === 'number') {
-      if (kbTop === lastKbTopRef.current) return; // no change — skip
-      lastKbTopRef.current = kbTop;
-    }
-    requestAnimationFrame(() => {
-      cardRef.current?.measureInWindow((_x, y, _w, h) => {
-        const panelBottom = y + h;
-        const keyboardTop =
-          typeof (kbTop ?? lastKbTopRef.current) === 'number'
-            ? (kbTop ?? lastKbTopRef.current)!
-            : Dimensions.get('window').height;
-        const overlap = panelBottom - keyboardTop;
-        setLift(overlap > 0 ? overlap : 0);
-      });
-    });
-  }, []);
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    const onWillShow = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
-    const onWillHide = () => { lastKbTopRef.current = null; setLift(0); };
-    const s1 = Keyboard.addListener('keyboardWillShow', onWillShow);
-    const s2 = Keyboard.addListener('keyboardWillHide', onWillHide);
-    return () => { s1.remove(); s2.remove(); };
-  }, [recalcLift]);
+  // Keyboard handling is owned by the parent modal wrapper via KeyboardAvoidingView
+  // (see app/feed.tsx and app/profile/[username].tsx where this modal is rendered).
+  // Translating the panel here pushed the header off-screen — instead, the parent
+  // shrinks the card from the bottom so the header stays pinned and the composer
+  // sits just above the keyboard.
 
   // Comments are on only if: per-post flag is enabled AND author's global setting allows comments
   // authorCommentsEnabled=null means still loading — show composer optimistically if per-post is enabled
   const commentsOn = post.commentsEnabled !== false && (authorCommentsEnabled === null || authorCommentsEnabled === true);
-
-  const translated = Platform.OS === 'ios' && lift > 0 ? { transform: [{ translateY: -lift }] as const } : null;
 
   return (
     <>
       {/* Full-screen backdrop — tap outside card to close */}
       <Pressable style={[StyleSheet.absoluteFill, styles.backdrop, { backgroundColor: tc.backdrop }]} onPress={onClose} />
 
-      {/* Floating card — centered like ChatRoom */}
-      <View style={styles.cardOuter} pointerEvents="box-none">
-        <View ref={cardRef} style={[styles.card, { backgroundColor: tc.card, borderColor: tc.border }, translated]}>
+      {/* Floating card — centered; KeyboardAvoidingView shrinks available space
+          when the composer is focused so the card sits above the keyboard. */}
+      <KeyboardAvoidingView
+        style={styles.cardOuter}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        pointerEvents="box-none"
+      >
+        <View style={[styles.card, { backgroundColor: tc.card, borderColor: tc.border }]}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
           <View style={styles.headerLeft}>
@@ -487,7 +463,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
           </View>
         )}
         </View>{/* end card */}
-      </View>{/* end cardOuter */}
+      </KeyboardAvoidingView>{/* end cardOuter */}
 
       {/* Android menu sheet */}
       {menuFor && Platform.OS !== 'ios' && (
@@ -539,7 +515,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 16,
     overflow: 'hidden',
-    height: 480,
+    // Card flexes naturally up to ~480px tall in normal use, but is allowed to
+    // shrink when the keyboard takes vertical space (via KeyboardAvoidingView
+    // padding). Without flex:1 the fixed height punches through and the
+    // composer ends up under the keyboard.
+    flex: 1,
+    maxHeight: 480,
     shadowColor: '#000',
     shadowOpacity: 0.12,
     shadowRadius: 16,

@@ -18,7 +18,6 @@ import {
   ViewStyle,
   Keyboard,
   InputAccessoryView,
-  Dimensions,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import { SCREEN_PAD } from './ui/layout';
@@ -148,46 +147,11 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     lastScrolledTargetRef.current = undefined;
   }, [beaconId]);
 
-  // ---- Only-lift-by-overlap logic (iOS) ----
-  const containerRef = useRef<View>(null);
-  const lastKbTopRef = useRef<number | null>(null); // screenY of keyboard top
-  const [lift, setLift] = useState(0);
-
-  const recalcLift = (kbTop?: number | null) => {
-    if (Platform.OS !== 'ios') return;
-    if (typeof kbTop === 'number') {
-      if (kbTop === lastKbTopRef.current) return; // no change — skip
-      lastKbTopRef.current = kbTop;
-    }
-    requestAnimationFrame(() => {
-      containerRef.current?.measureInWindow((_x, y, _w, h) => {
-        const panelBottom = y + h;
-        const keyboardTop =
-          typeof (kbTop ?? lastKbTopRef.current) === 'number'
-            ? (kbTop ?? lastKbTopRef.current)!
-            : Dimensions.get('window').height;
-        const overlap = panelBottom - keyboardTop; // positive if covered
-        setLift(overlap > 0 ? overlap : 0);
-      });
-    });
-  };
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    const onWillShow = (e: any) => recalcLift(e?.endCoordinates?.screenY ?? null);
-    const onWillHide = () => {
-      lastKbTopRef.current = null;
-      setLift(0);
-    };
-    const s1 = Keyboard.addListener('keyboardWillShow', onWillShow);
-    const s2 = Keyboard.addListener('keyboardWillHide', onWillHide);
-    return () => {
-      s1.remove();
-      s2.remove();
-    };
-  }, []);
-
-  const onContainerLayout = () => recalcLift(null);
+  // Keyboard handling is owned by the parent modal via KeyboardAvoidingView
+  // (see app/home.tsx beacon-details modal). Translating the panel here would
+  // push the header off the top of the modal — instead, the parent shrinks the
+  // panel's available space so the header stays pinned, the list shrinks, and
+  // the composer sits just above the keyboard.
 
   // ---- Data subscriptions ----
   useEffect(() => {
@@ -658,7 +622,6 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   );
 
   // ----- Render (apply only-overlap lift) -----
-  const translated = Platform.OS === 'ios' && lift > 0 ? { transform: [{ translateY: -lift }] } : null;
 
   const DoneAccessory = Platform.OS === 'ios' ? (
     <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
@@ -677,7 +640,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           {/* Backdrop tap closes */}
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-          <View ref={containerRef} onLayout={onContainerLayout} style={[styles.cardWrap, { backgroundColor: tc.card }, translated]}>
+          <View style={[styles.cardWrap, { backgroundColor: tc.card }]}>
             <View style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
           </View>
         </View>
@@ -697,8 +660,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   return (
     <>
       <View
-        ref={containerRef}
-               style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style, translated]}
+        style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style]}
       >
         {PanelBody}
       </View>

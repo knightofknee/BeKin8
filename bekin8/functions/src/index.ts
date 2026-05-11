@@ -380,7 +380,7 @@ export const checkExpoReceipts = onSchedule('every 15 minutes', async () => {
   }
 });
 
-// ===== 4) Comment notification: new chat message on a beacon =====
+// ===== 4) Beacon chatroom notifications: new comment OR new RSVP =====
 
 type ChatMessage = {
   text?: string;
@@ -388,6 +388,9 @@ type ChatMessage = {
   authorName?: string;
   type?: 'user' | 'system';
   subtype?: string;
+  // RSVP system messages ('im-in') carry the actor instead of an author.
+  actorUid?: string;
+  actorName?: string;
 };
 
 /** RSVP comment notify: users/{uid}.commentNotify */
@@ -461,11 +464,20 @@ export const onBeaconCommentNotify = onDocumentCreated(
     const msg = (event.data?.data() as ChatMessage | undefined) ?? undefined;
     if (!msg) return;
 
-    // Only notify on regular user messages, not system messages (like "I'm in")
-    if (msg.type === 'system') return;
+    // Two kinds of events fire notifications:
+    //   - regular user comment (msg.type !== 'system')
+    //   - RSVP system message ('im-in')
+    // Other system messages are ignored.
+    const isRsvp = msg.type === 'system' && msg.subtype === 'im-in';
+    const isComment = msg.type !== 'system';
+    if (!isRsvp && !isComment) return;
 
-    const authorUid = msg.authorUid;
-    if (!authorUid) return;
+    // The "sender" is whoever triggered the message:
+    //   - for comments, the author
+    //   - for RSVPs, the actor (the person saying "I'm in")
+    const senderUid = isRsvp ? msg.actorUid : msg.authorUid;
+    const senderName = (isRsvp ? msg.actorName : msg.authorName) || 'Someone';
+    if (!senderUid) return;
 
     const beaconId = event.params.beaconId as string;
     const messageId = event.params.messageId as string;
@@ -476,19 +488,20 @@ export const onBeaconCommentNotify = onDocumentCreated(
     const beacon = beaconSnap.data() as Beacon;
     const ownerUid = beacon.ownerUid;
 
-    // Collect candidate recipients, split by pref type
+    // Collect candidate recipients
     const rsvpUids = await getRsvpUids(beaconId);
     const rsvpSet = new Set(rsvpUids);
-    rsvpSet.delete(authorUid); // don't notify the author
+    rsvpSet.delete(senderUid); // never notify whoever triggered this
 
     const recipients: string[] = [];
 
-    // Owner uses commentNotify pref (same as RSVP'd users — it's a beacon, not a post)
-    if (ownerUid && ownerUid !== authorUid) {
-      if (await wantsCommentNotify(ownerUid)) recipients.push(ownerUid);
+    // Beacon owner: default-on. They created the beacon — they get notified
+    // about all activity on it regardless of their commentNotify pref.
+    if (ownerUid && ownerUid !== senderUid) {
+      recipients.push(ownerUid);
     }
 
-    // RSVP'd users (excluding owner, already handled) use commentNotify pref
+    // Other RSVPers: gated by their commentNotify pref.
     const rsvpCandidates = Array.from(rsvpSet).filter((uid) => uid !== ownerUid);
     await Promise.all(
       rsvpCandidates.map(async (uid) => {
@@ -498,15 +511,19 @@ export const onBeaconCommentNotify = onDocumentCreated(
 
     if (recipients.length === 0) return;
 
-    logger.info('commentNotify fanOut', {
+    logger.info('beaconChat fanOut', {
       beaconId,
-      authorUid,
+      kind: isRsvp ? 'rsvp' : 'comment',
+      senderUid,
       recipientCount: recipients.length,
     });
 
-    const authorName = msg.authorName || 'Someone';
-    const body = (msg.text || '').toString().slice(0, 200) || 'New comment';
-    const title = `${authorName} commented on a beacon`;
+    const title = isRsvp
+      ? `${senderName} is in for a beacon`
+      : `${senderName} commented on a beacon`;
+    const body = isRsvp
+      ? `Tap to see who's coming.`
+      : ((msg.text || '').toString().slice(0, 200) || 'New comment');
 
     for (const recipientUid of recipients) {
       const tokens = await getAllExpoTokens(recipientUid);
@@ -519,7 +536,11 @@ export const onBeaconCommentNotify = onDocumentCreated(
         sound: 'default',
         priority: 'high',
         channelId: 'default',
-        data: { type: 'beacon_comment', beaconId, messageId, authorUid },
+        // Both comment + RSVP route to the same chatroom, so the client uses
+        // the same deep-link handler. messageId is still useful for RSVPs so
+        // the client could in theory scroll to the RSVP line, but most users
+        // will just want the room to be open.
+        data: { type: 'beacon_comment', beaconId, messageId, authorUid: senderUid },
       }));
 
       const chunks = expo.chunkPushNotifications(messages);
@@ -531,13 +552,13 @@ export const onBeaconCommentNotify = onDocumentCreated(
             const tok = msgs[i].to as string;
             await saveTickets([t], {
               subscriberUid: recipientUid,
-              friendUid: authorUid,
+              friendUid: senderUid,
               token: tok,
               beaconId,
             });
           }
         } catch (err) {
-          logger.error('Comment notify send error', { recipientUid, authorUid, beaconId, err });
+          logger.error('Beacon chat notify send error', { recipientUid, senderUid, beaconId, err });
         }
       }
     }

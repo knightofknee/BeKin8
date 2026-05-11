@@ -41,7 +41,8 @@ import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsLi
 import BottomBar from '@/components/BottomBar';
 import { SCREEN_PAD } from '@/components/ui/layout';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { syncPushTokenIfGranted } from '../lib/push';
+import { syncPushTokenIfGranted, ensurePushPermissionsAndToken } from '../lib/push';
+import * as Notifications from 'expo-notifications';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
@@ -106,6 +107,27 @@ export default function HomeScreen() {
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
+
+  // First-time notification onboarding prompted after a user creates a beacon
+  // while OS-level notification permission is not yet granted. Explains
+  // beacon-specific notifications (RSVPs + chat) before opening the OS prompt.
+  const [showBeaconNotifOnboarding, setShowBeaconNotifOnboarding] = useState(false);
+  const [beaconNotifBusy, setBeaconNotifBusy] = useState(false);
+
+  // Fire-and-forget: if OS notification permission is undetermined or denied,
+  // show the beacon-specific onboarding modal. Called from both beacon-creation
+  // paths (toggleBeacon's "Light" branch and saveBeaconOptions).
+  const maybePromptForBeaconNotifications = async () => {
+    try {
+      const perm = await Notifications.getPermissionsAsync();
+      // 'granted' is true on iOS once allowed. On Android the boolean is the
+      // canonical signal too. If granted, skip — user has already opted in.
+      if (perm.granted) return;
+      setShowBeaconNotifOnboarding(true);
+    } catch {
+      // If the permissions check itself fails, don't block the beacon flow.
+    }
+  };
 
   // Prefetch messages for the user's own active beacon so tapping
   // "Open my beacon details" renders chat instantly from cache.
@@ -471,6 +493,10 @@ export default function HomeScreen() {
                 allowedUids,
               });
 
+              // First-time creator might not have notification permission yet —
+              // prompt them so they actually receive friend RSVPs and comments.
+              maybePromptForBeaconNotifications();
+
               const qDay = query(
                 beaconsRef,
                 where('ownerUid', '==', user.uid),
@@ -581,6 +607,10 @@ export default function HomeScreen() {
           }
         });
         if (ops.length) await Promise.all(ops);
+
+        // Scheduled-but-not-yet-active beacon: still a beacon they own, prompt
+        // for notifications if they haven't enabled them yet.
+        maybePromptForBeaconNotifications();
       }
 
       setOptionsOpen(false);
@@ -816,14 +846,20 @@ export default function HomeScreen() {
           </View>
         </Modal>
 
-        {/* Beacon details modal */}
+        {/* Beacon details modal. KeyboardAvoidingView around the backdrop so when
+            the chat composer is focused, the detailCard shrinks from the bottom
+            (header stays pinned at top, list shrinks, composer sits above
+            the keyboard). Without this the input was being covered. */}
         <Modal
           visible={!!selectedBeacon}
           animationType="fade"
           transparent
           onRequestClose={() => { setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }}
         >
-          <View style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop }]}>
+          <KeyboardAvoidingView
+            style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop }]}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
             <Pressable style={StyleSheet.absoluteFill} onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} />
             <View style={[styles.detailCard, { backgroundColor: colors.card }]} pointerEvents="box-none">
               <View style={styles.modalHeader}>
@@ -838,7 +874,7 @@ export default function HomeScreen() {
                 </View>
               )}
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </SafeAreaView>
 
@@ -870,6 +906,64 @@ export default function HomeScreen() {
             </Pressable>
           </View>
         </Pressable>
+      </Modal>
+
+      {/* First-time beacon notification onboarding */}
+      <Modal
+        visible={showBeaconNotifOnboarding}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowBeaconNotifOnboarding(false)}
+      >
+        <View style={styles.helpOverlay}>
+          <View style={[styles.helpCard, { backgroundColor: colors.card }]}>
+            <Text style={[styles.helpTitle, { color: colors.text }]}>Get pinged about your beacon</Text>
+
+            <Text style={[styles.helpBody, { color: colors.text }]}>
+              Now that you've lit a beacon, we can let you know when friends RSVP or comment so you don't have to keep checking the chat.
+            </Text>
+
+            <Text style={[styles.helpBody, { color: colors.subtle }]}>
+              You can change this anytime in Settings.
+            </Text>
+
+            <Pressable
+              onPress={async () => {
+                if (beaconNotifBusy) return;
+                try {
+                  setBeaconNotifBusy(true);
+                  const { granted } = await ensurePushPermissionsAndToken();
+                  setShowBeaconNotifOnboarding(false);
+                  if (!granted) {
+                    Alert.alert(
+                      "Permission declined",
+                      "No worries — you can enable notifications later from Settings.",
+                    );
+                  }
+                } catch (e: any) {
+                  if (__DEV__) console.warn('beacon notif onboarding failed', e);
+                  setShowBeaconNotifOnboarding(false);
+                } finally {
+                  setBeaconNotifBusy(false);
+                }
+              }}
+              style={[styles.helpClose, { backgroundColor: colors.primary, opacity: beaconNotifBusy ? 0.7 : 1 }]}
+              disabled={beaconNotifBusy}
+            >
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>
+                {beaconNotifBusy ? 'Working…' : 'Allow notifications'}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setShowBeaconNotifOnboarding(false)}
+              style={{ marginTop: 12, alignSelf: 'center' }}
+              disabled={beaconNotifBusy}
+            >
+              <Text style={{ color: colors.subtle, fontSize: 14 }}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
       </Modal>
     </>
   );
@@ -952,11 +1046,15 @@ const styles = StyleSheet.create({
     height: 180,
   },
   logHint: {
-    fontSize: 13,
+    fontSize: 15,
     color: '#6B7280',
     fontWeight: '600',
     textAlign: 'center',
-    marginTop: 4,
+    // 0 here + 8 from beaconIcon paddingBottom = 8 total above the text.
+    // marginBottom: 8 matches so the hint sits centered between the pyre and
+    // the Beacon options card.
+    marginTop: 0,
+    marginBottom: 8,
     minHeight: 34,
   },
   myChatBtn: {
@@ -976,7 +1074,10 @@ const styles = StyleSheet.create({
   myChatBtnTxt: { fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
 
   status: { fontSize: 16, color: '#555' },
-  statusActive: { fontSize: 18, fontWeight: '600', color: 'green', marginBottom: 12 },
+  // Split the old marginBottom:12 evenly across top + bottom so the active-state
+  // text is vertically centered between the "Open beacon chat" button above and
+  // the Beacon options card below — without changing total layout height.
+  statusActive: { fontSize: 18, fontWeight: '600', color: 'green', marginTop: 6, marginBottom: 6 },
 
   // --- Options modal styles ---
   modalBackdrop: {
