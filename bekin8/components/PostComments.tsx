@@ -114,7 +114,9 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
       if (snap.exists()) {
         const data = snap.data() as any;
         setAuthorCommentsEnabled(data.commentsEnabled === true);
-        if (data.profileColor) setPostAuthorColor(data.profileColor);
+        // Fall back to legacy `avatarColor` for older accounts.
+        const color = data.profileColor || data.avatarColor;
+        if (color) setPostAuthorColor(color);
       } else {
         setAuthorCommentsEnabled(false);
       }

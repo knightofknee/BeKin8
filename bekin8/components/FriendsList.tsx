@@ -15,11 +15,10 @@ type RowProps = {
   onToggleNotify?: (value: boolean) => void;
   onPressName?: () => void;
   onDoubleTap?: () => void;
-  showUsername?: boolean; // show @username disambiguator when displayNames collide
   notifyDisabled?: boolean; // master "notify all" is ON — show as on but grayed out
 };
 
-function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap, showUsername, notifyDisabled }: RowProps) {
+function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap, notifyDisabled }: RowProps) {
   const { colors } = useTheme();
   const disabled = busy || !item.uid;
   const lastTapRef = useRef(0);
@@ -50,9 +49,13 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
 
       {/* Name */}
       <View style={{ flex: 1 }}>
-        <Text style={[styles.rowTitle, { color: colors.text }]}>{item.displayName || item.username}</Text>
-        {showUsername && item.displayName && (
-          <Text style={[styles.rowSubtitle, { color: colors.subtle }]}>@{item.username}</Text>
+        <Text style={[styles.rowTitle, { color: colors.text }]} numberOfLines={1} ellipsizeMode="tail">
+          {item.displayName || item.username}
+        </Text>
+        {/* When a display name is shown, surface the @username underneath so
+            it's clear which is which. Skip when displayName == username (no value). */}
+        {!!item.displayName && item.displayName !== item.username && (
+          <Text style={[styles.rowSubtitle, { color: colors.subtle }]} numberOfLines={1} ellipsizeMode="tail">@{item.username}</Text>
         )}
       </View>
 

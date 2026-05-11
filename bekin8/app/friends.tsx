@@ -50,6 +50,7 @@ import {
   subscribeToFriendNotifications,
   unsubscribeFromFriendNotifications,
   syncPushTokenIfGranted,
+  removePushTokenForThisDevice,
 } from "../lib/push";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
@@ -168,9 +169,18 @@ export default function FriendsScreen() {
     }
   }, [profileLoaded]);
 
+  // Tracks which uids we've already fetched the canonical Profile for, so we
+  // don't refetch on every snapshot — but unlike the old logic, this is NOT
+  // seeded from the stamped denorm. The denorm's username may be stale or
+  // wrong-cased; the canonical Profiles/{uid} doc is the source of truth.
+  const profilesFetchedRef = useRef<Set<string>>(new Set());
+
   const resolveUsernames = async (uids: string[]) => {
-    const toFetch = uids.filter((u) => !nameCacheRef.current[u]);
+    // De-dupe against in-flight / already-fetched. Pre-mark so a concurrent
+    // call doesn't kick off the same fetch twice.
+    const toFetch = uids.filter((u) => u && !profilesFetchedRef.current.has(u));
     if (!toFetch.length) return;
+    toFetch.forEach((u) => profilesFetchedRef.current.add(u));
     await Promise.all(
       toFetch.map(async (uid) => {
         try {
@@ -178,12 +188,16 @@ export default function FriendsScreen() {
           if (prof.exists()) {
             const data = prof.data() as any;
             const uname = data?.username || data?.usernameLower;
+            // Overwrite any stamped value — canonical Profile wins.
             if (uname) nameCacheRef.current[uid] = String(uname);
             if (data?.displayName) displayNameCacheRef.current[uid] = String(data.displayName);
-            if (data?.profileColor) colorCacheRef.current[uid] = data.profileColor;
+            // Fall back to legacy `avatarColor` field for older users whose
+            // profile predates the rename to `profileColor`.
+            const color = data?.profileColor || data?.avatarColor;
+            if (color) colorCacheRef.current[uid] = color;
           }
         } catch {
-          // ignore
+          // ignore — leave the cache as-is so the stamped fallback survives
         }
       })
     );
@@ -251,9 +265,10 @@ export default function FriendsScreen() {
       onSnapshot(collection(db, "users", user.uid, "friends"), (snap) => {
         const arr = snap.docs.map((d) => d.data() as any);
         const cleaned = cleanAndDedupeFriends(arr);
-        cleaned.forEach((f) => {
-          if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
-        });
+        // Intentionally NOT seeding nameCacheRef from the stamped denorm —
+        // the denorm can be stale or wrong-cased. The merge effect below
+        // triggers a canonical Profile fetch instead, and the stamped
+        // username flows through as a fallback in makeFriend().
         setSubFriends(cleaned);
 
         const nm: Record<string, boolean> = {};
@@ -274,9 +289,8 @@ export default function FriendsScreen() {
           return;
         }
         const cleaned = cleanAndDedupeFriends((snap.data() as any)?.friends || []);
-        cleaned.forEach((f) => {
-          if (f.uid && f.username) nameCacheRef.current[f.uid] = f.username;
-        });
+        // Same as the subcollection listener — don't seed nameCacheRef from
+        // the stamped denorm; let resolveUsernames fetch the canonical Profile.
         setLegacyFriends(cleaned);
       })
     );
@@ -332,9 +346,12 @@ export default function FriendsScreen() {
       return;
     }
 
-    const makeFriend = (uid: string, username: string): Friend => ({
+    // Prefer canonical Profile values (in caches) over the stamped denorm.
+    // Stamped values are used only as a fallback for the brief window before
+    // resolveUsernames has fetched the canonical Profile.
+    const makeFriend = (uid: string, stampedUsername: string): Friend => ({
       uid,
-      username,
+      username: nameCacheRef.current[uid] || stampedUsername,
       displayName: displayNameCacheRef.current[uid] || undefined,
       profileColor: colorCacheRef.current[uid] || undefined,
     });
@@ -346,25 +363,31 @@ export default function FriendsScreen() {
     legacyFriends.forEach((f) => {
       if (f.uid && !map.has(f.uid)) map.set(f.uid, makeFriend(f.uid, f.username));
     });
-
-    const otherUids: string[] = [];
     edges.forEach((e) => {
       const other = e.uids.find((u) => u !== me.uid);
       if (!other) return;
       if (!map.has(other)) {
-        const uname = nameCacheRef.current[other] || other;
-        map.set(other, makeFriend(other, uname));
-        if (!nameCacheRef.current[other]) otherUids.push(other);
+        // No stamped username for edge-only friends — fall back to uid string
+        // until resolveUsernames fills in the cache.
+        map.set(other, makeFriend(other, other));
       }
     });
 
-    if (otherUids.length) {
-      resolveUsernames(otherUids).then(() => {
+    // Fetch canonical Profile for EVERY friend we haven't already fetched.
+    // resolveUsernames de-dupes internally via profilesFetchedRef.
+    const allUids = Array.from(map.keys());
+    const needFetch = allUids.filter((u) => !profilesFetchedRef.current.has(u));
+    if (needFetch.length) {
+      resolveUsernames(needFetch).then(() => {
+        // After canonical data is in the caches, rebuild friends so the UI
+        // picks up the corrected username / displayName / profileColor.
         setFriends((prev) => {
           const m = new Map<string, Friend>();
-          for (const f of Array.from(map.values())) {
-            const u = f.uid ? nameCacheRef.current[f.uid] || f.username : f.username;
-            m.set(f.uid || f.username, makeFriend(f.uid!, u));
+          for (const f of prev) {
+            if (!f.uid) { m.set(f.username, f); continue; }
+            // Reuse the existing entry's username as the stamped fallback so
+            // we never lose info if the canonical fetch failed.
+            m.set(f.uid, makeFriend(f.uid, f.username));
           }
           return Array.from(m.values()).sort((a, b) => a.username.localeCompare(b.username));
         });
@@ -442,6 +465,27 @@ export default function FriendsScreen() {
 
       const meUid = me.uid;
       if (targetUid === meUid) return showMessage("You can’t add yourself.", "error");
+
+      // ── Block checks ────────────────────────────────────────────────────────
+      // Run both block lookups in parallel.
+      const [theirBlockOnMe, myBlockOnThem] = await Promise.all([
+        getDoc(doc(db, "users", targetUid, "blocks", meUid)),
+        getDoc(doc(db, "users", meUid, "blocks", targetUid)),
+      ]);
+
+      // If the target has us blocked, refuse. Use the same "User not found."
+      // message that's shown when the username doesn't resolve at all, so we
+      // don't reveal to the sender that they were specifically blocked.
+      if (theirBlockOnMe.exists()) {
+        return showMessage("User not found.", "error");
+      }
+
+      // If WE have THEM blocked, sending a fresh request implicitly unblocks —
+      // delete our block doc first, then proceed. The cloud function won't
+      // reverse this because the trigger fires on block creation, not deletion.
+      if (myBlockOnThem.exists()) {
+        await deleteDoc(doc(db, "users", meUid, "blocks", targetUid));
+      }
 
       // Prevent re-sending: check edges already accepted
       const qEdges = query(
@@ -688,6 +732,15 @@ export default function FriendsScreen() {
     if (loggingOut) return;
     try {
       setLoggingOut(true);
+      // Release the push token for this device BEFORE signing out, so the
+      // server stops targeting this device with notifications for this account.
+      // Best-effort: failure here shouldn't block the sign-out itself.
+      try {
+        const uid = auth.currentUser?.uid;
+        if (uid) await removePushTokenForThisDevice(uid);
+      } catch (tokErr) {
+        if (__DEV__) console.warn("removePushTokenForThisDevice failed on logout", tokErr);
+      }
       await signOut(auth); // _layout.tsx will see user=null and route to "/"
       // No manual routing needed; component will unmount shortly.
     } catch (e) {
@@ -699,19 +752,15 @@ export default function FriendsScreen() {
   // NEW: filter out blocked users from the displayed list
   const visibleFriends = friends.filter((f) => !(f.uid && blockedUids.has(f.uid)));
 
-  // Detect duplicate display names so we can show @username disambiguator
-  const duplicateDisplayNames = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const f of visibleFriends) {
-      const name = (f.displayName || f.username).toLowerCase();
-      counts[name] = (counts[name] || 0) + 1;
-    }
-    const dupes = new Set<string>();
-    for (const [name, count] of Object.entries(counts)) {
-      if (count > 1) dupes.add(name);
-    }
-    return dupes;
-  }, [visibleFriends]);
+  // Filter incoming friend requests so anything from a blocked user is hidden.
+  // The onUserBlocked cloud function cancels pending requests on block, but this
+  // is defense-in-depth for any edge case where a request slips through (e.g. a
+  // request was created before the block, in the brief window before the trigger
+  // fires, or from a client that bypassed the send-side check).
+  const visibleIncoming = useMemo(
+    () => incoming.filter((r) => !(r.senderUid && blockedUids.has(r.senderUid))),
+    [incoming, blockedUids]
+  );
 
   // "Add Brian" — first-friend suggestion (only shown when user has zero friends)
   const [addingBrian, setAddingBrian] = useState(false);
@@ -990,7 +1039,6 @@ export default function FriendsScreen() {
             }}
             onPressName={item.username ? () => { tap(); router.push(`/profile/${item.username}`); } : undefined}
             onDoubleTap={item.username ? () => { tap(); router.push(`/profile/${item.username}`); } : undefined}
-            showUsername={duplicateDisplayNames.has((item.displayName || item.username).toLowerCase())}
             notifyDisabled={notifyAllBeacons}
           />
         )}
@@ -1007,7 +1055,7 @@ export default function FriendsScreen() {
               onSaveUsername={handleSetUsername}
               busyUsername={busyUsername}
               displayName={profile?.displayName || null}
-              onPressDisplayName={() => { if (currentUsername) { tap(); router.push(`/profile/${currentUsername}`); } }}
+              onPressDisplayName={() => { if (currentUsername) { tap(); router.push(`/profile/${currentUsername}?editDisplayName=1`); } }}
               nameInput={name}
               onChangeName={setName}
               hasProfileUsername={!!currentUsername?.trim()}
@@ -1055,7 +1103,7 @@ export default function FriendsScreen() {
 
             {/* Requests */}
             <FriendRequestsSection
-              incoming={incoming}
+              incoming={visibleIncoming}
               outgoing={outgoing}
               busy={busy}
               onAccept={acceptRequest}

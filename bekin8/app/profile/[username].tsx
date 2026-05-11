@@ -123,7 +123,7 @@ function toTimestamp(rawTs: any): number {
 }
 
 export default function ProfileScreen() {
-  const { username } = useLocalSearchParams<{ username: string }>();
+  const { username, editDisplayName } = useLocalSearchParams<{ username: string; editDisplayName?: string }>();
   const router = useRouter();
   const me = auth.currentUser;
   const { colors } = useTheme();
@@ -165,6 +165,26 @@ export default function ProfileScreen() {
     const t = setTimeout(() => displayNameInputRef.current?.focus(), 50);
     return () => clearTimeout(t);
   }, [editingDisplayName]);
+
+  // Deep-link: ?editDisplayName=1 opens the editor on mount (e.g. tapping
+  // "Display name" from the friends screen lands here pre-armed). Wait for the
+  // profile to finish loading so displayName/resolvedUsername are populated
+  // before seeding the draft.
+  const didAutoOpenDisplayNameRef = useRef(false);
+  useEffect(() => {
+    if (didAutoOpenDisplayNameRef.current) return;
+    if (!editDisplayName) return;
+    if (loading || !resolvedUid) return;
+    // Inline the "is this my profile?" check to avoid a forward reference
+    // to isOwnProfile which is declared later in the component.
+    const owns = !!(me && me.uid === resolvedUid);
+    if (!owns) return;
+    didAutoOpenDisplayNameRef.current = true;
+    setDisplayNameDraft(displayName === resolvedUsername ? '' : displayName);
+    setEditingDisplayName(true);
+    // Clear the param so a re-render doesn't re-open the editor after dismissal.
+    router.setParams({ editDisplayName: undefined as any });
+  }, [editDisplayName, loading, resolvedUid, me, displayName, resolvedUsername, router]);
   useEffect(() => {
     if (!editingBio) return;
     const t = setTimeout(() => bioInputRef.current?.focus(), 50);
@@ -206,7 +226,9 @@ export default function ProfileScreen() {
       setResolvedUid(d.id);
       setResolvedUsername(data.username || String(username));
       setDisplayName(data.displayName || data.username || String(username));
-      setProfileColor(data.profileColor || '#2F6FED');
+      // Fall back to legacy `avatarColor` for older accounts that predate the
+      // `profileColor` field name.
+      setProfileColor(data.profileColor || data.avatarColor || '#2F6FED');
       setBio(data.bio || '');
       setAuthorCommentsEnabled(data.commentsEnabled === true);
     }).catch(() => {
@@ -701,12 +723,12 @@ export default function ProfileScreen() {
           </View>
         ) : (
           <Pressable onPress={isOwnProfile ? handleEditDisplayName : undefined} disabled={!isOwnProfile}>
-            <Text style={[styles.heroDisplayName, { color: colors.text }]}>{displayName || resolvedUsername}</Text>
+            <Text style={[styles.heroDisplayName, { color: colors.text }]} numberOfLines={1} ellipsizeMode="tail">{displayName || resolvedUsername}</Text>
             {isOwnProfile && <Text style={[styles.bioEditHint, { color: colors.subtle, textAlign: 'center' }]}>Tap to edit</Text>}
           </Pressable>
         )}
         {!editingDisplayName && displayName && resolvedUsername && displayName !== resolvedUsername && (
-          <Text style={[styles.heroUsername, { color: colors.subtle }]}>@{resolvedUsername}</Text>
+          <Text style={[styles.heroUsername, { color: colors.subtle }]} numberOfLines={1} ellipsizeMode="tail">@{resolvedUsername}</Text>
         )}
 
         {/* Color picker — own profile only, shown on avatar tap */}
@@ -804,7 +826,14 @@ export default function ProfileScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={[styles.list, { backgroundColor: colors.bg }]}
             keyboardShouldPersistTaps="handled"
-            ListHeaderComponent={renderHeader}
+            // Call renderHeader() to pass a JSX element instead of a function
+            // reference. With a function, FlatList sees a new component identity
+            // every render and unmounts/remounts the entire header subtree —
+            // which in turn nukes TextInput focus on every keystroke and
+            // detaches the Save/Cancel Pressable handlers. Passing an element
+            // lets React reconcile in place: TextInput keeps its instance and
+            // focus persists.
+            ListHeaderComponent={renderHeader()}
             ListEmptyComponent={
               <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 20 }}>
                 <Text style={{ fontSize: 15, color: colors.subtle }}>No posts yet</Text>

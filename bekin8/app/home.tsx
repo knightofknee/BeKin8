@@ -122,7 +122,10 @@ export default function HomeScreen() {
     (async () => {
       try {
         const snap = await getDoc(doc(db, 'Beacons', bid));
-        if (!snap.exists()) return;
+        if (!snap.exists()) {
+          if (__DEV__) console.warn('Beacon deep link: doc not found', bid);
+          return;
+        }
         const d: any = snap.data();
         const stMs = getMillis(d?.startAt);
         setSelectedBeacon({
@@ -135,7 +138,9 @@ export default function HomeScreen() {
           message: d?.message || '',
         });
         setSelectedBeaconMessageId(mid);
-      } catch {}
+      } catch (err) {
+        if (__DEV__) console.warn('Beacon deep link: fetch failed', bid, err);
+      }
     })();
   }, [params.beaconId, params.messageId]);
 

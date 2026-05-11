@@ -712,6 +712,125 @@ export const onPostCreatedNotify = onDocumentCreated('Posts/{postId}', async (ev
   }
 });
 
+// ===== 7) Block user — end friendship bilaterally =====
+//
+// Trigger: a new doc appears at users/{ownerUid}/blocks/{blockedUid}.
+//
+// What this does:
+//   - Removes the canonical FriendEdge between the pair (so neither side sees
+//     the other as a friend, beacon notifications stop, feed query drops them).
+//   - Cleans the legacy denorm sources on BOTH sides:
+//       users/{ownerUid}/friends/{blockedUid}
+//       users/{blockedUid}/friends/{ownerUid}
+//       Friends/{ownerUid}.friends array (remove blockedUid)
+//       Friends/{blockedUid}.friends array (remove ownerUid)
+//   - Cancels any pending FriendRequests in either direction (sets status
+//     to 'cancelled' so the client UI hides them).
+//
+// The block doc itself stays put — that's the source of truth for "owner has
+// blocked this uid". To unblock, the owner sends a fresh friend request
+// (handled client-side in app/friends.tsx, which deletes the block doc as
+// part of the send).
+
+async function removeUidFromFriendsArray(ownerUid: string, uidToRemove: string) {
+  const ref = db.collection('Friends').doc(ownerUid);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const arr = (snap.data() as any)?.friends;
+  if (!Array.isArray(arr)) return;
+  const filtered = arr.filter((f: any) => {
+    const fUid = typeof f === 'string' ? f : f?.uid;
+    return fUid !== uidToRemove;
+  });
+  if (filtered.length !== arr.length) {
+    await ref.set({ friends: filtered }, { merge: true });
+  }
+}
+
+async function cancelPendingFriendRequests(uidA: string, uidB: string) {
+  const reqs = db.collection('FriendRequests');
+  const [aToB, bToA] = await Promise.all([
+    reqs
+      .where('senderUid', '==', uidA)
+      .where('receiverUid', '==', uidB)
+      .where('status', '==', 'pending')
+      .get(),
+    reqs
+      .where('senderUid', '==', uidB)
+      .where('receiverUid', '==', uidA)
+      .where('status', '==', 'pending')
+      .get(),
+  ]);
+  const batch = db.batch();
+  let touched = 0;
+  for (const snap of [aToB, bToA]) {
+    snap.forEach((d) => {
+      batch.update(d.ref, {
+        status: 'cancelled',
+        updatedAt: FieldValue.serverTimestamp(),
+        cancelReason: 'user_blocked',
+      });
+      touched++;
+    });
+  }
+  if (touched > 0) await batch.commit();
+}
+
+export const onUserBlocked = onDocumentCreated(
+  'users/{ownerUid}/blocks/{blockedUid}',
+  async (event) => {
+    const ownerUid = event.params.ownerUid as string;
+    const blockedUid = event.params.blockedUid as string;
+    if (!ownerUid || !blockedUid || ownerUid === blockedUid) return;
+
+    try {
+      // 1) Delete every FriendEdge that contains both uids (usually 1, but be defensive).
+      const edgesSnap = await db
+        .collection('FriendEdges')
+        .where('uids', 'array-contains', ownerUid)
+        .get();
+
+      const batch = db.batch();
+      let edgesToDelete = 0;
+      edgesSnap.forEach((doc) => {
+        const uids: unknown = (doc.data() as any).uids;
+        if (Array.isArray(uids) && uids.includes(blockedUid)) {
+          batch.delete(doc.ref);
+          edgesToDelete++;
+        }
+      });
+
+      // 2) Delete the per-side denorm subcollection docs.
+      batch.delete(
+        db.collection('users').doc(ownerUid).collection('friends').doc(blockedUid)
+      );
+      batch.delete(
+        db.collection('users').doc(blockedUid).collection('friends').doc(ownerUid)
+      );
+
+      await batch.commit();
+
+      // 3) Update Friends/{uid}.friends arrays on both sides (sequential because
+      //    each is a read-modify-write and Firestore batches don't compose with reads).
+      await Promise.all([
+        removeUidFromFriendsArray(ownerUid, blockedUid),
+        removeUidFromFriendsArray(blockedUid, ownerUid),
+      ]);
+
+      // 4) Cancel any pending requests in either direction.
+      await cancelPendingFriendRequests(ownerUid, blockedUid);
+
+      logger.info('onUserBlocked: cleanup complete', {
+        ownerUid,
+        blockedUid,
+        edgesDeleted: edgesToDelete,
+      });
+    } catch (err) {
+      logger.error('onUserBlocked: cleanup failed', { ownerUid, blockedUid, err });
+    }
+  }
+);
+
 // Keep callable exports (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';
 export { checkPostAllowed } from './checkPostAllowed.js';

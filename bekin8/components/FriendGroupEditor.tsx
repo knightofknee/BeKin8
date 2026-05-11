@@ -80,7 +80,8 @@ async function resolveUsernames(uids: string[]) {
           const data: any = p.data();
           const uname = (data?.username || "").toString().trim();
           const dn = (data?.displayName || "").toString().trim();
-          const ac = (data?.avatarColor || "").toString().trim();
+          // Prefer the modern `profileColor` field, fall back to legacy `avatarColor`.
+          const ac = (data?.profileColor || data?.avatarColor || "").toString().trim();
           if (uname) out[uid] = { username: uname, displayName: dn || undefined, avatarColor: ac || undefined };
         }
       } catch {

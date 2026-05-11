@@ -638,7 +638,7 @@ export default function Feed() {
                     onPress={() => { tap(); item.authorUsernameSlug && router.push(`/profile/${item.authorUsernameSlug}`); }}
                     disabled={!item.authorUsernameSlug}
                   >
-                    <Text style={[styles.postAuthor, { color: tc.text }, item.authorUsernameSlug && [styles.postAuthorLink, { color: tc.linkText }]]}>
+                    <Text style={[styles.postAuthor, { color: tc.text }, item.authorUsernameSlug && [styles.postAuthorLink, { color: tc.linkText }]]} numberOfLines={1} ellipsizeMode="tail">
                       {item.authorUsername}
                     </Text>
                   </Pressable>

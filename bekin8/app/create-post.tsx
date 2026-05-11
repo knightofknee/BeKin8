@@ -194,6 +194,11 @@ export default function CreatePostScreen() {
     return () => { cancelled = true; };
   }, []);
 
+  // Minimal URL plausibility check: must look like "something.tld[…]" with no
+  // whitespace, where the TLD-ish part is at least 2 chars. Doesn't require a
+  // protocol — a user can type "example.com" or "https://example.com/path".
+  const PLAUSIBLE_URL = /^[^\s]+\.[^\s]{2,}$/;
+
   // ── Field validation (shared) ─────────────────────────────────────────────
   const validateFields = (): boolean => {
     if (!title.trim() || !content.trim()) {
@@ -208,6 +213,11 @@ export default function CreatePostScreen() {
       Alert.alert('Character limit exceeded', 'Max ~10,000 characters.');
       return false;
     }
+    const trimmedLink = link.trim();
+    if (trimmedLink && !PLAUSIBLE_URL.test(trimmedLink)) {
+      Alert.alert('Invalid link', 'That doesn’t look like a URL — try something like example.com or https://example.com.');
+      return false;
+    }
     return true;
   };
 
@@ -219,11 +229,13 @@ export default function CreatePostScreen() {
       router.replace('/');
       return;
     }
-    const tags = (content.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
+    // Trim content so whitespace-only padding doesn't end up persisted.
+    const trimmedContent = content.trim();
+    const tags = (trimmedContent.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
     await addDoc(collection(db, 'Posts'), {
       title: title.trim(),
       link: link.trim() || null,
-      content,
+      content: trimmedContent,
       author: user.uid,
       authorName: profile?.username || null,
       timestamp: Date.now(),

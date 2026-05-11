@@ -53,7 +53,7 @@ export default function FriendsProfileAndInvite({
             </View>
             <Pressable onPress={() => { press(); onPressDisplayName(); }} hitSlop={8}>
               <Text style={[styles.label, { color: colors.text, marginBottom: 4 }]}>Display name</Text>
-              <Text style={[styles.displayNameLink, { color: colors.primary }]}>
+              <Text style={[styles.displayNameLink, { color: colors.primary }]} numberOfLines={1} ellipsizeMode="tail">
                 {displayName || 'Set display name'}
               </Text>
             </Pressable>

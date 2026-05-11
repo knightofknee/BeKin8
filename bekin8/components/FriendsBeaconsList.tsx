@@ -100,6 +100,29 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const beaconUnsubsRef = useRef<(() => void)[]>([]);
   const docStoreRef = useRef<Map<string, any>>(new Map());
   const profilesFetchedRef = useRef<Set<string>>(new Set());
+  // Tracks whether the component is still mounted, so async .then() callbacks
+  // can short-circuit instead of writing to refs / calling setState after unmount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Tracks the friendUids signature (sorted, deduped, joined) of the currently-active
+  // beacon subscriptions. When the parent re-renders and friendUids' array reference
+  // changes but its CONTENTS are identical, we skip tearing down and re-creating all
+  // the per-batch onSnapshot listeners — they're still valid.
+  const subscriptionsKeyRef = useRef<string>('');
+
+  // Final unmount cleanup for beacon listeners. The main subscription effect manages
+  // them imperatively (so a content-equal bailout doesn't lose them); this guarantees
+  // they're released when the component goes away.
+  useEffect(() => {
+    return () => {
+      beaconUnsubsRef.current.forEach((fn) => fn());
+      beaconUnsubsRef.current = [];
+    };
+  }, []);
 
   // visibility group cache: groupId -> Set(memberUids)
   const groupMembersCacheRef = useRef<Record<string, Set<string> | null | undefined>>({});
@@ -223,6 +246,22 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
   const computeAndSet = () => {
     const store = docStoreRef.current;
 
+    // Prune past/expired entries from the store so it can't grow unboundedly across
+    // long-running sessions. The query has no time filter, so old beacons accumulate
+    // unless we explicitly drop them — Firestore only reports them as 'removed'
+    // when the document itself is deleted.
+    const cutoff = startOfDay(new Date()).getTime();
+    const nowMs = Date.now();
+    const stale: string[] = [];
+    store.forEach((data: any, id: string) => {
+      const stMillis = getMillis(data?.startAt);
+      const expMillis = getMillis(data?.expiresAt);
+      if (!stMillis) return;
+      if (stMillis < cutoff) stale.push(id);
+      else if (expMillis && expMillis < nowMs) stale.push(id);
+    });
+    stale.forEach((id) => store.delete(id));
+
     type Candidate = FriendBeacon & { _createdMs: number };
     const candidates: Candidate[] = [];
     const toFetchProfiles = new Set<string>();
@@ -311,11 +350,17 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
     // Resolve names from Profiles for any owners we haven't fetched yet (override username cache)
     if (toFetchProfiles.size) {
       const list = Array.from(toFetchProfiles);
+      // Pre-mark these uids as fetched BEFORE starting the request. Without this,
+      // concurrent computeAndSet calls (e.g. from rapid snapshot updates) would
+      // see them as unfetched and kick off duplicate in-flight reads for the
+      // same profiles. This also covers the empty-result case — if a Profile
+      // genuinely doesn't exist we won't repeatedly retry it.
+      list.forEach((uid) => profilesFetchedRef.current.add(uid));
       fetchProfileNames(list).then((map) => {
+        if (!mountedRef.current) return; // component unmounted before fetch resolved
         if (!map || Object.keys(map).length === 0) return;
         // Overwrite cache entries with authoritative Profiles values
         Object.assign(nameCacheRef.current, map);
-        list.forEach((uid) => profilesFetchedRef.current.add(uid));
         // trigger re-render so FriendBeaconItem reads latest names from cache
         setBeacons((prev) => (prev ? [...prev] : prev));
       });
@@ -345,38 +390,60 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
               groupFetchInFlightRef.current.delete(gid);
             }
           })
-        ).then(() => {
-          computeAndSet();
-        });
+        )
+          .then(() => {
+            if (mountedRef.current) computeAndSet();
+          })
+          .catch((err) => {
+            // Defensive: each inner map already try/catches, so this should be unreachable.
+            // If something does throw (e.g. computeAndSet itself), don't leave the inflight
+            // refs / list in a broken state — clear them and try a recompute.
+            if (__DEV__) console.warn('Groups fetch chain failed', err);
+            toFetch.forEach((gid) => groupFetchInFlightRef.current.delete(gid));
+            if (mountedRef.current) computeAndSet();
+          });
       }
     }
   };
 
   // subscribe: friends' beacons (ownerUid IN chunks)
+  // Note: this effect manages listeners imperatively via beaconUnsubsRef rather
+  // than returning a cleanup function. That lets us bail out when friendUids
+  // content is unchanged (avoiding a needless tear-down/re-create cycle that
+  // would happen if we relied on useEffect's auto-cleanup). The unmount-only
+  // cleanup is in a separate useEffect above.
   useEffect(() => {
     const me = auth.currentUser;
     if (!me) {
-      beaconUnsubsRef.current.forEach((fn) => fn());
-      beaconUnsubsRef.current = [];
-      docStoreRef.current.clear();
+      if (beaconUnsubsRef.current.length > 0) {
+        beaconUnsubsRef.current.forEach((fn) => fn());
+        beaconUnsubsRef.current = [];
+        docStoreRef.current.clear();
+      }
       setBeacons([]);
       setBeaconsReady(true);
+      subscriptionsKeyRef.current = '__no_user__';
       return;
     }
 
-    // cleanup
+    const sortedUids = Array.from(new Set(friendUids)).filter(Boolean).sort();
+    const key = sortedUids.length === 0 ? '__empty__' : sortedUids.join('|');
+
+    // Bail out: friend uids are unchanged from the active subscription set.
+    // Adding/removing one friend would change the key and skip this; only
+    // identical-content updates (e.g. parent re-render, listener echo) are skipped.
+    if (subscriptionsKeyRef.current === key) return;
+    subscriptionsKeyRef.current = key;
+
+    // Tear down old listeners (we own the lifetime now, not useEffect cleanup).
     beaconUnsubsRef.current.forEach((fn) => fn());
     beaconUnsubsRef.current = [];
     docStoreRef.current.clear();
 
-    const unsubs: (() => void)[] = [];
-    const uids = Array.from(new Set(friendUids)).filter(Boolean);
-
-    // If there are no friends yet, we’re "ready" with an empty list.
-    if (uids.length === 0) {
+    if (sortedUids.length === 0) {
       setBeacons([]);
       setBeaconsReady(true);
-      return () => {};
+      return;
     }
 
     // we expect at least one snapshot; hold off on empty-state copy until one arrives
@@ -397,8 +464,9 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       }
     };
 
-    for (let i = 0; i < uids.length; i += 10) {
-      const batch = uids.slice(i, i + 10);
+    const unsubs: (() => void)[] = [];
+    for (let i = 0; i < sortedUids.length; i += 10) {
+      const batch = sortedUids.slice(i, i + 10);
       const qOwners = query(collection(db, 'Beacons'), where('ownerUid', 'in', batch));
       unsubs.push(
         onSnapshot(
@@ -409,11 +477,6 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
       );
     }
     beaconUnsubsRef.current = unsubs;
-
-    return () => {
-      unsubs.forEach((fn) => fn());
-      beaconUnsubsRef.current = [];
-    };
   }, [friendUids, todayStart, windowEnd]);
 
   // UI bits

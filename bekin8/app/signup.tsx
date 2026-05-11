@@ -80,7 +80,9 @@ export default function SignUp() {
 
     const trimmedEmail = email.trim();
     if (!trimmedEmail) return setError("Please enter an email.");
-    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    // Reject all-whitespace passwords (e.g. 6 spaces): require at least 6
+    // non-whitespace characters of substance.
+    if (password.trim().length < 6) return setError("Password must be at least 6 characters.");
     if (password !== confirmPassword) return setError("Passwords don't match.");
 
     try {
