@@ -1,11 +1,19 @@
 {
   "cli": { "version": ">= 16.20.4", "appVersionSource": "local" },
   "build": {
-    "development": { "developmentClient": true, "distribution": "internal" },
-    "preview": { "distribution": "internal" },
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": { "image": "latest" }
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": { "image": "latest" }
+    },
     "production": {
-      "ios": { "autoIncrement": "version" },
+      "ios": { "image": "latest", "autoIncrement": "version" },
       "android": { "autoIncrement": "version" }
     }
   },
-  "submit": { "production": {} }}
+  "submit": { "production": {} }
+}
