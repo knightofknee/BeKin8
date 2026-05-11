@@ -41,6 +41,9 @@ ui-debug.log*
 database-debug.log*
 .firebase/
 
+# Claude Code workspace — worktrees, agent state, plans, settings (machine-specific)
+.claude/
+
 # macOS
 .DS_Store
 *.pem
