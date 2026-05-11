@@ -1,5 +1,5 @@
 // components/PostComments.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -548,7 +548,6 @@ const styles = StyleSheet.create({
   },
   avatarTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   headerAuthor: { fontWeight: '800', color: '#0B1426', fontSize: 14 },
-  headerSub: { color: '#64748B', fontSize: 12, marginTop: 1 },
   closeBtn: { paddingHorizontal: 4 },
   closeIcon: { fontSize: 18, color: '#64748B' },
 

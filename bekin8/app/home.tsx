@@ -1147,17 +1147,6 @@ const styles = StyleSheet.create({
     padding: 8,
     borderRadius: 14,
   },
-  detailOwner: { fontSize: 18, fontWeight: '800', marginTop: 2 },
-  detailMsgBox: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    backgroundColor: '#FAFAFA',
-    padding: 10,
-    borderRadius: 10,
-  },
-  detailMsg: { fontSize: 15, color: '#111827' },
-
   // Options CTA styles
   optionsCta: {
     flexDirection: 'row',

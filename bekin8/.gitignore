@@ -34,6 +34,13 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
+# Firebase CLI per-run debug output (machine-specific, not for sharing)
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+database-debug.log*
+.firebase/
+
 # macOS
 .DS_Store
 *.pem

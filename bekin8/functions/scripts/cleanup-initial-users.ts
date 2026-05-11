@@ -23,6 +23,14 @@
  *        - `timestamp` from `createdAt`  if missing
  *        - `timestamp` converted to number if currently a Timestamp object
  *
+ *   4. Push-token cross-user dedup. The cloud function sends a push to every
+ *      doc in every `users/{uid}/pushTokens/*` whose owner is a recipient.
+ *      If the same physical device's token is registered to multiple accounts
+ *      (testers, dual-sign-in, etc.) the device receives one push per account,
+ *      i.e. duplicate notifications. This step finds every token value that
+ *      lives in more than one user's pushTokens, keeps only the doc with the
+ *      newest `updatedAt`, and deletes the rest.
+ *
  * Runs in DRY-RUN mode by default — prints what would change without
  * touching anything. Pass --apply to actually write.
  *
@@ -49,6 +57,7 @@
  *   --colors-only        only do the avatarColor → profileColor migration
  *   --friends-only       only do the FriendEdges reconciliation
  *   --posts-only         only do the Posts field normalization
+ *   --tokens-only        only do the cross-user pushTokens dedup
  *
  * The script is idempotent — safe to run repeatedly. Re-running just confirms
  * everything is already in sync.
@@ -64,12 +73,14 @@ const APPLY = process.argv.includes('--apply');
 const COLORS_ONLY = process.argv.includes('--colors-only');
 const FRIENDS_ONLY = process.argv.includes('--friends-only');
 const POSTS_ONLY = process.argv.includes('--posts-only');
+const TOKENS_ONLY = process.argv.includes('--tokens-only');
 const TAG = APPLY ? '[APPLY]' : '[DRY-RUN]';
 
 // Pick the first explicitly-requested operation, if any.
-const RUN_COLORS = !FRIENDS_ONLY && !POSTS_ONLY;
-const RUN_FRIENDS = !COLORS_ONLY && !POSTS_ONLY;
-const RUN_POSTS = !COLORS_ONLY && !FRIENDS_ONLY;
+const RUN_COLORS = !FRIENDS_ONLY && !POSTS_ONLY && !TOKENS_ONLY;
+const RUN_FRIENDS = !COLORS_ONLY && !POSTS_ONLY && !TOKENS_ONLY;
+const RUN_POSTS = !COLORS_ONLY && !FRIENDS_ONLY && !TOKENS_ONLY;
+const RUN_TOKENS = !COLORS_ONLY && !FRIENDS_ONLY && !POSTS_ONLY;
 
 // ---- Color migration ------------------------------------------------------
 
@@ -250,6 +261,67 @@ async function normalizePosts(): Promise<{ scanned: number; updated: number }> {
   return { scanned: snap.size, updated };
 }
 
+// ---- Cross-user push-token dedup ------------------------------------------
+
+async function dedupePushTokens(): Promise<{ scanned: number; dupeGroups: number; deleted: number }> {
+  console.log(`\n=== ${TAG} pushTokens: cross-user dedup ===`);
+
+  // collectionGroup walks every subcollection named `pushTokens` regardless of
+  // parent uid. No filter → no composite index required.
+  const snap = await db.collectionGroup('pushTokens').get();
+
+  // Group docs by their token value.
+  const byToken = new Map<string, FirebaseFirestore.QueryDocumentSnapshot[]>();
+  snap.forEach((doc) => {
+    const data = doc.data() as Record<string, unknown>;
+    const token = typeof data.token === 'string' ? data.token : '';
+    if (!token) return;
+    const arr = byToken.get(token);
+    if (arr) arr.push(doc);
+    else byToken.set(token, [doc]);
+  });
+
+  let dupeGroups = 0;
+  let deleted = 0;
+  const batch = db.batch();
+  let batched = 0;
+
+  for (const [token, docs] of byToken) {
+    if (docs.length <= 1) continue;
+    dupeGroups++;
+
+    // Most recently-updated doc wins. Docs without updatedAt sort last.
+    docs.sort((a, b) => {
+      const aMs = (((a.data() as any).updatedAt as { toMillis?: () => number })?.toMillis?.()) ?? 0;
+      const bMs = (((b.data() as any).updatedAt as { toMillis?: () => number })?.toMillis?.()) ?? 0;
+      return bMs - aMs;
+    });
+
+    const keep = docs[0];
+    const remove = docs.slice(1);
+    const keepUid = keep.ref.parent.parent?.id ?? '?';
+    console.log(`  token ${token.slice(0, 24)}…  keep user ${keepUid}, delete ${remove.length}:`);
+    for (const d of remove) {
+      const removeUid = d.ref.parent.parent?.id ?? '?';
+      console.log(`    - user ${removeUid}  (doc ${d.id})`);
+      if (APPLY) {
+        batch.delete(d.ref);
+        batched++;
+      }
+      deleted++;
+    }
+  }
+
+  if (APPLY && batched > 0) {
+    await batch.commit();
+  }
+
+  console.log(
+    `pushTokens scanned: ${snap.size}.  Duplicate token groups: ${dupeGroups}.  ${APPLY ? 'Deleted' : 'Would delete'}: ${deleted}`,
+  );
+  return { scanned: snap.size, dupeGroups, deleted };
+}
+
 // ---- Main -----------------------------------------------------------------
 
 (async () => {
@@ -263,6 +335,9 @@ async function normalizePosts(): Promise<{ scanned: number; updated: number }> {
   }
   if (RUN_POSTS) {
     await normalizePosts();
+  }
+  if (RUN_TOKENS) {
+    await dedupePushTokens();
   }
 
   console.log(`\nDone. ${APPLY ? 'Changes applied.' : 'Re-run with --apply to actually write.'}`);
