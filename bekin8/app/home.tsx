@@ -44,8 +44,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted, ensurePushPermissionsAndToken } from '../lib/push';
 import * as Notifications from 'expo-notifications';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
+import { buildTimeHHmm, parseTimeHHmm } from '../lib/beaconTime';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
+import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, selection } from '../utils/haptics';
 
 // --- date helpers ---
@@ -93,16 +95,36 @@ export default function HomeScreen() {
   const params = useLocalSearchParams<{ beaconId?: string; messageId?: string }>();
   const { profile } = useAuth();
   const { colors } = useTheme();
+  const online = useOnline();
 
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
   const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(null);
   const [nextPlannedDate, setNextPlannedDate] = useState<Date | null>(null);
   const [plannedMessage, setPlannedMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
+  const [plannedTimeHHmm, setPlannedTimeHHmm] = useState<string | null>(null);
 
   // Modal state (options + details)
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
+  const [timeHourInput, setTimeHourInput] = useState<string>("");   // 1..12 as typed
+  const [timeMinuteInput, setTimeMinuteInput] = useState<string>(""); // 00..59 as typed
+  const [timeMeridiem, setTimeMeridiem] = useState<"AM" | "PM">("AM");
+
+  // Inline error: only the range-violation case, and only once a field has
+  // 2 characters in it. Don't warn about "missing the other field" — typing
+  // hour first then minutes is the normal flow and shouldn't be flagged.
+  const timeRangeError = useMemo<string | null>(() => {
+    if (timeHourInput.length === 2) {
+      const hn = parseInt(timeHourInput, 10);
+      if (!Number.isFinite(hn) || hn < 1 || hn > 12) return "Hour must be 1–12.";
+    }
+    if (timeMinuteInput.length === 2) {
+      const mn = parseInt(timeMinuteInput, 10);
+      if (!Number.isFinite(mn) || mn < 0 || mn > 59) return "Minutes must be 0–59.";
+    }
+    return null;
+  }, [timeHourInput, timeMinuteInput]);
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
@@ -229,6 +251,8 @@ export default function HomeScreen() {
             (typeof activeDoc.data?.details === 'string' && activeDoc.data.details.trim()) ||
             DEFAULT_BEACON_MESSAGE;
 
+          const activeTime =
+            typeof activeDoc.data?.timeHHmm === 'string' ? activeDoc.data.timeHHmm : null;
           setMyActiveBeacon({
             id: activeDoc.id,
             ownerUid: user.uid,
@@ -238,6 +262,7 @@ export default function HomeScreen() {
             scheduled:
               activeDoc.data?.scheduled === true || activeDoc.data?.scheduled === 'true',
             message: msg,
+            timeHHmm: activeTime,
           });
           setIsLit(true);
           setPlannedMessage(msg);
@@ -260,6 +285,9 @@ export default function HomeScreen() {
               plannedSoonest.data.details.trim()) ||
             DEFAULT_BEACON_MESSAGE;
           setPlannedMessage(msg);
+          setPlannedTimeHHmm(
+            typeof plannedSoonest.data?.timeHHmm === 'string' ? plannedSoonest.data.timeHHmm : null,
+          );
 
           const gids: string[] = Array.isArray(plannedSoonest.data?.groupIds)
             ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
@@ -267,6 +295,7 @@ export default function HomeScreen() {
           setSelectedGroupIds(gids);
         } else {
           setNextPlannedDate(null);
+          setPlannedTimeHHmm(null);
         }
       },
       (e) => {
@@ -398,13 +427,16 @@ export default function HomeScreen() {
     const baseToday = startOfDay(new Date());
     let srcDate: Date | null = null;
     let srcMsg: string = DEFAULT_BEACON_MESSAGE;
+    let srcTime: string | null = null;
 
     if (myActiveBeacon) {
       srcDate = startOfDay(myActiveBeacon.startAt);
       srcMsg = myActiveBeacon.message || DEFAULT_BEACON_MESSAGE;
+      srcTime = myActiveBeacon.timeHHmm ?? null;
     } else if (nextPlannedDate) {
       srcDate = startOfDay(nextPlannedDate);
       srcMsg = plannedMessage || DEFAULT_BEACON_MESSAGE;
+      srcTime = plannedTimeHHmm;
     } else {
       srcDate = baseToday;
     }
@@ -415,6 +447,18 @@ export default function HomeScreen() {
 
     setDayOffset(diffDays);
     setMessage(srcMsg);
+
+    const parsedTime = parseTimeHHmm(srcTime);
+    if (parsedTime) {
+      setTimeHourInput(parsedTime.hour);
+      setTimeMinuteInput(parsedTime.minute);
+      setTimeMeridiem(parsedTime.meridiem);
+    } else {
+      setTimeHourInput('');
+      setTimeMinuteInput('');
+      setTimeMeridiem('AM');
+    }
+
     setOptionsOpen(true);
   };
 
@@ -530,6 +574,15 @@ export default function HomeScreen() {
     const user = auth.currentUser;
     if (!user) return;
 
+    // Catch the partial-input case here rather than inline — surfacing it
+    // mid-typing would scold the user during normal hour-then-minutes flow.
+    const hTrim = timeHourInput.trim();
+    const mTrim = timeMinuteInput.trim();
+    if ((hTrim && !mTrim) || (!hTrim && mTrim)) {
+      Alert.alert('Time', 'Enter both hour and minutes, or clear the time.');
+      return;
+    }
+
     try {
       const base = startOfDay(new Date());
       const d = new Date(base);
@@ -539,6 +592,8 @@ export default function HomeScreen() {
 
       const beaconsRef = collection(db, 'Beacons');
       const ownerName = profile?.displayName || profile?.username || null;
+
+      const timeHHmm = buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem);
 
       const meUid = user.uid;
       let allowedUids: string[] = [meUid];
@@ -560,6 +615,7 @@ export default function HomeScreen() {
           updatedAt: serverTimestamp(),
           groupIds: selectedGroupIds,
           allowedUids,
+          timeHHmm,
         });
       } else {
         const yyyy = sd.getFullYear();
@@ -582,6 +638,7 @@ export default function HomeScreen() {
             updatedAt: serverTimestamp(),
             groupIds: selectedGroupIds,
             allowedUids,
+            timeHHmm,
           },
           { merge: true }
         );
@@ -770,6 +827,58 @@ export default function HomeScreen() {
                     ))}
                   </View>
 
+                  {/* Time (optional) */}
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Time (optional)</Text>
+                  <View style={styles.timeRow}>
+                    <TextInput
+                      style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      placeholder="--"
+                      placeholderTextColor={colors.subtle}
+                      value={timeHourInput}
+                      onChangeText={(s) => setTimeHourInput(s.replace(/\D/g, '').slice(0, 2))}
+                      returnKeyType="next"
+                      accessibilityLabel="Hour"
+                    />
+                    <Text style={[styles.timeColon, { color: colors.text }]}>:</Text>
+                    <TextInput
+                      style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      placeholder="--"
+                      placeholderTextColor={colors.subtle}
+                      value={timeMinuteInput}
+                      onChangeText={(s) => setTimeMinuteInput(s.replace(/\D/g, '').slice(0, 2))}
+                      returnKeyType="done"
+                      accessibilityLabel="Minute"
+                    />
+                    <Pressable
+                      onPress={() => { selection(); setTimeMeridiem((m) => (m === 'AM' ? 'PM' : 'AM')); }}
+                      style={[styles.meridiemBtn, { backgroundColor: colors.inputBg, borderColor: colors.border }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Toggle meridiem, currently ${timeMeridiem}`}
+                    >
+                      <Text style={[styles.meridiemTxt, { color: colors.text }]}>{timeMeridiem}</Text>
+                    </Pressable>
+                    {(timeHourInput || timeMinuteInput) ? (
+                      <Pressable
+                        onPress={() => { tap(); setTimeHourInput(''); setTimeMinuteInput(''); }}
+                        hitSlop={8}
+                        style={styles.timeClearBtn}
+                        accessibilityRole="button"
+                        accessibilityLabel="Clear time"
+                      >
+                        <Text style={[styles.timeClearTxt, { color: colors.primary }]}>Clear</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {timeRangeError ? (
+                    <Text style={[styles.timeError, { color: colors.error }]}>{timeRangeError}</Text>
+                  ) : (
+                    <Text style={[styles.msgHint, { color: colors.subtle }]}>Leave blank to skip</Text>
+                  )}
+
                   {/* Friend Groups */}
                   <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>
                     Friend Groups (if none selected, all friends can see)
@@ -800,7 +909,7 @@ export default function HomeScreen() {
                     </View>
                   ) : (
                     <Text style={{ color: colors.subtle, marginBottom: 6 }}>
-                      No groups yet — create some in Friends.
+                      {online ? "No groups yet — create some in Friends." : "Can't load groups — no internet connection."}
                     </Text>
                   )}
 
@@ -824,7 +933,16 @@ export default function HomeScreen() {
                     <TouchableOpacity style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]} onPress={() => { tap(); setOptionsOpen(false); }}>
                       <Text style={[styles.btnGhostText, { color: colors.text }]}>Cancel</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={[styles.btn, styles.btnPrimary, { backgroundColor: colors.primary, borderColor: colors.primary }]} onPress={saveBeaconOptions}>
+                    <TouchableOpacity
+                      style={[
+                        styles.btn,
+                        styles.btnPrimary,
+                        { backgroundColor: colors.primary, borderColor: colors.primary },
+                        !!timeRangeError && { opacity: 0.5 },
+                      ]}
+                      onPress={saveBeaconOptions}
+                      disabled={!!timeRangeError}
+                    >
                       <Text style={styles.btnPrimaryText}>Save</Text>
                     </TouchableOpacity>
                   </View>
@@ -1118,6 +1236,30 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   msgHint: { color: '#667085', fontSize: 12, marginTop: 4 },
+  timeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  timeInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 18,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+    minWidth: 56,
+  },
+  timeColon: { fontSize: 22, fontWeight: '700' },
+  meridiemBtn: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minWidth: 56,
+    alignItems: 'center',
+  },
+  meridiemTxt: { fontSize: 14, fontWeight: '700', letterSpacing: 0.3 },
+  timeClearBtn: { paddingHorizontal: 8, paddingVertical: 6, marginLeft: 'auto' },
+  timeClearTxt: { fontSize: 13, fontWeight: '600' },
+  timeError: { fontSize: 12, marginTop: 4, fontWeight: '600' },
 
   modalBtnRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
   btn: {

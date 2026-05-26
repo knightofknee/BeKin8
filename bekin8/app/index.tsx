@@ -28,6 +28,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { signInWithGoogle } from "../lib/googleAuth";
 import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
+import PasswordInput from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
 
 const TOP_OFFSET = 64; // consistent "reach-friendly" offset
@@ -45,7 +46,6 @@ export default function Index() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -275,24 +275,19 @@ export default function Index() {
                       },
                     ]}
                   >
-                    <TextInput
-                      style={{ flex: 1, color: colors.text }}
+                    <PasswordInput
+                      style={{ color: colors.text }}
                       placeholder="••••••••"
                       placeholderTextColor={colors.subtle}
-                      secureTextEntry={!showPassword}
                       value={password}
                       editable={!anyLoading}
                       onChangeText={setPassword}
                       onFocus={() => { setPwFocused(true); /* no recompute on focus */ }}
                       onBlur={() => setPwFocused(false)}
-                      textContentType="password"
-                      autoComplete="password"
                       returnKeyType="go"
                       onSubmitEditing={handleLogin}
+                      toggleColor={colors.primary}
                     />
-                    <Pressable onPress={() => setShowPassword((s) => !s)} hitSlop={10}>
-                      <Text style={[styles.togglePw, { color: colors.primary }]}>{showPassword ? "Hide" : "Show"}</Text>
-                    </Pressable>
                   </View>
                 </View>
 
@@ -417,7 +412,6 @@ const styles = StyleSheet.create({
   },
   inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
 
-  togglePw: { fontWeight: "700" },
 
   primaryBtn: {
     paddingVertical: 14,

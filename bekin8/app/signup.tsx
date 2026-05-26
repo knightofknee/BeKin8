@@ -26,6 +26,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { signInWithGoogle } from "../lib/googleAuth";
 import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
+import PasswordInput, { type PasswordInputHandle } from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
 
 const TOP_OFFSET = 64; // match login offset
@@ -39,15 +40,13 @@ export default function SignUp() {
 
   const scrollRef = useRef<ScrollView>(null);
   const emailRef = useRef<TextInput>(null);
-  const passwordRef = useRef<TextInput>(null);
-  const confirmRef = useRef<TextInput>(null);
+  const passwordRef = useRef<PasswordInputHandle>(null);
+  const confirmRef = useRef<PasswordInputHandle>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  const [showPw, setShowPw] = useState(false);
-  const [showPw2, setShowPw2] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -153,25 +152,6 @@ export default function SignUp() {
     default: "email",
   }) as any;
 
-  // *** Hard block suggestions & autofill for BOTH password fields ***
-  // iOS: oneTimeCode hack kills QuickType/strong password banner for secure text fields
-  const noSuggestTextContentType = Platform.select({
-    ios: "oneTimeCode",
-    default: "none",
-  }) as any;
-
-  const noSuggestAutoComplete = Platform.select({
-    ios: "off",
-    android: "off",
-    default: "off",
-  }) as any;
-
-  const pwKeyboardType = Platform.select({
-    ios: "default",
-    android: "visible-password", // avoids Android autofill "lock" UI
-    default: "default",
-  }) as any;
-
   // Keep bottom elements visible: give extra bottom padding and gently scroll on focus for lower fields
   const scrollToEndSoon = () => {
     requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
@@ -266,22 +246,15 @@ export default function SignUp() {
                     },
                   ]}
                 >
-                  <TextInput
+                  <PasswordInput
                     ref={passwordRef}
-                    style={{ flex: 1, color: colors.text }}
+                    style={{ color: colors.text }}
                     placeholder="••••••••"
                     placeholderTextColor={colors.subtle}
-                    secureTextEntry={!showPw}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    spellCheck={false}
-                    keyboardType={pwKeyboardType}
-                    textContentType={noSuggestTextContentType}
-                    autoComplete={noSuggestAutoComplete}
                     inputAccessoryViewID={Platform.OS === "ios" ? PW_ACCESSORY_ID : undefined}
-                    // Android autofill protections:
-                    importantForAutofill={Platform.OS === "android" ? "no" : "auto"}
                     disableFullscreenUI={Platform.OS === "android"}
+                    textContentType="newPassword"
+                    autoComplete="new-password"
                     value={password}
                     onChangeText={setPassword}
                     onFocus={() => { setPwFocused(true); scrollToEndSoon(); }}
@@ -289,10 +262,8 @@ export default function SignUp() {
                     returnKeyType="next"
                     onSubmitEditing={() => requestAnimationFrame(() => confirmRef.current?.focus())}
                     editable={!anyLoading}
+                    toggleColor={colors.primary}
                   />
-                  <Pressable onPress={() => setShowPw((s) => !s)} hitSlop={10}>
-                    <Text style={[styles.togglePw, { color: colors.primary }]}>{showPw ? "Hide" : "Show"}</Text>
-                  </Pressable>
                 </View>
               </View>
 
@@ -309,22 +280,15 @@ export default function SignUp() {
                     },
                   ]}
                 >
-                  <TextInput
+                  <PasswordInput
                     ref={confirmRef}
-                    style={{ flex: 1, color: colors.text }}
+                    style={{ color: colors.text }}
                     placeholder="••••••••"
                     placeholderTextColor={colors.subtle}
-                    secureTextEntry={!showPw2}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    spellCheck={false}
-                    keyboardType={pwKeyboardType}
-                    textContentType={noSuggestTextContentType}
-                    autoComplete={noSuggestAutoComplete}
                     inputAccessoryViewID={Platform.OS === "ios" ? CONFIRM_ACCESSORY_ID : undefined}
-                    // Android autofill protections:
-                    importantForAutofill={Platform.OS === "android" ? "no" : "auto"}
                     disableFullscreenUI={Platform.OS === "android"}
+                    textContentType="newPassword"
+                    autoComplete="new-password"
                     value={confirmPassword}
                     onChangeText={setConfirmPassword}
                     onFocus={() => { setPw2Focused(true); scrollToEndSoon(); }}
@@ -332,10 +296,8 @@ export default function SignUp() {
                     returnKeyType="go"
                     onSubmitEditing={handleSignUp}
                     editable={!anyLoading}
+                    toggleColor={colors.primary}
                   />
-                  <Pressable onPress={() => setShowPw2((s) => !s)} hitSlop={10}>
-                    <Text style={[styles.togglePw, { color: colors.primary }]}>{showPw2 ? "Hide" : "Show"}</Text>
-                  </Pressable>
                 </View>
               </View>
 
@@ -466,7 +428,6 @@ const styles = StyleSheet.create({
   },
   inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
 
-  togglePw: { fontWeight: "700" },
 
   primaryBtn: {
     paddingVertical: 14,

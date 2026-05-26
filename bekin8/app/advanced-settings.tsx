@@ -20,6 +20,7 @@ import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import GoogleLogo from "../components/GoogleLogo";
+import PasswordInput from "../components/PasswordInput";
 
 export default function AdvancedSettingsScreen() {
   const { colors } = useTheme();
@@ -211,16 +212,19 @@ export default function AdvancedSettingsScreen() {
                 keyboardType="email-address"
                 editable={!linkBusy}
               />
-              <TextInput
-                style={[s.input, { marginTop: 10, borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
-                placeholder="Password (min 6 characters)"
-                placeholderTextColor={colors.subtle}
-                value={linkPassword}
-                onChangeText={setLinkPassword}
-                secureTextEntry
-                autoCapitalize="none"
-                editable={!linkBusy}
-              />
+              <View
+                style={[s.input, s.passwordRow, { marginTop: 10, borderColor: colors.border, backgroundColor: colors.inputBg }]}
+              >
+                <PasswordInput
+                  style={{ color: colors.text, fontSize: 16 }}
+                  placeholder="Password (min 6 characters)"
+                  placeholderTextColor={colors.subtle}
+                  value={linkPassword}
+                  onChangeText={setLinkPassword}
+                  editable={!linkBusy}
+                  toggleColor={colors.primary}
+                />
+              </View>
               {linkError && <Text style={[s.err, { color: colors.error }]}>{linkError}</Text>}
               <Pressable
                 style={[s.button, { backgroundColor: colors.primary, marginTop: 12 }, linkBusy && { opacity: 0.7 }]}
@@ -281,6 +285,7 @@ const s = StyleSheet.create({
   infoCard: { borderRadius: 12, padding: 16, marginTop: 12 },
   infoText: { fontSize: 14, lineHeight: 20, marginBottom: 12 },
   input: { borderWidth: 1, padding: 12, borderRadius: 10, fontSize: 16 },
+  passwordRow: { flexDirection: "row", alignItems: "center" },
   err: { fontSize: 13, marginTop: 6 },
   button: { padding: 14, borderRadius: 12, alignItems: "center" },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "800" },

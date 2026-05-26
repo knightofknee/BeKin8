@@ -32,6 +32,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { useTheme } from '../providers/ThemeProvider';
+import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, warning } from '../utils/haptics';
 
 type Post = {
@@ -95,6 +96,7 @@ const ACCESSORY_ID = 'postcomments-accessory';
 
 export default function PostComments({ post, onClose, targetCommentId }: Props) {
   const { colors: tc } = useTheme();
+  const online = useOnline();
   const me = auth.currentUser;
   const [loading, setLoading] = useState(true);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -364,7 +366,9 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                   )}
                   {comments.length === 0 && (
                     <View style={styles.emptyWrap}>
-                      <Text style={[styles.emptyText, { color: tc.subtle }]}>No comments yet. Be the first!</Text>
+                      <Text style={[styles.emptyText, { color: tc.subtle }]}>
+                        {online ? "No comments yet. Be the first!" : "Can't load comments — no internet connection."}
+                      </Text>
                     </View>
                   )}
                   <FlatList

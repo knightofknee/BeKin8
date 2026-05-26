@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useTheme } from '../providers/ThemeProvider';
+import { useOnline } from '../providers/NetworkProvider';
 import { auth, db } from '../firebase.config';
 import { SCREEN_PAD } from './ui/layout';
 import {
@@ -22,6 +23,9 @@ export type FriendBeacon = {
   active: boolean;
   scheduled: boolean;
   message: string;
+  // Optional clock time in 24-hour "HH:MM" form (e.g. "18:30"). Null/undefined
+  // when the owner didn't specify a time.
+  timeHHmm?: string | null;
 };
 
 type Props = {
@@ -91,6 +95,7 @@ async function fetchProfileNames(uids: string[]): Promise<Record<string, string>
 
 export default function FriendsBeaconsList({ onSelect }: Props) {
   const { colors: tc } = useTheme();
+  const online = useOnline();
   const meUid = auth.currentUser?.uid || null;
 
   // local caches/state for list
@@ -587,7 +592,9 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         </>
       ) : (
         emptyReady ? (
-          <Text style={[styles.friendInactive, { color: tc.subtle }]}>No friend beacons lit</Text>
+          <Text style={[styles.friendInactive, { color: tc.subtle }]}>
+            {online ? "No friend beacons lit" : "Can't load beacons — no internet connection."}
+          </Text>
         ) : null
       )}
     </View>

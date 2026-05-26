@@ -35,6 +35,8 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { useTheme } from '../providers/ThemeProvider';
+import { useOnline } from '../providers/NetworkProvider';
+import { formatTimeHHmmDisplay } from '../lib/beaconTime';
 import { tap, press, warning } from '../utils/haptics';
 
 type ChatMessage = {
@@ -98,6 +100,7 @@ const CHAT_ACCESSORY_ID = 'chatroom-accessory';
 
 export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId }: ChatRoomProps) {
   const { colors: tc } = useTheme();
+  const online = useOnline();
   const me = auth.currentUser;
 
   const [loading, setLoading] = useState(true);
@@ -109,6 +112,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
 
   const [startLabel, setStartLabel] = useState<string>('');
+  const [timeLabel, setTimeLabel] = useState<string>('');
   const [ownerName, setOwnerName] = useState<string>('');
   const [beaconMessage, setBeaconMessage] = useState<string>('');
   const [msgExpanded, setMsgExpanded] = useState(false);
@@ -163,6 +167,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         if (!snap.exists()) {
           expiresAtRef.current = null;
           setStartLabel('');
+          setTimeLabel('');
           setOwnerName('');
           return;
         }
@@ -179,6 +184,8 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         } else {
           setStartLabel('');
         }
+
+        setTimeLabel(formatTimeHHmmDisplay(data?.timeHHmm));
 
         // Capture beacon message
         const msg = typeof data?.message === 'string' ? data.message.trim() : '';
@@ -452,7 +459,13 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           <Text style={[styles.headerTitle, { color: tc.text }]} numberOfLines={1} ellipsizeMode="tail">
             {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
           </Text>
-          {!!startLabel && <Text style={[styles.headerDate, { color: tc.subtle }]}>{startLabel}</Text>}
+          {(!!startLabel || !!timeLabel) && (
+            <Text style={[styles.headerDate, { color: tc.subtle }]}>
+              {startLabel}
+              {startLabel && timeLabel ? ' · ' : ''}
+              {timeLabel}
+            </Text>
+          )}
         </View>
 
         {iAmIn ? (
@@ -533,9 +546,17 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           style={{ flex: 1 }}
           ListEmptyComponent={
             !messagesLoaded ? (
-              <ActivityIndicator />
+              online ? (
+                <ActivityIndicator />
+              ) : (
+                <Text style={{ color: tc.subtle, fontSize: 13 }}>
+                  Can't load messages — no internet connection.
+                </Text>
+              )
             ) : (
-              <Text style={{ color: tc.subtle, fontSize: 13 }}>No messages yet</Text>
+              <Text style={{ color: tc.subtle, fontSize: 13 }}>
+                {online ? "No messages yet" : "Can't load messages — no internet connection."}
+              </Text>
             )
           }
           renderItem={({ item }) => {

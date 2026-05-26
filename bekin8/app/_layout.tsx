@@ -6,6 +6,8 @@ import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
 import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
+import { NetworkProvider } from "../providers/NetworkProvider";
+import OfflineBanner from "../components/OfflineBanner";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -102,6 +104,7 @@ function Gate() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <Stack screenOptions={{ headerShown: false, animation: 'none' }} />
+      <OfflineBanner />
     </View>
   );
 }
@@ -110,7 +113,9 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <ThemeProvider>
-        <Gate />
+        <NetworkProvider>
+          <Gate />
+        </NetworkProvider>
       </ThemeProvider>
     </AuthProvider>
   );

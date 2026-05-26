@@ -40,6 +40,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import PostComments from '../components/PostComments';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
+import { useOnline } from '../providers/NetworkProvider';
 import LinkPreview from '../components/LinkPreview';
 import { tap, press, warning, selection } from '../utils/haptics';
 
@@ -125,6 +126,7 @@ function toTimestamp(rawTs: any): number {
 
 export default function Feed() {
   const { colors: tc } = useTheme();
+  const online = useOnline();
   const { profile } = useAuth();
   const router = useRouter();
   const params = useLocalSearchParams<{ postId?: string; commentId?: string; scrollToPostId?: string }>();
@@ -615,19 +617,29 @@ export default function Feed() {
             </View>
           }
           ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>📰</Text>
-              <Text style={[styles.emptyTitle, { color: tc.text }]}>Your feed is quiet</Text>
-              <Text style={[styles.emptyBody, { color: tc.subtle }]}>
-                Posts from your friends will show up here. Add some friends to get started.
-              </Text>
-              <Pressable
-                onPress={() => { tap(); router.push('/friends'); }}
-                style={({ pressed }) => [styles.emptyBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.emptyBtnTxt}>Find Friends</Text>
-              </Pressable>
-            </View>
+            online ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyIcon}>📰</Text>
+                <Text style={[styles.emptyTitle, { color: tc.text }]}>Your feed is quiet</Text>
+                <Text style={[styles.emptyBody, { color: tc.subtle }]}>
+                  Posts from your friends will show up here. Add some friends to get started.
+                </Text>
+                <Pressable
+                  onPress={() => { tap(); router.push('/friends'); }}
+                  style={({ pressed }) => [styles.emptyBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
+                >
+                  <Text style={styles.emptyBtnTxt}>Find Friends</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyIcon}>📡</Text>
+                <Text style={[styles.emptyTitle, { color: tc.text }]}>No internet connection</Text>
+                <Text style={[styles.emptyBody, { color: tc.subtle }]}>
+                  Can't load your feed right now. Check your connection and try again.
+                </Text>
+              </View>
+            )
           }
           renderItem={({ item }) => {
             const commentsVisible = item.commentsEnabled !== false && item.authorCommentsEnabled === true;

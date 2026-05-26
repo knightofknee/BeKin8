@@ -40,6 +40,7 @@ import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEdi
 import BottomBar from "@/components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
+import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
 
 import * as Notifications from "expo-notifications";
@@ -59,6 +60,7 @@ const BOTTOM_BAR_SPACE = 90; // <-- extra scroll space so footer clears BottomBa
 export default function FriendsScreen() {
   const { user, initialized, profile, profileLoaded } = useAuth();
   const { colors: tc } = useTheme();
+  const online = useOnline();
   const [notifyByUid, setNotifyByUid] = useState<Record<string, boolean>>({});
   const [notifyAllBeacons, setNotifyAllBeacons] = useState(false);
   const [notifyAllBusy, setNotifyAllBusy] = useState(false);
@@ -1074,7 +1076,9 @@ export default function FriendsScreen() {
               </View>
 
               {groups.length === 0 ? (
-                <Text style={[styles.subtle, { color: tc.subtle }]}>No groups yet — tap + to create one.</Text>
+                <Text style={[styles.subtle, { color: tc.subtle }]}>
+                  {online ? "No groups yet — tap + to create one." : "Can't load groups — no internet connection."}
+                </Text>
               ) : (
                 <View style={{ rowGap: 8 }}>
                   {groups.map((g) => (
@@ -1129,30 +1133,36 @@ export default function FriendsScreen() {
                 />
               </View>
               {visibleFriends.length === 0 && (
-                <>
-                  <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet — search for a username above to send a request.</Text>
+                online ? (
+                  <>
+                    <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet — search for a username above to send a request.</Text>
 
-                  {/* First-friend suggestion */}
-                  <View style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
-                    <View style={[styles.brianAvatar, { backgroundColor: tc.primary }]}>
-                      <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
+                    {/* First-friend suggestion */}
+                    <View style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
+                      <View style={[styles.brianAvatar, { backgroundColor: tc.primary }]}>
+                        <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.brianTitle, { color: tc.text }]}>New here? Add Brian, the creator of BeKin, as your first friend!</Text>
+                      </View>
+                      <Pressable
+                        onPress={handleAddBrian}
+                        disabled={addingBrian || busy}
+                        style={[styles.brianBtn, { backgroundColor: tc.primary }, (addingBrian || busy) && { opacity: 0.6 }]}
+                      >
+                        {addingBrian ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <Text style={styles.brianBtnText}>Add</Text>
+                        )}
+                      </Pressable>
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.brianTitle, { color: tc.text }]}>New here? Add Brian, the creator of BeKin, as your first friend!</Text>
-                    </View>
-                    <Pressable
-                      onPress={handleAddBrian}
-                      disabled={addingBrian || busy}
-                      style={[styles.brianBtn, { backgroundColor: tc.primary }, (addingBrian || busy) && { opacity: 0.6 }]}
-                    >
-                      {addingBrian ? (
-                        <ActivityIndicator color="#fff" size="small" />
-                      ) : (
-                        <Text style={styles.brianBtnText}>Add</Text>
-                      )}
-                    </Pressable>
-                  </View>
-                </>
+                  </>
+                ) : (
+                  <Text style={[styles.subtle, { color: tc.subtle }]}>
+                    Can't load friends — no internet connection.
+                  </Text>
+                )
               )}
             </View>
           </View>

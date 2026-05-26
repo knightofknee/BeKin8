@@ -38,6 +38,7 @@ import {
 } from 'firebase/firestore';
 import PostComments from '../../components/PostComments';
 import { useTheme } from '../../providers/ThemeProvider';
+import { useOnline } from '../../providers/NetworkProvider';
 import { tap, press, warning, selection } from '../../utils/haptics';
 
 const PAGE_SIZE = 15;
@@ -127,6 +128,8 @@ export default function ProfileScreen() {
   const router = useRouter();
   const me = auth.currentUser;
   const { colors } = useTheme();
+  const online = useOnline();
+  const [loadError, setLoadError] = useState(false);
 
   const [resolvedUid, setResolvedUid] = useState<string | null>(null);
   const [resolvedUsername, setResolvedUsername] = useState<string>('');
@@ -232,7 +235,10 @@ export default function ProfileScreen() {
       setBio(data.bio || '');
       setAuthorCommentsEnabled(data.commentsEnabled === true);
     }).catch(() => {
-      setNotFound(true);
+      // A fetch failure here is a network/permission error, not proof the user
+      // doesn't exist. Flag it as a load error so the UI can show the right
+      // message (offline vs. real not-found is decided at render time).
+      setLoadError(true);
       setLoading(false);
     });
   }, [username]);
@@ -812,6 +818,18 @@ export default function ProfileScreen() {
 
         {loading ? (
           <ProfileSkeleton skeletonColor={colors.skeleton} />
+        ) : loadError ? (
+          <View style={styles.center}>
+            <Text style={{ fontSize: 36, marginBottom: 8, color: colors.text }}>📡</Text>
+            <Text style={[styles.emptyText, { color: colors.subtle }]}>
+              {online ? "Couldn't load this profile" : "No internet connection"}
+            </Text>
+            <Text style={{ color: colors.subtle, fontSize: 13, marginTop: 4 }}>
+              {online
+                ? "Something went wrong. Try again in a moment."
+                : "Can't load this profile right now. Check your connection and try again."}
+            </Text>
+          </View>
         ) : notFound ? (
           <View style={styles.center}>
             <Text style={{ fontSize: 36, marginBottom: 8, color: colors.text }}>?</Text>
@@ -836,7 +854,9 @@ export default function ProfileScreen() {
             ListHeaderComponent={renderHeader()}
             ListEmptyComponent={
               <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 20 }}>
-                <Text style={{ fontSize: 15, color: colors.subtle }}>No posts yet</Text>
+                <Text style={{ fontSize: 15, color: colors.subtle }}>
+                  {online ? "No posts yet" : "Can't load posts — no internet connection."}
+                </Text>
               </View>
             }
             renderItem={({ item }) => {

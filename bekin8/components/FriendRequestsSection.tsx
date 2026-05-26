@@ -4,6 +4,7 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "
 import { colors } from "./ui/colors";
 import { FriendRequest } from "./types";
 import { useTheme } from "../providers/ThemeProvider";
+import { useOnline } from "../providers/NetworkProvider";
 import { tap, success, warning } from "../utils/haptics";
 
 type Props = {
@@ -24,11 +25,14 @@ export default function FriendRequestsSection({
   onCancel,
 }: Props) {
   const { colors } = useTheme();
+  const online = useOnline();
   return (
     <View style={[styles.card, { backgroundColor: colors.card }]}>
       <Text style={[styles.sectionTitle, { color: colors.text }]}>Requests</Text>
       {incoming.length === 0 && outgoing.length === 0 ? (
-        <Text style={[styles.subtle, { color: colors.subtle }]}>No active requests.</Text>
+        <Text style={[styles.subtle, { color: colors.subtle }]}>
+          {online ? "No active requests." : "Can't load requests — no internet connection."}
+        </Text>
       ) : (
         <>
           {incoming.length > 0 && (
