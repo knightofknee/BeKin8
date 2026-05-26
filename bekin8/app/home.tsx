@@ -82,6 +82,7 @@ function getMillis(v: any): number {
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 const MSG_ACCESSORY_ID = 'beacon-msg-accessory';
 const IOS_ACCESSORY_HEIGHT = 48;
+const BEACON_MESSAGE_MAX = 1000;
 
 // --- Friend groups ---
 type FriendGroup = {
@@ -921,13 +922,13 @@ export default function HomeScreen() {
                     placeholderTextColor={colors.subtle}
                     value={message}
                     onChangeText={setMessage}
-                    maxLength={140}
+                    maxLength={BEACON_MESSAGE_MAX}
                     multiline
                     inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
                     returnKeyType="done"
                     blurOnSubmit={false}
                   />
-                  <Text style={[styles.msgHint, { color: colors.subtle }]}>140 chars • defaults if left blank</Text>
+                  <Text style={[styles.msgHint, { color: colors.subtle }]}>{`${BEACON_MESSAGE_MAX} chars • defaults if left blank`}</Text>
 
                   <View style={styles.modalBtnRow}>
                     <TouchableOpacity style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]} onPress={() => { tap(); setOptionsOpen(false); }}>

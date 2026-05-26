@@ -97,6 +97,7 @@ async function resolveMyName(uid: string): Promise<string> {
 }
 
 const CHAT_ACCESSORY_ID = 'chatroom-accessory';
+const CHAT_MESSAGE_MAX = 1000;
 
 export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId }: ChatRoomProps) {
   const { colors: tc } = useTheme();
@@ -436,6 +437,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         editable
         style={[styles.input, { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text }]}
         multiline
+        maxLength={CHAT_MESSAGE_MAX}
         onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
         inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
         blurOnSubmit={false}
