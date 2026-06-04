@@ -12,8 +12,15 @@
     },
     "production": {
       "ios": { "image": "latest", "autoIncrement": "version" },
-      "android": { "autoIncrement": "version" }
+      "android": { "autoIncrement": "versionCode" }
     }
   },
-  "submit": { "production": {} }
+  "submit": {
+    "production": {
+      "android": {
+        "track": "alpha",
+        "releaseStatus": "completed"
+      }
+    }
+  }
 }

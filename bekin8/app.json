@@ -2,7 +2,7 @@
   "expo": {
     "name": "BeKin",
     "slug": "bekin8",
-    "version": "1.2.19",
+    "version": "1.2.21",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "bekin8",
@@ -20,6 +20,7 @@
     },
     "android": {
       "package": "com.waldgrave.bekin",
+      "versionCode": 3,
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "POST_NOTIFICATIONS"

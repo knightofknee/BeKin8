@@ -5,6 +5,8 @@ node_modules/
 
 .env
 
+eas-submit-key.json
+
 functions/lib/
 
 .DS_Store
