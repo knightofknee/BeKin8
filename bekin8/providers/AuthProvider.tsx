@@ -9,6 +9,7 @@ export type UserProfile = {
   displayName: string;
   commentsEnabled: boolean;
   avatarColor?: string;
+  inviteCode?: string;
 };
 
 type AuthCtx = {
@@ -42,6 +43,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     displayName:     (typeof data?.displayName === "string" ? data.displayName.trim() : ""),
     commentsEnabled: data?.commentsEnabled === true,
     avatarColor:     typeof data?.avatarColor === "string" ? data.avatarColor : undefined,
+    inviteCode:      typeof data?.inviteCode  === "string" ? data.inviteCode : undefined,
   });
 
   const refreshProfile = useCallback(async () => {

@@ -14,6 +14,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
+import ExampleBeaconCard from './tutorial/ExampleBeaconCard';
 
 export type FriendBeacon = {
   id: string;
@@ -30,6 +31,9 @@ export type FriendBeacon = {
 
 type Props = {
   onSelect: (beacon: FriendBeacon) => void;
+  // Show an illustrative "Example" beacon card when the user has no friends yet, so a brand-new
+  // user sees what a populated list will look like. Local-only; never written to Firestore.
+  showExampleWhenEmpty?: boolean;
 };
 
 // --- helpers ---
@@ -93,7 +97,7 @@ async function fetchProfileNames(uids: string[]): Promise<Record<string, string>
   return out;
 }
 
-export default function FriendsBeaconsList({ onSelect }: Props) {
+export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = false }: Props) {
   const { colors: tc } = useTheme();
   const online = useOnline();
   const meUid = auth.currentUser?.uid || null;
@@ -592,9 +596,17 @@ export default function FriendsBeaconsList({ onSelect }: Props) {
         </>
       ) : (
         emptyReady ? (
-          <Text style={[styles.friendInactive, { color: tc.subtle }]}>
-            {online ? "No friend beacons lit" : "Can't load beacons — no internet connection."}
-          </Text>
+          !online ? (
+            <Text style={[styles.friendInactive, { color: tc.subtle }]}>
+              Can’t load beacons — no internet connection.
+            </Text>
+          ) : showExampleWhenEmpty && friendUids.length === 0 ? (
+            <View style={{ marginTop: 12 }}>
+              <ExampleBeaconCard />
+            </View>
+          ) : (
+            <Text style={[styles.friendInactive, { color: tc.subtle }]}>No friend beacons lit</Text>
+          )
         ) : null
       )}
     </View>

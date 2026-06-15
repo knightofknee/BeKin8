@@ -1,5 +1,5 @@
 // app/signup.tsx
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +20,8 @@ import { useRouter, Link } from "expo-router";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Clipboard from "expo-clipboard";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { statusCodes } from "@react-native-google-signin/google-signin";
 import { Ionicons } from "@expo/vector-icons";
@@ -28,6 +30,7 @@ import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
 import PasswordInput, { type PasswordInputHandle } from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
+import { stashPendingInvite, coerceInviteCode } from "../lib/inviteLink";
 
 const TOP_OFFSET = 64; // match login offset
 const PW_ACCESSORY_ID = "signup-password-accessory";
@@ -46,6 +49,33 @@ export default function SignUp() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [inviteCodeInput, setInviteCodeInput] = useState("");
+
+  // Persist a typed invite code before account creation so the Gate redeems it once signed in.
+  // This is the guaranteed fallback when a smart-link / clipboard capture didn't carry the code.
+  const stashInviteIfPresent = () => stashPendingInvite(inviteCodeInput);
+
+  // Deferred attribution: a brand-new install opened from a smart link leaves the code on the
+  // clipboard (set by the waldgrave.com landing page). Check it ONCE per install and pre-fill the
+  // field so the user just confirms. Gated by a flag so we don't repeatedly trigger paste prompts.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const CHECK_KEY = "@bekin_clipboard_invite_checked";
+        if (await AsyncStorage.getItem(CHECK_KEY)) return;
+        await AsyncStorage.setItem(CHECK_KEY, "1");
+        const text = await Clipboard.getStringAsync();
+        const code = coerceInviteCode(text);
+        if (active && code) setInviteCodeInput(code);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
 
   const [loading, setLoading] = useState(false);
@@ -86,6 +116,7 @@ export default function SignUp() {
 
     try {
       setLoading(true);
+      await stashInviteIfPresent();
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
 
       await setDoc(doc(db, "users", cred.user.uid), {
@@ -112,6 +143,7 @@ export default function SignUp() {
     try {
       Keyboard.dismiss();
       setGoogleLoading(true);
+      await stashInviteIfPresent();
       await signInWithGoogle();
       router.replace("/home");
     } catch (e: any) {
@@ -127,6 +159,7 @@ export default function SignUp() {
     try {
       Keyboard.dismiss();
       setAppleLoading(true);
+      await stashInviteIfPresent();
       const { isRelayEmail } = await signInWithApple();
       if (isRelayEmail) {
         Alert.alert(
@@ -299,6 +332,25 @@ export default function SignUp() {
                     toggleColor={colors.primary}
                   />
                 </View>
+              </View>
+
+              {/* Invite code (optional) */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: colors.text }]}>Invite code (optional)</Text>
+                <TextInput
+                  style={[
+                    styles.input,
+                    { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text },
+                  ]}
+                  placeholder="From a friend's link"
+                  placeholderTextColor={colors.subtle}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={6}
+                  value={inviteCodeInput}
+                  onChangeText={(v) => setInviteCodeInput(v.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 6))}
+                  editable={!anyLoading}
+                />
               </View>
 
               {/* Sign Up */}

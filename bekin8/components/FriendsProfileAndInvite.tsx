@@ -22,6 +22,9 @@ type Props = {
   onSendRequest: () => void;
   busySend: boolean;
 
+  inviteCode?: string | null;
+  onShareInvite?: () => void;
+
   message: MessageState;
 };
 
@@ -38,6 +41,8 @@ export default function FriendsProfileAndInvite({
   hasProfileUsername,
   onSendRequest,
   busySend,
+  inviteCode,
+  onShareInvite,
   message,
 }: Props) {
   const { colors } = useTheme();
@@ -83,6 +88,28 @@ export default function FriendsProfileAndInvite({
             </Pressable>
           </View>
         </>
+      )}
+
+      {/* Invite a friend — share your smart link / code */}
+      {onShareInvite && (
+        <View style={[styles.cardInner, { marginTop: 14 }]}>
+          <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
+          <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
+            Share your link — when a friend joins (or already has BeKin), you’re instantly connected.
+          </Text>
+          <View style={styles.inputRow}>
+            <View style={[styles.codeBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
+              <Text style={[styles.codeTxt, { color: colors.text }]}>{inviteCode ?? "······"}</Text>
+            </View>
+            <Pressable
+              disabled={!inviteCode}
+              onPress={() => { press(); onShareInvite(); }}
+              style={[styles.btn, { paddingHorizontal: 16, opacity: inviteCode ? 1 : 0.5, backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.btnText}>Share</Text>
+            </Pressable>
+          </View>
+        </View>
       )}
 
       {/* Add Friend */}
@@ -162,6 +189,15 @@ const styles = StyleSheet.create({
   },
   btnText: { color: "#fff", fontWeight: "800" },
   message: { marginTop: 10, fontWeight: "600" },
+  codeBox: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    alignItems: "center",
+  },
+  codeTxt: { fontSize: 20, fontWeight: "800", letterSpacing: 4 },
   usernameRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   displayNameLink: { fontWeight: "700", textDecorationLine: "underline" },
   rowTitle: { fontWeight: "700", color: colors.text },

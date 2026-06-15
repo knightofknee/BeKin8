@@ -1,58 +1,15 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Alert, Pressable, ActivityIndicator, Switch, Platform, Linking, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Switch, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
-import * as Notifications from "expo-notifications";
 import BottomBar from "../components/BottomBar";
 import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
-import { syncPushTokenIfGranted } from "../lib/push";
+import { ensureNotifyPermission } from "../lib/notifyPermission";
 import { tap, selection } from '../utils/haptics';
-
-/** Returns true if notifications are (or become) granted. Shows OS prompt if needed. */
-async function ensureNotifyPermission(): Promise<boolean> {
-  const perm = await Notifications.getPermissionsAsync();
-  if (perm.granted) return true;
-
-  if (perm.canAskAgain) {
-    const ok = await new Promise<boolean>((resolve) =>
-      Alert.alert(
-        "Enable notifications?",
-        "Turn on notifications to receive alerts for comments.",
-        [
-          { text: "Not now", style: "cancel", onPress: () => resolve(false) },
-          { text: "Allow", onPress: () => resolve(true) },
-        ]
-      )
-    );
-    if (!ok) return false;
-    const req = await Notifications.requestPermissionsAsync();
-    if (!req.granted) {
-      Alert.alert("Notifications Off", "You can enable them later from Settings.");
-      return false;
-    }
-    try { await syncPushTokenIfGranted(); } catch {}
-    return true;
-  }
-
-  // Already permanently denied — direct to OS settings
-  await new Promise<void>((resolve) =>
-    Alert.alert(
-      "Notifications Off",
-      Platform.OS === "ios"
-        ? "Open Settings → BeKin → Notifications and turn on Allow Notifications."
-        : "Open Settings → Apps → BeKin → Notifications and turn them on.",
-      [
-        { text: "Cancel", style: "cancel", onPress: () => resolve() },
-        { text: "Open Settings", onPress: async () => { try { await Linking.openSettings(); } catch {} resolve(); } },
-      ]
-    )
-  );
-  return false;
-}
 
 const colors = {
   primary: "#2F6FED",
@@ -221,6 +178,18 @@ export default function SettingsScreen() {
         </View>
 
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
+          {/* How we use notifications — transparency + enable entry point */}
+          <Pressable
+            style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
+            onPress={() => { tap(); router.push("/notifications-permission"); }}
+          >
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: tc.primary }]}>How we use notifications</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>What we send, and how to turn it on</Text>
+            </View>
+            <Text style={[s.subtle, { color: tc.subtle }]}>›</Text>
+          </Pressable>
+
           {/* Allow comments on my posts */}
           <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1 }}>

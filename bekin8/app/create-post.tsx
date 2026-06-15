@@ -1,5 +1,5 @@
 // app/create-post.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,7 @@ import {
   Keyboard,
   Animated,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
 import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
@@ -27,6 +27,10 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { tap, press } from '../utils/haptics';
+import TutorialModal from '../components/tutorial/TutorialModal';
+import TutorialButton from '../components/tutorial/TutorialButton';
+import { postSteps } from '../components/tutorial/content';
+import { getSeen, setSeen } from '../lib/tutorialFlags';
 
 const BOTTOM_BAR_HEIGHT = 56;
 const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
@@ -109,6 +113,22 @@ export default function CreatePostScreen() {
     availableDay: string;
   } | null>(null);
   const [checkingLimit, setCheckingLimit] = useState(true);
+  const [showPostTutorial, setShowPostTutorial] = useState(false);
+
+  // Show the post-tab tutorial the first time this screen is focused. BottomBar exposes no
+  // tab-press event, so focus is the right trigger.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      (async () => {
+        const seen = await getSeen('post');
+        if (active && !seen) setShowPostTutorial(true);
+      })();
+      return () => {
+        active = false;
+      };
+    }, [])
+  );
 
   const functions = getFunctions();
   const checkPostAllowed = httpsCallable<{ useBonus: boolean }, { allowed: boolean; reason?: string; availableDay?: string }>(
@@ -327,7 +347,10 @@ export default function CreatePostScreen() {
             contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
           >
             {/* Header */}
-            <Text style={[styles.h1, { color: colors.text }]}>New Post</Text>
+            <View style={styles.headerRow}>
+              <Text style={[styles.h1, { color: colors.text }]}>New Post</Text>
+              <TutorialButton onPress={() => setShowPostTutorial(true)} style={styles.headerHelp} />
+            </View>
             <Text style={[styles.rateNote, { color: colors.subtle }]}>
               1 post every other day · Bank up to 3 bonus posts by taking days off
             </Text>
@@ -470,6 +493,16 @@ export default function CreatePostScreen() {
           </InputAccessoryView>
         </>
       )}
+
+      {/* Post-tab tutorial — auto-shows on first visit, re-openable via the "?" button. */}
+      <TutorialModal
+        visible={showPostTutorial}
+        steps={postSteps()}
+        onClose={() => {
+          setShowPostTutorial(false);
+          setSeen('post');
+        }}
+      />
     </>
   );
 }
@@ -479,6 +512,8 @@ const styles = StyleSheet.create({
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   h1:          { fontSize: 26, fontWeight: '700', marginBottom: 4, textAlign: 'center' },
+  headerRow:   { position: 'relative', alignItems: 'center', justifyContent: 'center' },
+  headerHelp:  { position: 'absolute', right: 0, top: 2 },
   rateNote:    { fontSize: 13, marginBottom: 20, textAlign: 'center' },
 
   form:        { gap: 16 },

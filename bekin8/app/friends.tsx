@@ -11,10 +11,12 @@ import {
   Linking,
   Pressable,
   Switch,
+  Share,
 } from "react-native";
 import { signOut } from "firebase/auth";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   arrayUnion,
   collection,
@@ -42,6 +44,7 @@ import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
+import { buildInviteUrl } from "../lib/inviteLink";
 
 import * as Notifications from "expo-notifications";
 
@@ -106,6 +109,27 @@ export default function FriendsScreen() {
   // NEW: my blocked users set
   const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
 
+  // Ensure this user has a permanent invite code (generates one server-side if missing).
+  useEffect(() => {
+    if (!profileLoaded || profile?.inviteCode) return;
+    (async () => {
+      try {
+        await httpsCallable(getFunctions(), "ensureInviteCode")({});
+      } catch {
+        // best-effort; the Share button stays disabled until a code exists
+      }
+    })();
+  }, [profileLoaded, profile?.inviteCode]);
+
+  const handleShareInvite = async () => {
+    const code = profile?.inviteCode;
+    if (!code) return;
+    try {
+      await Share.share({ message: `Add me on BeKin 👋 ${buildInviteUrl(code)}` });
+    } catch {
+      // user cancelled or share failed — no-op
+    }
+  };
 
   // Prevent double-toggles per-UID
   const togglingRef = useRef<Set<string>>(new Set());
@@ -1063,6 +1087,8 @@ export default function FriendsScreen() {
               hasProfileUsername={!!currentUsername?.trim()}
               onSendRequest={handleAddFriend}
               busySend={busy}
+              inviteCode={profile?.inviteCode ?? null}
+              onShareInvite={handleShareInvite}
               message={message}
             />
 

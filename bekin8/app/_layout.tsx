@@ -1,13 +1,21 @@
 // app/_layout.tsx
 import React, { useEffect, useRef } from "react";
 import { Stack, usePathname, useRouter, useRootNavigationState } from "expo-router";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Alert, View } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
+import * as Linking from "expo-linking";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
 import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
 import { NetworkProvider } from "../providers/NetworkProvider";
 import OfflineBanner from "../components/OfflineBanner";
+import {
+  parseInviteCode,
+  stashPendingInvite,
+  getPendingInvite,
+  clearPendingInvite,
+  redeemInviteCode,
+} from "../lib/inviteLink";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -92,6 +100,42 @@ function Gate() {
 
     return () => sub.remove();
   }, [initialized, navState?.key, user, router]);
+
+  // --- Referral invite deep link ---
+  // Capture an incoming invite code from a deep link / Universal Link (works pre-auth) and
+  // stash it so it survives signup.
+  const incomingUrl = Linking.useURL();
+  useEffect(() => {
+    const code = parseInviteCode(incomingUrl);
+    if (code) stashPendingInvite(code);
+  }, [incomingUrl]);
+
+  // Once authenticated, redeem any pending invite into an accepted friendship (server-side).
+  const redeemedInviteRef = useRef(false);
+  useEffect(() => {
+    if (!initialized || !navState?.key || !user) return;
+    if (redeemedInviteRef.current) return;
+    redeemedInviteRef.current = true;
+    (async () => {
+      const code = await getPendingInvite();
+      if (!code) return;
+      try {
+        const res = await redeemInviteCode(code);
+        if (res.ok) {
+          await clearPendingInvite();
+          if (!res.already) {
+            const who = res.inviterUsername ? `@${res.inviterUsername}` : "your friend";
+            Alert.alert("You're connected!", `You and ${who} are now friends on BeKin.`);
+          }
+        } else if (res.error === "SELF" || res.error === "NOT_FOUND" || res.error === "BAD_CODE") {
+          await clearPendingInvite(); // unrecoverable — stop retrying
+        }
+        // transient errors: keep the pending code to retry on a future launch
+      } catch {
+        // network/other error — leave pending for next launch
+      }
+    })();
+  }, [initialized, navState?.key, user]);
 
   if (!initialized || !navState?.key) {
     return (

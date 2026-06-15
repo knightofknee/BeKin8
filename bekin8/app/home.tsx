@@ -49,6 +49,10 @@ import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, selection } from '../utils/haptics';
+import TutorialModal from '../components/tutorial/TutorialModal';
+import { beaconSteps } from '../components/tutorial/content';
+import { getSeen, setSeen } from '../lib/tutorialFlags';
+import { ensureNotifyPermission } from '../lib/notifyPermission';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -80,6 +84,9 @@ function getMillis(v: any): number {
 }
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
+// Pre-filled into the very first beacon during the onboarding tutorial so new users
+// announce that they've joined. Only used for the guided first beacon, never the default.
+const FIRST_BEACON_INTRO = 'I just joined BeKin — hi! 👋';
 const MSG_ACCESSORY_ID = 'beacon-msg-accessory';
 const IOS_ACCESSORY_HEIGHT = 48;
 const BEACON_MESSAGE_MAX = 1000;
@@ -129,7 +136,7 @@ export default function HomeScreen() {
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
-  const [showHelp, setShowHelp] = useState(false);
+  const [showBeaconTutorial, setShowBeaconTutorial] = useState(false);
 
   // First-time notification onboarding prompted after a user creates a beacon
   // while OS-level notification permission is not yet granted. Explains
@@ -463,6 +470,63 @@ export default function HomeScreen() {
     setOptionsOpen(true);
   };
 
+  // Guided first beacon (from the onboarding tutorial): pre-fill an intro message, default to
+  // today, and skip the time/group steps. Per-run only — DEFAULT_BEACON_MESSAGE is untouched.
+  const startFirstBeacon = () => {
+    setMessage(FIRST_BEACON_INTRO);
+    setPlannedMessage(FIRST_BEACON_INTRO);
+    setDayOffset(0);
+    setTimeHourInput('');
+    setTimeMinuteInput('');
+    setTimeMeridiem('AM');
+    setSelectedGroupIds([]);
+    setOptionsOpen(true);
+  };
+
+  // Whether the user has no beacon yet (drives the first-beacon prompt + label).
+  const hasNoBeaconYet = !isLit && !myActiveBeacon && !nextPlannedDate;
+
+  const goToFriends = () => {
+    setShowBeaconTutorial(false);
+    setSeen('beacon');
+    router.push('/friends');
+  };
+
+  // From the tutorial's notifications step: get OS permission, and on success opt the user into
+  // beacon notifications from all friends (the master toggle), so future friends are covered.
+  const enableBeaconNotifications = async () => {
+    const granted = await ensureNotifyPermission(
+      'Turn on notifications so you know the moment a friend lights a beacon.'
+    );
+    if (!granted) return;
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    try {
+      await setDoc(
+        doc(db, 'Profiles', uid),
+        { notifyAllBeacons: true, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    } catch {
+      // Non-fatal: permission is granted; the master toggle can still be set in Friends/Settings.
+    }
+  };
+
+  // Auto-show the beacon tutorial once for a new user. Skipped when arriving via a
+  // notification deep link (params.beaconId) so we don't cover the opened beacon.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (params.beaconId) return;
+      const seen = await getSeen('beacon');
+      if (!cancelled && !seen) setShowBeaconTutorial(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // toggle (off/on)
   const toggleBeacon = () => {
     const action = isLit ? 'Extinguish' : 'Light';
@@ -724,7 +788,7 @@ export default function HomeScreen() {
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
         <View style={styles.page}>
           <View style={styles.beaconsWrap}>
-            <FriendsBeaconsList onSelect={setSelectedBeacon} />
+            <FriendsBeaconsList onSelect={setSelectedBeacon} showExampleWhenEmpty />
           </View>
 
           <View style={[styles.controls, { backgroundColor: colors.bg }]}>
@@ -744,8 +808,8 @@ export default function HomeScreen() {
                   )}
                 </TouchableOpacity>
 
-                {!showHelp && (
-                  <Pressable onPress={() => setShowHelp(true)} hitSlop={12} style={styles.helpBtn}>
+                {!showBeaconTutorial && (
+                  <Pressable onPress={() => setShowBeaconTutorial(true)} hitSlop={12} style={styles.helpBtn}>
                     <Ionicons name="help-circle" size={28} color={colors.primary} />
                   </Pressable>
                 )}
@@ -999,33 +1063,25 @@ export default function HomeScreen() {
 
       <BottomBar />
 
-      {/* Help modal */}
-      <Modal visible={showHelp} transparent animationType="fade" onRequestClose={() => setShowHelp(false)}>
-        <Pressable style={styles.helpOverlay} onPress={() => setShowHelp(false)}>
-          <View style={[styles.helpCard, { backgroundColor: colors.card }]}>
-            <Text style={[styles.helpTitle, { color: colors.text }]}>How Beacons Work</Text>
-
-            <Text style={[styles.helpBody, { color: colors.text }]}>
-              A Beacon is a signal to your friends that you're free to hang out.
-            </Text>
-
-            <Text style={[styles.helpBody, { color: colors.text }]}>
-              {"\u2022"} Tap the logs to light your Beacon{"\n"}
-              {"\u2022"} Pick a day, choose which friends can see it, and add an optional note{"\n"}
-              {"\u2022"} Friends with notifications enabled get a push notification{"\n"}
-              {"\u2022"} Friends can tap "I'm in" to join, and you can chat in the Beacon
-            </Text>
-
-            <Text style={[styles.helpBody, { color: colors.text }]}>
-              To get notifications when friends light their Beacons, go to the Friends tab and turn on notifications for each friend or use the "Beacon notifications from all friends" toggle at the top.
-            </Text>
-
-            <Pressable onPress={() => setShowHelp(false)} style={[styles.helpClose, { backgroundColor: colors.primary }]}>
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>Got it</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
+      {/* Beacon tutorial \u2014 auto-shows once for new users, re-openable via the "?" button. */}
+      <TutorialModal
+        visible={showBeaconTutorial}
+        steps={beaconSteps({
+          onGoToFriends: goToFriends,
+          isFirstBeacon: hasNoBeaconYet,
+          onEnableNotifications: enableBeaconNotifications,
+        })}
+        onClose={() => {
+          setShowBeaconTutorial(false);
+          setSeen('beacon');
+        }}
+        onFinish={() => {
+          // If they have no beacon yet, open the pre-filled first-beacon flow. Delay so the
+          // tutorial sheet finishes dismissing before the options modal presents (avoids
+          // stacking two modals during the transition).
+          if (hasNoBeaconYet) setTimeout(() => startFirstBeacon(), 350);
+        }}
+      />
 
       {/* First-time beacon notification onboarding */}
       <Modal

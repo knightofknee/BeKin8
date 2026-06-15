@@ -1,53 +1,80 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Alert, Platform } from "react-native";
-import * as Notifications from "expo-notifications";
-import { auth, db } from "../firebase.config";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
-import { ensurePushPermissionsAndToken } from "../lib/push";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Alert } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { useTheme } from "../providers/ThemeProvider";
+import { ensureNotifyPermission } from "../lib/notifyPermission";
+import { tap, press } from "../utils/haptics";
 
 export default function NotificationsPermission() {
   const { colors } = useTheme();
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
 
   const request = async () => {
+    if (busy) return;
+    press();
     try {
       setBusy(true);
-      const { granted, token } = await ensurePushPermissionsAndToken();
-      if (!granted) {
-        Alert.alert("Permission declined", "You can enable notifications later in Settings.");
-        return;
+      const granted = await ensureNotifyPermission(
+        "We use notifications to let you know when friends light beacons, RSVP or chat on yours, and send requests."
+      );
+      if (granted) {
+        Alert.alert("You're all set", "We'll let you know the moment a friend lights a beacon.");
+        if (router.canGoBack()) router.back();
       }
-      Alert.alert("Enabled", "We'll notify you about friends, beacons, and requests.");
-    } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Failed to enable notifications.");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <View style={[s.wrap, { backgroundColor: colors.bg }]}>
-      <Text style={[s.h1, { color: colors.text }]}>Turn on notifications?</Text>
-      <Text style={[s.p, { color: colors.subtle }]}>
-        We use notifications to let you know when friends light beacons, interact with your posts, or send requests.
-        You can turn this off anytime in system settings.
-      </Text>
-      <Pressable style={[s.btn, { backgroundColor: colors.primary }]} onPress={request} disabled={busy}>
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Allow notifications</Text>}
+    <SafeAreaView style={[s.wrap, { backgroundColor: colors.bg }]} edges={["top", "left", "right"]}>
+      <Pressable onPress={() => { tap(); if (router.canGoBack()) router.back(); }} hitSlop={8} style={s.back}>
+        <Text style={[s.backTxt, { color: colors.primary }]}>{`← Back`}</Text>
       </Pressable>
-      <Pressable onPress={() => Alert.alert("Skipped", "You can enable them later.")}>
-        <Text style={[s.skip, { color: colors.subtle }]}>Not now</Text>
-      </Pressable>
-    </View>
+
+      <View style={s.content}>
+        <Text style={[s.h1, { color: colors.text }]}>Notifications</Text>
+        <Text style={[s.p, { color: colors.subtle }]}>
+          BeKin only notifies you about things that matter — never spam. We send a notification
+          when:
+        </Text>
+
+        <View style={s.bullets}>
+          <Text style={[s.bullet, { color: colors.text }]}>🔥  A friend lights a beacon</Text>
+          <Text style={[s.bullet, { color: colors.text }]}>🙋  Someone RSVPs or chats on your beacon</Text>
+          <Text style={[s.bullet, { color: colors.text }]}>💬  A friend comments on your post</Text>
+          <Text style={[s.bullet, { color: colors.text }]}>👋  You get a friend request</Text>
+        </View>
+
+        <Text style={[s.p, { color: colors.subtle }]}>
+          You’re always in control — turn any of these on or off any time below.
+        </Text>
+
+        <Pressable style={[s.btn, { backgroundColor: colors.primary }]} onPress={request} disabled={busy}>
+          {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Allow notifications</Text>}
+        </Pressable>
+
+        <Pressable onPress={() => { tap(); router.push("/settings"); }} style={s.manageBtn}>
+          <Text style={[s.manage, { color: colors.primary }]}>Choose individual notifications</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
-  wrap: { flex: 1, padding: 16, justifyContent: "center" },
-  h1: { fontSize: 22, fontWeight: "800", marginBottom: 12 },
-  p: { fontSize: 16, lineHeight: 22, marginBottom: 16 },
-  btn: { padding: 14, borderRadius: 12, alignItems: "center" },
+  wrap: { flex: 1 },
+  back: { paddingHorizontal: 16, paddingVertical: 12 },
+  backTxt: { fontWeight: "800", fontSize: 16 },
+  content: { flex: 1, padding: 16, justifyContent: "center" },
+  h1: { fontSize: 26, fontWeight: "800", marginBottom: 12 },
+  p: { fontSize: 16, lineHeight: 23, marginBottom: 14 },
+  bullets: { marginBottom: 14, gap: 10 },
+  bullet: { fontSize: 16, lineHeight: 22 },
+  btn: { padding: 15, borderRadius: 12, alignItems: "center", marginTop: 4 },
   btnText: { color: "#fff", fontSize: 16, fontWeight: "800" },
-  skip: { marginTop: 12, textAlign: "center" },
+  manageBtn: { marginTop: 16, alignItems: "center" },
+  manage: { fontSize: 15, fontWeight: "600" },
 });
