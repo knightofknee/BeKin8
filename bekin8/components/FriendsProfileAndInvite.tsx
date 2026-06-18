@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 
 import { colors } from "./ui/colors";
 import { MessageState } from "./types";
 import { useTheme } from "../providers/ThemeProvider";
+import { useTourTarget } from "../providers/TourProvider";
 import { press } from "../utils/haptics";
 
 type Props = {
@@ -46,13 +47,17 @@ export default function FriendsProfileAndInvite({
   message,
 }: Props) {
   const { colors } = useTheme();
+  // Tour targets: step "Pick your username" spotlights ONLY the username block; the next step
+  // ("Your name & invite link") spotlights the invite block (and mentions the display name above).
+  const usernameTarget = useTourTarget("friends-username");
+  const inviteTarget = useTourTarget("friends-invite");
   return (
     <View style={[styles.card, { backgroundColor: colors.card }]}>
       {/* Username + display name */}
       {currentUsername ? (
         <>
           <View style={styles.usernameRow}>
-            <View>
+            <View ref={usernameTarget} collapsable={false}>
               <Text style={[styles.label, { color: colors.text, marginBottom: 4 }]}>Your username</Text>
               <Text style={[styles.rowTitle, { color: colors.text }]}>{currentUsername}</Text>
             </View>
@@ -65,7 +70,7 @@ export default function FriendsProfileAndInvite({
           </View>
         </>
       ) : (
-        <>
+        <View ref={usernameTarget} collapsable={false}>
           <Text style={[styles.label, { color: colors.text }]}>Set your username</Text>
           <View style={styles.inputRow}>
             <TextInput
@@ -87,14 +92,14 @@ export default function FriendsProfileAndInvite({
               {busyUsername ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
             </Pressable>
           </View>
-        </>
+        </View>
       )}
 
       {/* Invite a friend — share your smart link / code. Hidden until a username exists, since the
           invite code is only minted once a username is set. */}
       {onShareInvite &&
         (currentUsername ? (
-          <View style={[styles.cardInner, { marginTop: 14 }]}>
+          <View ref={inviteTarget} collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
             <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
               Share your link — when a friend joins (or already has BeKin), you’re instantly connected.
@@ -113,7 +118,7 @@ export default function FriendsProfileAndInvite({
             </View>
           </View>
         ) : (
-          <View style={[styles.cardInner, { marginTop: 14 }]}>
+          <View ref={inviteTarget} collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
             <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.subtle, { color: colors.subtle }]}>
               Pick a username above to unlock your shareable invite link.

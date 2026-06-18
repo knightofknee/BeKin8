@@ -23,6 +23,10 @@ export type ThemeColors = {
   backdrop: string;
   tabInactive: string;
   linkText: string;
+  // Coach-mark tour callout — deliberately distinct from every app surface so the tour reads as a
+  // separate guidance layer (not app chrome). tourBorder echoes the spotlight ring (primary).
+  tourSurface: string;
+  tourBorder: string;
 };
 
 export const lightColors: ThemeColors = {
@@ -48,6 +52,8 @@ export const lightColors: ThemeColors = {
   backdrop: "rgba(0,0,0,0.28)",
   tabInactive: "#6B7280",
   linkText: "#2F6FED",
+  tourSurface: "#EEF3FF",
+  tourBorder: "#2F6FED",
 };
 
 export const darkColors: ThemeColors = {
@@ -73,6 +79,8 @@ export const darkColors: ThemeColors = {
   backdrop: "rgba(0,0,0,0.55)",
   tabInactive: "#6B7280",
   linkText: "#4B8BFF",
+  tourSurface: "#222A45",
+  tourBorder: "#4B8BFF",
 };
 
 // Legacy default export for files that haven't migrated yet

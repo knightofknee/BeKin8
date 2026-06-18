@@ -12,10 +12,12 @@ import {
   useWindowDimensions,
   Keyboard,
   Platform,
+  Animated,
   AccessibilityInfo,
   findNodeHandle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../providers/ThemeProvider";
 import { tap, success } from "../../utils/haptics";
 
@@ -49,6 +51,22 @@ export type TourStep = {
    * next in order — used to skip an optional branch (e.g. the profile detour).
    */
   nextTarget?: string;
+  /**
+   * Force the callout into the TOP or LOW slot instead of auto-deciding. Use 'top' for a step whose
+   * important content sits BELOW the spotlight (so a low callout would cover it).
+   */
+  placement?: "top" | "low";
+  /**
+   * For a LOW-placed step with a long body: anchor the callout by its TOP (not its bottom) and let it
+   * grow DOWNWARD over the tab bar, so adding copy never pushes the box UP over the spotlighted
+   * element. Used for the notifications step.
+   */
+  growDown?: boolean;
+  /**
+   * An optional side-step reached only via goToTarget (never the normal Next flow) — NOT counted in
+   * the "Step X of N" total, so jumping into it doesn't make the numbers leap.
+   */
+  branch?: boolean;
 };
 
 type Props = {
@@ -70,6 +88,12 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   const insets = useSafeAreaInsets();
   const [rect, setRect] = useState<Rect | null>(null);
   const [kbHeight, setKbHeight] = useState(0);
+  // TOP vs LOW slot, latched once per step from the first (keyboard-closed) measurement so focusing
+  // a field mid-step — which shifts the sheet up — can't flip the callout's slot. null until latched.
+  const [useLowLocked, setUseLowLocked] = useState<boolean | null>(null);
+  // Gentle fade + rise on each step so the callout settles into place instead of hard-cutting
+  // (softens the necessary TOP↔LOW moves between steps). Native-driven (opacity + transform).
+  const calloutAnim = useRef(new Animated.Value(0)).current;
   const titleRef = useRef<Text>(null);
 
   useEffect(() => {
@@ -89,6 +113,10 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
 
   const step = steps[index];
   const isLast = index === steps.length - 1;
+  // Step numbering ignores branch steps (optional side-steps), so jumping into one doesn't make the
+  // "Step X of N" count leap.
+  const total = steps.filter((s) => !s.branch).length;
+  const current = Math.max(1, steps.slice(0, index + 1).filter((s) => !s.branch).length);
 
   // On each step: reset to a clean keyboard baseline, run the side effect, announce it for
   // assistive tech, and CONTINUOUSLY re-measure the target so the ring tracks late layout, the
@@ -99,6 +127,10 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let a11yTimer: ReturnType<typeof setTimeout> | undefined;
     setRect(null);
+    setUseLowLocked(null);
+    // Fade + rise the callout into its (new) slot.
+    calloutAnim.setValue(0);
+    Animated.timing(calloutAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
     // Blur whatever input was focused (e.g. the time field) and collapse the keyboard, so the new
     // step's callout isn't pinned low by a stale keyboard height and no stray cursor lingers.
     Keyboard.dismiss();
@@ -106,7 +138,7 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     Promise.resolve(step?.onEnter?.()).catch(() => {});
 
     if (step) {
-      AccessibilityInfo.announceForAccessibility(`${step.title}. Step ${index + 1} of ${steps.length}`);
+      AccessibilityInfo.announceForAccessibility(`${step.title}. Step ${current} of ${total}`);
       a11yTimer = setTimeout(() => {
         const node = titleRef.current && findNodeHandle(titleRef.current);
         if (node) AccessibilityInfo.setAccessibilityFocus(node);
@@ -129,6 +161,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
               ? prev
               : r
           );
+          // Latch the slot from this first keyboard-closed measurement (step entry dismissed the
+          // keyboard), so a later keyboard-driven sheet shift can't flip TOP↔LOW mid-step.
+          setUseLowLocked((v) => (v == null ? r.y - PAD < insets.top + 12 + 260 : v));
         }
         if (!cancelled) pollTimer = setTimeout(poll, 180);
       };
@@ -169,28 +204,49 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   const holeRight = rect ? Math.max(hx, Math.min(W, rect.x + rect.width + PAD)) : 0;
   const hw = holeRight - hx;
 
-  // Place the callout in the LARGER free gap above/below the hole, anchored to the hole edge so it
-  // never overlaps the ring, and cap its content height to that gap (it scrolls internally). This
-  // guarantees the title/Skip and Back/Next stay on-screen even for a tall target (Settings group)
-  // and even before the keyboard settles. The gap below shrinks to sit above the keyboard.
+  // Placement: ONE consistent spot the user can rely on. The callout sits at a fixed TOP position
+  // (the same place as step 1) whenever it wouldn't cover the highlighted element; when the target
+  // sits high enough that a top callout would cover it, it drops to a fixed LOW position just above
+  // the tab bar — even if that overlaps the BOTTOM of the target. This stops the box from jumping
+  // around between steps, and guarantees the title + Back/Next are always fully on-screen.
   const TOP_LIMIT = insets.top + 12;
-  const kbLimit = kbHeight > 0 ? H - kbHeight - 12 : H - insets.bottom - 12;
-  const CARD_PAD = 32; // styles.callout vertical padding (16 top + 16 bottom)
+  const CARD_PAD = 32; // styles.callout vertical padding (16 + 16)
+  // BottomBar is 64 + 8 inset, flush at the screen bottom (the home indicator sits within it), so
+  // clearing 72 + a small margin keeps Back/Next just above it — do NOT also add insets.bottom
+  // (that double-counts the home indicator and left a dead gap below the box).
+  const TAB_BAR_CLEARANCE = 72;
+  const kbActive = kbHeight > 0;
+  const bottomLimit = kbActive ? H - kbHeight - 12 : H - TAB_BAR_CLEARANCE - 12;
+  // Floor for a LOW-anchored callout: above the keyboard when typing, else just above the tab bar.
+  const lowBottom = kbActive ? kbHeight + 12 : TAB_BAR_CLEARANCE + 12;
+  // A top callout would cover the target if the target starts within the top zone. Fixed estimate
+  // (not the measured height) so the TOP/LOW choice is stable and never flips frame-to-frame. A
+  // step can force a slot via `placement` (e.g. step 1 forces TOP so it clears the caption below).
+  const TOP_ZONE = TOP_LIMIT + 260;
+  const useLow =
+    step.placement === "low"
+      ? true
+      : step.placement === "top"
+      ? false
+      : useLowLocked ?? (!!rect && hy < TOP_ZONE);
   let calloutPos: any;
   let calloutMaxH: number;
-  if (!rect) {
-    calloutPos = { top: TOP_LIMIT, left: 18, right: 18 };
-    calloutMaxH = Math.max(0, kbLimit - TOP_LIMIT - CARD_PAD);
+  if (useLow && step.growDown) {
+    // Pin the TOP roughly where the short box would have sat in the low slot, then allow the box to
+    // grow DOWN toward the screen bottom (covering the tab bar if the body is long) instead of
+    // creeping up over the highlighted controls. LOW_REF ≈ a typical short-callout height.
+    const LOW_REF = 270;
+    const topAnchor = Math.max(TOP_LIMIT, H - lowBottom - LOW_REF);
+    calloutPos = { top: topAnchor, left: 18, right: 18 };
+    calloutMaxH = Math.max(120, H - topAnchor - 8); // down to ~8px from the bottom (over the tab bar)
+  } else if (useLow) {
+    calloutPos = { bottom: lowBottom, left: 18, right: 18 };
+    calloutMaxH = Math.max(120, H - lowBottom - TOP_LIMIT - CARD_PAD);
   } else {
-    const gapTop = hy - 12 - TOP_LIMIT;
-    const gapBottom = kbLimit - (holeBottom + 12);
-    if (gapTop >= gapBottom) {
-      calloutPos = { bottom: H - hy + 12, left: 18, right: 18 };
-      calloutMaxH = Math.max(0, gapTop - CARD_PAD);
-    } else {
-      calloutPos = { top: holeBottom + 12, left: 18, right: 18 };
-      calloutMaxH = Math.max(0, gapBottom - CARD_PAD);
-    }
+    calloutPos = { top: TOP_LIMIT, left: 18, right: 18 };
+    // Grow down, but never past the target (if any) or the keyboard.
+    const floor = rect ? Math.min(hy - 12, bottomLimit) : bottomLimit;
+    calloutMaxH = Math.max(120, floor - TOP_LIMIT - CARD_PAD);
   }
 
   // Block the whole screen unless this is an interactive step that already has a real hole to
@@ -246,36 +302,50 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
         />
       )}
 
-      <View style={[styles.callout, { backgroundColor: colors.card }, calloutPos]} accessibilityViewIsModal>
+      {/* Distinct guidance surface: a blue-tinted, elevated card with a primary accent border that
+          echoes the spotlight ring — deliberately NOT an app card, so it reads as "the tour talking". */}
+      <Animated.View
+        style={[
+          styles.callout,
+          { backgroundColor: colors.tourSurface, borderColor: colors.tourBorder },
+          calloutPos,
+          {
+            opacity: calloutAnim,
+            transform: [{ translateY: calloutAnim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+          },
+        ]}
+        accessibilityViewIsModal
+      >
         {/* Capped to the available gap; if the content is ever taller than the gap it scrolls,
-            so the title/Skip and Back/Next can never be pushed off-screen. */}
+            so the eyebrow and Back/Next can never be pushed off-screen. */}
         <ScrollView
           style={{ maxHeight: Math.max(120, calloutMaxH) }}
           bounces={false}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.calloutHeader}>
-            <Text
-              ref={titleRef}
-              accessibilityRole="header"
-              style={[styles.title, { color: colors.text }]}
-              numberOfLines={2}
-            >
-              {step.title}
-            </Text>
-            <Pressable hitSlop={10} onPress={skip} accessibilityRole="button" accessibilityLabel="Skip tutorial">
-              <Text style={[styles.skipTxt, { color: colors.subtle }]}>Skip</Text>
+          {/* Eyebrow: brand-blue "STEP X OF N" + Skip tour — a small identity cue that this is the tour. */}
+          <View style={styles.eyebrowRow}>
+            <View style={styles.eyebrow}>
+              <Ionicons name="sparkles" size={13} color={colors.primary} />
+              <Text style={[styles.eyebrowTxt, { color: colors.primary }]}>
+                {`STEP ${current} OF ${total}`}
+              </Text>
+            </View>
+            <Pressable hitSlop={10} onPress={skip} accessibilityRole="button" accessibilityLabel="Skip tour">
+              <Text style={[styles.skipTxt, { color: colors.subtle }]}>Skip tour</Text>
             </Pressable>
           </View>
+
+          <Text ref={titleRef} accessibilityRole="header" style={[styles.title, { color: colors.text }]} numberOfLines={2}>
+            {step.title}
+          </Text>
 
           {typeof step.body === "string" ? (
             <Text style={[styles.body, { color: colors.text }]}>{step.body}</Text>
           ) : (
             step.body
           )}
-
-          <Text style={[styles.progress, { color: colors.subtle }]}>{`Step ${index + 1} of ${steps.length}`}</Text>
 
           <View style={styles.nav}>
             <Pressable
@@ -296,7 +366,7 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
             </Pressable>
           </View>
         </ScrollView>
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -307,19 +377,22 @@ const styles = StyleSheet.create({
   callout: {
     position: "absolute",
     borderRadius: 16,
+    borderWidth: 1,
     padding: 16,
+    // Lifted clearly above app cards (which use 0.18/14/8) so it floats as a separate layer.
     shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+    shadowOpacity: 0.45,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
   },
-  calloutHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 },
-  title: { flex: 1, fontSize: 18, fontWeight: "800", paddingRight: 8 },
-  skipTxt: { fontSize: 14, fontWeight: "700", paddingTop: 2 },
+  eyebrowRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  eyebrow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  eyebrowTxt: { fontSize: 11, fontWeight: "800", letterSpacing: 0.8 },
+  title: { fontSize: 18, fontWeight: "800", marginBottom: 8 },
+  skipTxt: { fontSize: 14, fontWeight: "700" },
   body: { fontSize: 15, lineHeight: 22 },
-  progress: { fontSize: 12, fontWeight: "600", textAlign: "center", marginTop: 14, marginBottom: 12, letterSpacing: 0.3 },
-  nav: { flexDirection: "row", alignItems: "center", gap: 12 },
+  nav: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 },
   btnGhost: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10 },
   btnGhostTxt: { fontSize: 15, fontWeight: "600" },
   hidden: { opacity: 0 },

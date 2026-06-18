@@ -18,12 +18,17 @@ type TourCtx = {
     opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string }
   ) => void;
   endTour: (finished: boolean) => void;
-  /** Jump the active tour to the step whose target matches `key` (e.g. an optional branch). */
-  goToTarget: (key: string) => void;
+  /**
+   * Jump the active tour to the step whose target matches `key` (e.g. an optional branch).
+   * `pushHistory` defaults true; pass false for a branch that should show no Back button.
+   */
+  goToTarget: (key: string, opts?: { pushHistory?: boolean }) => void;
   /** Advance the active tour to the next step (e.g. a screen reacting to the sheet closing). */
   advance: () => void;
   /** `id` of the step currently showing, so screens can react to which step is active. */
   currentStepId?: string;
+  /** `target` of the step currently showing, so screens can react to it (e.g. open the sheet). */
+  currentStepTarget?: string;
   isActive: boolean;
 };
 
@@ -35,6 +40,7 @@ const Ctx = createContext<TourCtx>({
   goToTarget: () => {},
   advance: () => {},
   currentStepId: undefined,
+  currentStepTarget: undefined,
   isActive: false,
 });
 
@@ -131,12 +137,14 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const onSkip = useCallback(() => endTour(false), [endTour]);
 
   const goToTarget = useCallback(
-    (key: string) => {
+    (key: string, opts?: { pushHistory?: boolean }) => {
       setIndex((i) => {
         if (!steps) return i;
         const ni = steps.findIndex((s) => s.target === key);
         if (ni < 0 || ni === i) return i;
-        history.current.push(i); // a jump (e.g. entering a branch) is part of the path
+        // A normal jump is part of the path (Back returns here); a branch entered with
+        // pushHistory:false leaves history untouched so the branch shows no Back button.
+        if (opts?.pushHistory !== false) history.current.push(i);
         return ni;
       });
     },
@@ -144,6 +152,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   );
 
   const currentStepId = steps?.[index]?.id;
+  const currentStepTarget = steps?.[index]?.target;
 
   return (
     <Ctx.Provider
@@ -155,6 +164,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         goToTarget,
         advance: onNext,
         currentStepId,
+        currentStepTarget,
         isActive: !!steps,
       }}
     >

@@ -20,6 +20,7 @@
     "@react-navigation/native": "^7.1.6",
     "expo": "^53.0.19",
     "expo-apple-authentication": "~7.2.4",
+    "expo-audio": "~0.4.9",
     "expo-blur": "~14.1.5",
     "expo-clipboard": "~7.1.5",
     "expo-constants": "~17.1.6",

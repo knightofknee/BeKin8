@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Switch, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -9,6 +9,7 @@ import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { ensureNotifyPermission } from "../lib/notifyPermission";
+import { getFireSoundEnabled, setFireSoundEnabled, onFireSoundChange } from "../lib/fireSoundPref";
 import { useTourTarget } from "../providers/TourProvider";
 import { tap, selection } from '../utils/haptics';
 
@@ -36,6 +37,8 @@ export default function SettingsScreen() {
   const [commentOnCommentNotifyBusy, setCommentOnCommentNotifyBusy] = useState(false);
   const [newPostNotify, setNewPostNotify] = useState(false);
   const [newPostNotifyBusy, setNewPostNotifyBusy] = useState(false);
+  // Device-local "Fire sounds" preference (default ON; the read below confirms).
+  const [fireSounds, setFireSounds] = useState(true);
   const router = useRouter();
   const commentsTarget = useTourTarget("settings-comments");
   const commentNotifyTarget = useTourTarget("settings-comment-notify");
@@ -47,6 +50,17 @@ export default function SettingsScreen() {
       setCommentsEnabled(profile.commentsEnabled);
     }
   }, [profileLoaded]);
+
+  // Fire-sound preference (device-local) + keep in sync if toggled elsewhere.
+  useEffect(() => {
+    getFireSoundEnabled().then(setFireSounds);
+    return onFireSoundChange(setFireSounds);
+  }, []);
+  const handleToggleFireSounds = (val: boolean) => {
+    selection();
+    setFireSounds(val);
+    setFireSoundEnabled(val);
+  };
 
   // Live listeners for notification prefs
   React.useEffect(() => {
@@ -271,6 +285,20 @@ export default function SettingsScreen() {
               thumbColor="#fff"
             />
           </View>
+          </View>
+
+          {/* Fire sounds — device-local, default off (separate from the notification group above). */}
+          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: tc.primary }]}>Fire sounds</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Play a soft crackle while your beacon is lit</Text>
+            </View>
+            <Switch
+              value={fireSounds}
+              onValueChange={handleToggleFireSounds}
+              trackColor={{ false: tc.border, true: tc.primary }}
+              thumbColor="#fff"
+            />
           </View>
 
           {/* Push bottom actions down */}

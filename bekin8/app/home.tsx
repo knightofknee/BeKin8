@@ -17,10 +17,15 @@ import {
   ScrollView,
   Animated,
   BackHandler,
+  useWindowDimensions,
 } from 'react-native';
-import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import UnlitLogs from '../components/UnlitLogs';
+import BeaconStructure from '../components/BeaconStructure';
+import BeaconScene from '../components/BeaconScene';
+import BeaconFire from '../components/BeaconFire';
+import BeaconSmoke from '../components/BeaconSmoke';
+import { getSkin, DEFAULT_SKIN_ID, BEACON_SKINS } from '../lib/beaconSkins';
+import { getBeaconSkinId, setBeaconSkinId, onBeaconSkinChange } from '../lib/beaconSkinPref';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { auth, db } from '../firebase.config';
 import {
@@ -57,6 +62,8 @@ import { useTour, useTourTarget } from '../providers/TourProvider';
 import { useOnboarding } from '../providers/OnboardingProvider';
 import { getSeen, setSeen } from '../lib/tutorialFlags';
 import { ensureNotifyPermission } from '../lib/notifyPermission';
+import { useFireSound } from '../lib/useFireSound';
+import { getFireSoundEnabled, setFireSoundEnabled, onFireSoundChange } from '../lib/fireSoundPref';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -144,7 +151,7 @@ export default function HomeScreen() {
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   // Coach-mark tour: target refs to spotlight + the tour controller.
-  const { startTour, isActive, currentStepId, endTour } = useTour();
+  const { startTour, isActive, endTour, currentStepId, currentStepTarget, goToTarget } = useTour();
   // Base-setup progress (username + friend + notifications) drives the resume banner.
   const onboarding = useOnboarding();
   const logsRef = useTourTarget('beacon-logs');
@@ -153,6 +160,70 @@ export default function HomeScreen() {
   const timeRef = useTourTarget('sheet-time');
   const groupsRef = useTourTarget('sheet-groups');
   const messageRef = useTourTarget('sheet-message');
+  const chatTarget = useTourTarget('beacon-chat');
+  // The home page View — the coordinate basis for the fire/smoke layers. Both <Svg> layers are
+  // position:absolute top:0 left:0 inside styles.page, so we measure the logs RELATIVE TO this view
+  // (logs window pos − page window pos). That collapses the whole nesting chain into one offset and
+  // is immune to safe-area insets / padding above. REQUIRES styles.page to keep paddingTop:0 and
+  // paddingHorizontal:0 with no border, or the flame lands off the logs.
+  // Selected beacon SKIN (device-local pref; default Old Guard) — drives fire, smoke, and structure.
+  const [skinId, setSkinId] = useState(DEFAULT_SKIN_ID);
+  const skin = getSkin(skinId);
+  useEffect(() => {
+    let mounted = true;
+    getBeaconSkinId().then((id) => mounted && setSkinId(id));
+    const off = onBeaconSkinChange((id) => setSkinId(id));
+    return () => { mounted = false; off(); };
+  }, []);
+
+  const pageRef = useRef<View>(null);
+  // The flame base position within the structure box comes from the skin (0 = top, 1 = bottom); read
+  // via a ref so the measure callback stays stable. Re-measured when the skin changes.
+  const originRef = useRef(skin.origin);
+  originRef.current = skin.origin;
+  const [beaconAnchor, setBeaconAnchor] = useState({ x: 0, y: 0, measured: false });
+  const measureBeaconAnchor = useCallback(() => {
+    const logs = logsRef.current;
+    const page = pageRef.current;
+    if (!logs || !page) return;
+    let tries = 0;
+    // Defer a frame so both views' layout is committed before we read geometry; on a transient
+    // zero-width read (seen on Android during the first layout pass) retry a few frames so the
+    // anchor self-heals rather than leaving the fire/smoke un-rendered for the session.
+    const attempt = () => {
+      logs.measureInWindow((lx, ly, lw, lh) => {
+        if (!lw) {
+          if (tries++ < 8) requestAnimationFrame(attempt);
+          return;
+        }
+        page.measureInWindow((px, py) => {
+          setBeaconAnchor({ x: lx - px + lw / 2, y: ly - py + lh * originRef.current, measured: true });
+        });
+      });
+    };
+    requestAnimationFrame(attempt);
+  }, [logsRef]);
+  // Re-measure when the window changes (rotation, or the safe-area inset settling after first paint),
+  // since the logs View's onLayout won't necessarily re-fire if only its window position shifts.
+  const { width: winW, height: winH } = useWindowDimensions();
+  useEffect(() => {
+    measureBeaconAnchor();
+  }, [winW, winH, measureBeaconAnchor, skinId]);
+
+  // Fire SFX (device-local "Fire sounds" pref, default off). ignite plays on the lighting edge via
+  // BeaconFire.onIgnited; the crackle loop tracks the lit state. Needs a native build (expo-audio).
+  const [fireSoundOn, setFireSoundOn] = useState(true); // default ON; pref read confirms below
+  useEffect(() => {
+    let mounted = true;
+    getFireSoundEnabled().then((v) => mounted && setFireSoundOn(v));
+    const off = onFireSoundChange((v) => setFireSoundOn(v));
+    return () => { mounted = false; off(); };
+  }, []);
+  const fireSound = useFireSound(fireSoundOn);
+  useEffect(() => {
+    fireSound.setLit(!!isLit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLit, fireSoundOn]);
   // Whether the user has ≥1 friend — read when the tour is built so it can drop the "Add Brian"
   // step (that card only renders at zero friends). `friendsLoaded` gates auto-start so the tour is
   // NEVER built before the count is known (the old race kept add-brian in for users who have
@@ -590,20 +661,74 @@ export default function HomeScreen() {
     );
   };
 
-  // On the final step the user edits options and SETS a beacon — Save schedules it (the listener
-  // then fills nextPlannedDate) or tapping the logs lights it. The moment they have a beacon, the
-  // tour completes (same as Done). Scoped to the final step + a false→true transition so a beacon
-  // set earlier (or on the step-1 demo) doesn't end onboarding before they reach the finish.
-  const prevBeaconSetRef = useRef(!hasNoBeaconYet);
+  // The tour completes when the user has SET a beacon (Save schedules it → the listener fills
+  // nextPlannedDate; tapping the logs lights it) AND finished base setup (username + friend +
+  // notifications). Gating on allDone means lighting on the step-1 demo can't end onboarding early
+  // (a brand-new user isn't allDone yet); if anything is missing, the persistent banner nudges them
+  // to the first incomplete step instead.
+  const prevReadyRef = useRef(!hasNoBeaconYet && onboarding.allDone);
   useEffect(() => {
-    const was = prevBeaconSetRef.current;
-    const beaconSet = !hasNoBeaconYet;
-    prevBeaconSetRef.current = beaconSet;
-    if (isActive && currentStepId === 'set-first-beacon' && !was && beaconSet) {
+    const ready = !hasNoBeaconYet && onboarding.allDone; // beacon set AND username+friend+notifications
+    const was = prevReadyRef.current;
+    prevReadyRef.current = ready;
+    // Only auto-complete from the final wrap-up step, so finishing the LAST setup item on the
+    // notifications step (or lighting a beacon on the step-1 demo) can't end the tour before the
+    // user reaches "Set your first beacon".
+    if (isActive && currentStepId === 'set-first-beacon' && !was && ready) {
       success();
       endTour(true);
     }
-  }, [hasNoBeaconYet, isActive, currentStepId, endTour]);
+  }, [hasNoBeaconYet, onboarding.allDone, isActive, currentStepId, endTour]);
+
+  // If the user LIGHTS the beacon during tour step 1, opt into the chat mini-step (a branch) so we
+  // explain the chat right there. Marks beacon_chat seen so the post-tour explainer won't repeat it.
+  // Edge-gated on a real false→true light: starting the tour with an already-lit beacon (e.g. the
+  // help-button replay) must NOT jump straight to the branch, and stepping Back into step 1 must not
+  // re-bounce. Entered without pushing history so the branch shows no Back button.
+  const prevLitForBranchRef = useRef(isLit);
+  useEffect(() => {
+    const wasLit = prevLitForBranchRef.current;
+    prevLitForBranchRef.current = isLit;
+    if (isActive && currentStepId === 'light-beacon-demo' && isLit && !wasLit && myActiveBeacon) {
+      setSeen('beacon_chat');
+      goToTarget('beacon-chat', { pushHistory: false });
+    }
+  }, [isActive, currentStepId, isLit, myActiveBeacon, goToTarget]);
+
+  // Keep the options sheet OPEN whenever the tour is on a sheet step — including when the user steps
+  // BACK into one from a later screen. (The per-step onEnter's openSheet closure can be stale after a
+  // Stack re-mount, so drive sheet-open from the CURRENT step on the live home instance.)
+  useEffect(() => {
+    const SHEET_TARGETS = ['sheet-day', 'sheet-time', 'sheet-groups', 'sheet-message'];
+    if (isActive && currentStepTarget && SHEET_TARGETS.includes(currentStepTarget)) {
+      setOptionsOpen(true);
+    }
+  }, [isActive, currentStepTarget]);
+
+  // One-time beacon-chat explainer: the first time the user has a LIT beacon while username + friend
+  // are set (and no tour is mid-flow — e.g. right after the final tour step lights it, or any later
+  // light), spotlight the "Open beacon chat" button and explain it. Highlight only, never opens it.
+  const usernameDone = !!onboarding.steps.find((s) => s.key === 'username')?.done;
+  const friendDone = !!onboarding.steps.find((s) => s.key === 'friend')?.done;
+  const chatExplainerShownRef = useRef(false);
+  useEffect(() => {
+    if (!isLit || !myActiveBeacon || !usernameDone || !friendDone || isActive || chatExplainerShownRef.current) return;
+    chatExplainerShownRef.current = true;
+    getSeen('beacon_chat').then((seen) => {
+      if (seen) return;
+      startTour(
+        [
+          {
+            target: 'beacon-chat',
+            title: 'Your beacon chat',
+            body: "Friends who can see your beacon can RSVP and chat here — tap it any time to open the conversation.",
+            cta: 'Got it',
+          },
+        ],
+        { onFinish: () => setSeen('beacon_chat'), onClose: () => setSeen('beacon_chat') }
+      );
+    });
+  }, [isLit, myActiveBeacon, usernameDone, friendDone, isActive]);
 
   // Decide ONCE whether to auto-pop the tour for a new user (the resume banner takes over after).
   // Skipped when arriving via a notification deep link so we don't cover the opened beacon.
@@ -938,7 +1063,13 @@ export default function HomeScreen() {
   return (
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
-        <View style={styles.page}>
+        <View ref={pageRef} collapsable={false} style={styles.page}>
+          {/* SCENE — backmost layer (only the mountains skin renders it): dusk sky + ridgelines +
+              the distant beacon chain. Behind everything, pointerEvents none. */}
+          <BeaconScene skin={skin} active={!!isLit} />
+          {/* SMOKE — drifts up BEHIND the friend tiles (shown through the gaps; the tile list stays
+              in front and untouched). Rises from the measured structure anchor. */}
+          <BeaconSmoke skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} />
           <TutorialResumeBanner
             visible={onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart}
             doneCount={onboarding.doneCount}
@@ -950,21 +1081,11 @@ export default function HomeScreen() {
             <FriendsBeaconsList onSelect={setSelectedBeacon} showExampleWhenEmpty />
           </View>
 
-          <View style={[styles.controls, { backgroundColor: colors.bg }]}>
+          <View style={styles.controls}>
             <View style={styles.myBeaconColumn}>
-              <View ref={logsRef} collapsable={false} style={{ position: 'relative' }}>
+              <View ref={logsRef} collapsable={false} style={{ position: 'relative' }} onLayout={measureBeaconAnchor}>
                 <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
-                  {isLit ? (
-                    <Image
-                      source={require('../assets/images/beacon-fire.gif')}
-                      style={styles.beaconGif}
-                      contentFit="contain"
-                    />
-                  ) : (
-                    <View style={styles.beaconIcon}>
-                      <UnlitLogs size={180} />
-                    </View>
-                  )}
+                  <BeaconStructure skin={skin} size={180} />
                 </TouchableOpacity>
 
                 {!isActive && (
@@ -972,24 +1093,36 @@ export default function HomeScreen() {
                     <Ionicons name="help-circle" size={28} color={colors.primary} />
                   </Pressable>
                 )}
+
+                {/* Small discreet fire-sound mute (sound is ON by default for the centerpiece). */}
+                <Pressable
+                  onPress={() => { tap(); setFireSoundEnabled(!fireSoundOn); }}
+                  hitSlop={12}
+                  style={styles.muteBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={fireSoundOn ? 'Mute fire sounds' : 'Unmute fire sounds'}
+                >
+                  <Ionicons name={fireSoundOn ? 'volume-high' : 'volume-mute'} size={22} color={colors.subtle} />
+                </Pressable>
               </View>
 
-              {isLit && myActiveBeacon ? (
-                <TouchableOpacity
-                  onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
-                  activeOpacity={0.8}
-                  style={[styles.myChatBtn, { backgroundColor: colors.primary }]}
-                >
-                  <Text style={[styles.myChatBtnTxt, { color: '#fff' }]}>Open beacon chat</Text>
-                </TouchableOpacity>
-              ) : (
-                <Text style={[styles.logHint, { color: colors.subtle }]}>Tap the logs to light your Beacon</Text>
-              )}
+              {/* Fixed-height slot so the logs sit at the SAME height whether the action below is the
+                  (taller) chat button [lit] or the caption [unlit] — both center within it. */}
+              <View style={styles.beaconActionSlot}>
+                {isLit && myActiveBeacon ? (
+                  <TouchableOpacity
+                    ref={chatTarget}
+                    onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
+                    activeOpacity={0.8}
+                    style={[styles.myChatBtn, { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={[styles.myChatBtnTxt, { color: '#fff' }]}>Open beacon chat</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={[styles.logHint, { color: colors.subtle }]}>Tap the logs to light your Beacon</Text>
+                )}
+              </View>
             </View>
-
-            {isLit && myActiveBeacon ? (
-              <Text style={[styles.statusActive, { color: colors.success }]}>Your beacon is ACTIVE for {scheduledLabel}</Text>
-            ) : null}
 
             <Pressable
               ref={optionsCtaRef}
@@ -1008,9 +1141,11 @@ export default function HomeScreen() {
               </View>
               <Ionicons name="chevron-forward" size={22} color={colors.primary} />
             </Pressable>
-
-            <Text style={[styles.status, { color: colors.subtle }]}>Your beacon is set for {scheduledLabel}</Text>
           </View>
+
+          {/* FIRE — last child, so it sits ON TOP of the structure (pointerEvents none, so taps still
+              reach the brazier and the chat button below). */}
+          <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} onIgnited={fireSound.playIgnite} />
         </View>
 
         {/* Options sheet — an in-tree overlay (not a RN <Modal>) so the coach-mark tour can point
@@ -1046,8 +1181,22 @@ export default function HomeScreen() {
                   contentContainerStyle={{ paddingBottom: 12 }}
                   showsVerticalScrollIndicator={false}
                 >
+                  {/* Beacon style (skin) — switches the home beacon live */}
+                  <Text style={[styles.modalLabel, { color: colors.text }]}>Beacon style</Text>
+                  <View style={styles.daysWrap}>
+                    {BEACON_SKINS.map((bs) => (
+                      <Pressable
+                        key={bs.id}
+                        onPress={() => { selection(); setBeaconSkinId(bs.id); }}
+                        style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, bs.id === skinId && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
+                      >
+                        <Text style={[styles.dayChipText, { color: colors.text }, bs.id === skinId && styles.dayChipTextActive]}>{bs.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
                   {/* Day */}
-                  <Text style={[styles.modalLabel, { color: colors.text }]}>Day</Text>
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Day</Text>
                   <View ref={dayRef} collapsable={false} style={styles.daysWrap}>
                     {next7Days.map((d) => (
                       <Pressable
@@ -1304,26 +1453,41 @@ const styles = StyleSheet.create({
   page: {
     flex: 1,
     gap: 8,
-    paddingTop: 4,
+    // MUST stay 0 (and paddingHorizontal 0, no border): the fire/smoke <Svg> layers are absolute
+    // top:0/left:0 children of this view and the logs anchor is measured relative to it, so any top
+    // or left padding here would offset the flame off the logs. The old 4px top pad moved to
+    // beaconsWrap so visible content doesn't shift.
+    paddingTop: 0,
     paddingHorizontal: 0,
   },
   beaconsWrap: {
     flex: 1,
+    paddingTop: 4, // was styles.page.paddingTop; kept here so tiles don't shift up
     paddingHorizontal: 0,
   },
 
   controls: {
-    backgroundColor: '#fff',
+    // Transparent (not colors.bg) so the smoke layer behind shows through the controls region and
+    // connects to the fire. colors.bg already paints behind via SafeAreaView, so this is no color
+    // change in light OR dark — but it MUST be transparent here, not '#fff'.
+    backgroundColor: 'transparent',
     alignItems: 'center',
     paddingHorizontal: SCREEN_PAD,
     paddingTop: 12,
-    paddingBottom: 24,
+    paddingBottom: 16,
     marginBottom: 72, // lift above BottomBar
   },
   helpBtn: {
     position: 'absolute',
     top: -2,
     right: -36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  muteBtn: {
+    position: 'absolute',
+    top: 0,
+    left: -36,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1380,18 +1544,22 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontWeight: '600',
     textAlign: 'center',
-    // 0 here + 8 from beaconIcon paddingBottom = 8 total above the text.
-    // marginBottom: 8 matches so the hint sits centered between the pyre and
-    // the Beacon options card.
-    marginTop: 0,
-    marginBottom: 8,
-    minHeight: 34,
+  },
+  // Fixed slot below the logs; the button or caption centers in it so the logs don't shift between
+  // lit and unlit. Height = the chat button's footprint so the unlit logs rise to the lit height.
+  beaconActionSlot: {
+    // Pull up into the logs box's ~14px empty bottom (below the log bases) and grow to match, so the
+    // centered button sits at the true midpoint between the VISIBLE logs and the options card. Net
+    // height (marginTop + minHeight = 72) is unchanged, so the logs and options don't move.
+    marginTop: -14,
+    minHeight: 86,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   myChatBtn: {
     paddingHorizontal: 28,
     paddingVertical: 14,
     borderRadius: 14,
-    marginTop: 12,
     minHeight: 52,
     justifyContent: 'center',
     alignItems: 'center',

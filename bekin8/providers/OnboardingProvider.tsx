@@ -113,7 +113,7 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
 
   const hasUsername = !!profile?.username?.trim();
   const steps: OnboardingStep[] = [
-    { key: "username", label: "Pick a username", done: hasUsername, target: "friends-profile" },
+    { key: "username", label: "Pick a username", done: hasUsername, target: "friends-username" },
     { key: "friend", label: "Add a friend", done: hasFriend, target: "add-brian" },
     { key: "notifications", label: "Turn on notifications", done: notifGranted, target: "settings-notifications" },
   ];

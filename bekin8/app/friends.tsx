@@ -127,7 +127,6 @@ export default function FriendsScreen() {
 
   // Coach-mark tour targets on this screen.
   const { isActive: tourActive } = useTour();
-  const profileTarget = useTourTarget("friends-profile");
   const groupsTarget = useTourTarget("friends-groups");
   const brianTarget = useTourTarget("add-brian");
 
@@ -1112,8 +1111,8 @@ export default function FriendsScreen() {
             />
             <Text style={[styles.header, { color: tc.text }]}>Friends</Text>
 
-            {/* Username + Invite */}
-            <View ref={profileTarget} collapsable={false}>
+            {/* Username + Invite — its own tour targets (friends-username / friends-invite) are
+                registered inside the component. */}
             <FriendsProfileAndInvite
               currentUsername={currentUsername}
               usernameInput={usernameInput}
@@ -1131,7 +1130,6 @@ export default function FriendsScreen() {
               onShareInvite={handleShareInvite}
               message={message}
             />
-            </View>
 
             {/* My Friend Groups */}
             <View ref={groupsTarget} collapsable={false} style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>

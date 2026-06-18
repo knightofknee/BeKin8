@@ -16,7 +16,7 @@ const DEV_ALWAYS_SHOW_TUTORIALS = true;
 
 // "beacon"/"post" = the tutorial was COMPLETED (reached the end). "beacon_intro" = the beacon
 // tutorial has auto-popped once, so later launches rely on the resume banner instead of re-popping.
-export type TutorialFeature = "beacon" | "post" | "notifications" | "beacon_intro";
+export type TutorialFeature = "beacon" | "post" | "notifications" | "beacon_intro" | "beacon_chat";
 
 const uidOrAnon = () => auth.currentUser?.uid ?? "anon";
 const keyFor = (feature: TutorialFeature, uid: string) =>
