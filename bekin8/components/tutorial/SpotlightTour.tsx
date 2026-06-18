@@ -63,6 +63,17 @@ export type TourStep = {
    */
   growDown?: boolean;
   /**
+   * Extra spotlight padding ABOVE the target rect (px). Use when something drawn outside the target
+   * should still be inside the highlight — e.g. the beacon flame towers well above the logs/structure
+   * it's measured on, so the hole + ring need to reach up to enclose it.
+   */
+  holePadTop?: number;
+  /**
+   * Adjust the spotlight's BOTTOM edge (px; negative pulls it UP). Use to keep the hole/ring off an
+   * element that sits just below the target — e.g. the "Open beacon chat" button under the logs.
+   */
+  holePadBottom?: number;
+  /**
    * An optional side-step reached only via goToTarget (never the normal Next flow) — NOT counted in
    * the "Step X of N" total, so jumping into it doesn't make the numbers leap.
    */
@@ -130,7 +141,7 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     setUseLowLocked(null);
     // Fade + rise the callout into its (new) slot.
     calloutAnim.setValue(0);
-    Animated.timing(calloutAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+    Animated.timing(calloutAnim, { toValue: 1, duration: 160, useNativeDriver: true }).start();
     // Blur whatever input was focused (e.g. the time field) and collapse the keyboard, so the new
     // step's callout isn't pinned low by a stale keyboard height and no stray cursor lingers.
     Keyboard.dismiss();
@@ -197,8 +208,8 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   // Hole geometry — symmetric padding clamped to the viewport on every axis, so the ring always
   // contains the FULL measured target (never crops the top to satisfy a bottom-overflow clamp).
   // holeBottom/holeRight are floored to hy/hx so an off-screen target can't yield a negative size.
-  const hy = rect ? Math.max(0, rect.y - PAD) : 0;
-  const holeBottom = rect ? Math.max(hy, Math.min(H, rect.y + rect.height + PAD)) : 0;
+  const hy = rect ? Math.max(0, rect.y - PAD - (step.holePadTop ?? 0)) : 0;
+  const holeBottom = rect ? Math.max(hy, Math.min(H, rect.y + rect.height + PAD + (step.holePadBottom ?? 0))) : 0;
   const hh = holeBottom - hy;
   const hx = rect ? Math.max(0, rect.x - PAD) : 0;
   const holeRight = rect ? Math.max(hx, Math.min(W, rect.x + rect.width + PAD)) : 0;
@@ -244,9 +255,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     calloutMaxH = Math.max(120, H - lowBottom - TOP_LIMIT - CARD_PAD);
   } else {
     calloutPos = { top: TOP_LIMIT, left: 18, right: 18 };
-    // Grow down, but never past the target (if any) or the keyboard.
-    const floor = rect ? Math.min(hy - 12, bottomLimit) : bottomLimit;
-    calloutMaxH = Math.max(120, floor - TOP_LIMIT - CARD_PAD);
+    // Keep the callout FULLY visible (sized to its content): don't shrink it to clear the spotlight.
+    // It sits above the target and will only overlap a tall target (e.g. the flame) — acceptable.
+    calloutMaxH = Math.max(120, bottomLimit - TOP_LIMIT - CARD_PAD);
   }
 
   // Block the whole screen unless this is an interactive step that already has a real hole to
@@ -310,8 +321,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
           { backgroundColor: colors.tourSurface, borderColor: colors.tourBorder },
           calloutPos,
           {
-            opacity: calloutAnim,
-            transform: [{ translateY: calloutAnim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+            // Subtle settle, not a blink: dip to 0.5 and rise 8px, never fully disappear.
+            opacity: calloutAnim.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }),
+            transform: [{ translateY: calloutAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
           },
         ]}
         accessibilityViewIsModal

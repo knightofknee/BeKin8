@@ -160,6 +160,7 @@ export default function HomeScreen() {
   const timeRef = useTourTarget('sheet-time');
   const groupsRef = useTourTarget('sheet-groups');
   const messageRef = useTourTarget('sheet-message');
+  const beaconStyleRef = useTourTarget('beacon-style');
   const chatTarget = useTourTarget('beacon-chat');
   // The home page View — the coordinate basis for the fire/smoke layers. Both <Svg> layers are
   // position:absolute top:0 left:0 inside styles.page, so we measure the logs RELATIVE TO this view
@@ -213,17 +214,32 @@ export default function HomeScreen() {
   // Fire SFX (device-local "Fire sounds" pref, default off). ignite plays on the lighting edge via
   // BeaconFire.onIgnited; the crackle loop tracks the lit state. Needs a native build (expo-audio).
   const [fireSoundOn, setFireSoundOn] = useState(true); // default ON; pref read confirms below
+  const [soundLoaded, setSoundLoaded] = useState(false); // gate so a muted user gets NO crackle blip on cold start
   useEffect(() => {
     let mounted = true;
-    getFireSoundEnabled().then((v) => mounted && setFireSoundOn(v));
+    getFireSoundEnabled().then((v) => {
+      if (!mounted) return;
+      setFireSoundOn(v);
+      setSoundLoaded(true);
+    });
     const off = onFireSoundChange((v) => setFireSoundOn(v));
     return () => { mounted = false; off(); };
   }, []);
-  const fireSound = useFireSound(fireSoundOn);
+  const fireSound = useFireSound(fireSoundOn, skin);
+  // Drive crackle loop + ignition (sound + haptic) from the lit state here, so it works for ALL skins
+  // (incl. the lantern tower, which renders no flame layer). Ignite only on a real false→true light.
+  const prevLitForSoundRef = useRef(isLit);
   useEffect(() => {
+    const was = prevLitForSoundRef.current;
+    prevLitForSoundRef.current = isLit;
+    if (!soundLoaded) return; // wait for the pref so a muted user never hears a startup blip
     fireSound.setLit(!!isLit);
+    if (isLit && was === false) {
+      fireSound.playIgnite();
+      success();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLit, fireSoundOn]);
+  }, [isLit, fireSoundOn, soundLoaded]);
   // Whether the user has ≥1 friend — read when the tour is built so it can drop the "Add Brian"
   // step (that card only renders at zero friends). `friendsLoaded` gates auto-start so the tour is
   // NEVER built before the count is known (the old race kept add-brian in for users who have
@@ -691,7 +707,9 @@ export default function HomeScreen() {
     prevLitForBranchRef.current = isLit;
     if (isActive && currentStepId === 'light-beacon-demo' && isLit && !wasLit && myActiveBeacon) {
       setSeen('beacon_chat');
-      goToTarget('beacon-chat', { pushHistory: false });
+      // Push history so Back from the chat mini-step returns to the fire/logs step (the edge-gate
+      // above stops it from immediately re-branching when Back lands back on step 1).
+      goToTarget('beacon-chat');
     }
   }, [isActive, currentStepId, isLit, myActiveBeacon, goToTarget]);
 
@@ -699,7 +717,7 @@ export default function HomeScreen() {
   // BACK into one from a later screen. (The per-step onEnter's openSheet closure can be stale after a
   // Stack re-mount, so drive sheet-open from the CURRENT step on the live home instance.)
   useEffect(() => {
-    const SHEET_TARGETS = ['sheet-day', 'sheet-time', 'sheet-groups', 'sheet-message'];
+    const SHEET_TARGETS = ['beacon-style', 'sheet-day', 'sheet-time', 'sheet-groups', 'sheet-message'];
     if (isActive && currentStepTarget && SHEET_TARGETS.includes(currentStepTarget)) {
       setOptionsOpen(true);
     }
@@ -1085,7 +1103,7 @@ export default function HomeScreen() {
             <View style={styles.myBeaconColumn}>
               <View ref={logsRef} collapsable={false} style={{ position: 'relative' }} onLayout={measureBeaconAnchor}>
                 <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
-                  <BeaconStructure skin={skin} size={180} />
+                  <BeaconStructure skin={skin} size={180} lit={!!isLit} />
                 </TouchableOpacity>
 
                 {!isActive && (
@@ -1143,9 +1161,11 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {/* FIRE — last child, so it sits ON TOP of the structure (pointerEvents none, so taps still
-              reach the brazier and the chat button below). */}
-          <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} onIgnited={fireSound.playIgnite} />
+          {/* FIRE — last child, on TOP of the structure (pointerEvents none, taps reach the structure
+              + chat button below). Skipped for the lantern tower, which lights its own lanterns. */}
+          {skin.structure !== 'tower' && (
+            <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} />
+          )}
         </View>
 
         {/* Options sheet — an in-tree overlay (not a RN <Modal>) so the coach-mark tour can point
@@ -1153,6 +1173,13 @@ export default function HomeScreen() {
             BottomBar below) so it doesn't paint over the sheet. */}
         {optionsRendered && (
           <View style={[StyleSheet.absoluteFill, { justifyContent: 'flex-end' }]}>
+            {/* Tap outside the sheet to dismiss it (sits behind the dim + the card). */}
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => { tap(); setOptionsOpen(false); }}
+              accessibilityRole="button"
+              accessibilityLabel="Close beacon options"
+            />
             <Animated.View
               style={[StyleSheet.absoluteFill, { top: -insets.top, backgroundColor: colors.backdrop, opacity: optionsAnim }]}
               pointerEvents="none"
@@ -1182,17 +1209,19 @@ export default function HomeScreen() {
                   showsVerticalScrollIndicator={false}
                 >
                   {/* Beacon style (skin) — switches the home beacon live */}
-                  <Text style={[styles.modalLabel, { color: colors.text }]}>Beacon style</Text>
-                  <View style={styles.daysWrap}>
-                    {BEACON_SKINS.map((bs) => (
-                      <Pressable
-                        key={bs.id}
-                        onPress={() => { selection(); setBeaconSkinId(bs.id); }}
-                        style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, bs.id === skinId && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
-                      >
-                        <Text style={[styles.dayChipText, { color: colors.text }, bs.id === skinId && styles.dayChipTextActive]}>{bs.label}</Text>
-                      </Pressable>
-                    ))}
+                  <View ref={beaconStyleRef} collapsable={false}>
+                    <Text style={[styles.modalLabel, { color: colors.text }]}>Beacon style</Text>
+                    <View style={styles.daysWrap}>
+                      {BEACON_SKINS.map((bs) => (
+                        <Pressable
+                          key={bs.id}
+                          onPress={() => { selection(); setBeaconSkinId(bs.id); }}
+                          style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, bs.id === skinId && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
+                        >
+                          <Text style={[styles.dayChipText, { color: colors.text }, bs.id === skinId && styles.dayChipTextActive]}>{bs.label}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
                   </View>
 
                   {/* Day */}
@@ -1477,17 +1506,18 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     marginBottom: 72, // lift above BottomBar
   },
+  // Sound + help sit at the BOTTOM corners (by the logs), clear of the tall flame above.
   helpBtn: {
     position: 'absolute',
-    top: -2,
-    right: -36,
+    bottom: 8,
+    right: -34,
     alignItems: 'center',
     justifyContent: 'center',
   },
   muteBtn: {
     position: 'absolute',
-    top: 0,
-    left: -36,
+    bottom: 8,
+    left: -34,
     alignItems: 'center',
     justifyContent: 'center',
   },

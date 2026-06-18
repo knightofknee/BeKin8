@@ -3,7 +3,7 @@
 // height, behind every tile (FIRST child of the home page, pointerEvents View wrapper, tiles in
 // front). Skin-driven tint/opacity/plume-count/rise/drift. Each plume rises on a clock sawtooth and
 // drifts via loopNoise so the column never shows a seam. Only mounts while lit (+ a fade tail).
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import Svg, { Defs, RadialGradient, Stop, Circle, G } from 'react-native-svg';
 import Animated, {
@@ -82,13 +82,17 @@ export default function BeaconSmoke({ skin, active, anchorX, anchorY, measured }
   const firstRun = useRef(true);
   const [visible, setVisible] = useState(false);
 
-  const frame = useFrameCallback((info) => {
+  const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
+    'worklet';
     clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
-  }, false);
-  useEffect(() => {
-    frame.setActive(active && !reduce);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, reduce]);
+  }, []);
+  const frame = useFrameCallback(tick, false);
+  useEffect(() => {
+    // Don't tick for no-smoke skins (e.g. the lantern tower, plumes:0).
+    frame.setActive(active && !reduce && skin.smoke.plumes > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, reduce, skin.smoke.plumes]);
 
   // Mount only while lit (+ a fade tail) so no smoke shows when unlit.
   useEffect(() => {
@@ -129,8 +133,8 @@ export default function BeaconSmoke({ skin, active, anchorX, anchorY, measured }
       <Svg pointerEvents="none" style={styles.fill} width={W} height={H}>
         <Defs>
           <RadialGradient id="bsSmoke" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor={skin.smoke.tintHigh} stopOpacity={0.6} />
-            <Stop offset="60%" stopColor={skin.smoke.tintLow} stopOpacity={0.2} />
+            <Stop offset="0%" stopColor={skin.smoke.tintHigh} stopOpacity={0.9} />
+            <Stop offset="55%" stopColor={skin.smoke.tintLow} stopOpacity={0.32} />
             <Stop offset="100%" stopColor={skin.smoke.tintLow} stopOpacity={0} />
           </RadialGradient>
         </Defs>

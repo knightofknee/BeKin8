@@ -4,13 +4,15 @@
 // BeaconFire. Authored in a 0..100 box so it shares the old 180×180 footprint. Unlit appearance
 // (dark iron + bare wood + faint banked coals); the flame is the fire layer's job.
 import React from 'react';
-import Svg, { Path, Line, Circle, Ellipse, G } from 'react-native-svg';
+import Svg, { Path, Rect, Line, Circle, Ellipse, G } from 'react-native-svg';
 
 const IRON = '#2A2622';
 const IRON_RIM = '#6E7480';
 const RIVET = '#565B63';
 const WOOD = '#8B5A2B';
 const WOOD_DK = '#5C3D1F';
+const GRAIN = '#3D2614';
+const RING = '#D4A574';
 const COAL = '#241A0E';
 
 type Props = { size?: number };
@@ -27,12 +29,22 @@ export default function BeaconBrazier({ size = 180 }: Props) {
       {/* Banked coals in the bowl (dim when unlit) */}
       <Ellipse cx="50" cy="44" rx="24" ry="6.5" fill={COAL} />
 
-      {/* Stacked wood, poking above the rim */}
-      <G strokeLinecap="round">
-        <Line x1="40" y1="30" x2="34" y2="15" stroke={WOOD_DK} strokeWidth="4.5" />
-        <Line x1="50" y1="30" x2="50" y2="11" stroke={WOOD} strokeWidth="5" />
-        <Line x1="60" y1="30" x2="66" y2="16" stroke={WOOD_DK} strokeWidth="4.5" />
-        <Line x1="38" y1="26" x2="62" y2="22" stroke={WOOD} strokeWidth="4" />
+      {/* Real logs cradled in the bowl, poking above the rim (rounded trunks + cut-end grain) */}
+      <G transform="rotate(16 41 32)">
+        <Rect x="37" y="9" width="8.5" height="23" rx="4.2" fill={WOOD} />
+        <Line x1="40" y1="13" x2="40" y2="30" stroke={GRAIN} strokeWidth="0.6" />
+        <Line x1="42.5" y1="13" x2="42.5" y2="30" stroke={GRAIN} strokeWidth="0.6" />
+        <Circle cx="41.2" cy="10" r="4.2" fill={RING} stroke={WOOD_DK} strokeWidth="0.9" />
+      </G>
+      <Rect x="45.5" y="5" width="9" height="27" rx="4.5" fill={WOOD_DK} />
+      <Line x1="48.5" y1="9" x2="48.5" y2="30" stroke={GRAIN} strokeWidth="0.7" />
+      <Line x1="51.5" y1="9" x2="51.5" y2="30" stroke={GRAIN} strokeWidth="0.7" />
+      <Circle cx="50" cy="6.5" r="4.5" fill={RING} stroke={GRAIN} strokeWidth="0.9" />
+      <G transform="rotate(-16 59 32)">
+        <Rect x="54.5" y="9" width="8.5" height="23" rx="4.2" fill={WOOD} />
+        <Line x1="57.5" y1="13" x2="57.5" y2="30" stroke={GRAIN} strokeWidth="0.6" />
+        <Line x1="60" y1="13" x2="60" y2="30" stroke={GRAIN} strokeWidth="0.6" />
+        <Circle cx="58.8" cy="10" r="4.2" fill={RING} stroke={WOOD_DK} strokeWidth="0.9" />
       </G>
 
       {/* Iron fire-bowl: wide riveted rim, curved sides */}

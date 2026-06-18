@@ -60,14 +60,16 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       body: "A beacon tells friends you're free to hang out. Tap the logs to light it — tap again to put it out. (No one can see it until you set a username and add a friend.)",
       interactive: true,
       placement: "top", // keep the callout above the logs so it never covers the "tap the logs" caption below
+      holePadTop: 70, // reach UP over the logs + lower flame; the tip overlaps above the box (ok per user)
+      holePadBottom: -16, // lower edge contains the full structure (incl. brazier legs) but clears the chat button
       nextTarget: "beacon-options-cta", // Next skips the chat branch below (only a real light opts into it)
       onEnter: home,
     },
     {
       // Opt-in mini-step: home jumps here (goToTarget) only when the user actually LIGHTS the beacon
-      // during step 1 (a real false→true edge). Branch = not counted in "Step X of N" and entered
-      // WITHOUT pushing history, so it shows no Back. interactive = the chat button is the one thing
-      // tappable here, so the user can open the conversation if they want.
+      // during step 1 (a real false→true edge). Branch = not counted in "Step X of N". Home pushes
+      // history on the jump, so Back returns to the fire/logs step (the edge-gate stops it from
+      // re-branching). interactive = the chat button is tappable so the user can open the conversation.
       target: "beacon-chat",
       branch: true,
       interactive: true,
@@ -82,6 +84,13 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       body: "Before lighting it you can choose the day, time, who sees it, and a message. Tap Beacon options to take a look.",
       advanceOnTargetTap: true,
       onEnter: home,
+    },
+    {
+      target: "beacon-style",
+      title: "Make it yours",
+      body: "Pick your beacon's look — a campfire, a roaring bonfire, a signal across the mountains, and more. It's just a visual style; friends see your beacon the same either way.",
+      interactive: true,
+      onEnter: homeSheet,
     },
     { target: "sheet-day", title: "Pick a day", body: "Choose any day in the week ahead — give one a tap.", interactive: true, onEnter: homeSheet },
     {

@@ -3,9 +3,10 @@
 // structure (rendered as the LAST child of the home page). Skin-driven: all colors/sizes/amplitudes
 // come from the BeaconSkin. The idle flicker is driven by loopNoise off a single UI-thread clock, so
 // it's randomized yet seamlessly looping. Ignition = master `progress` spring + ember sparks + glow
-// ramp + success haptic, edge-gated to a real false→true light. No flash oval. Transforms/opacity
-// only (never the path `d`). Wrapped in a pointerEvents="none" View so it never eats page touches.
-import React, { useEffect, useRef } from 'react';
+// ramp, edge-gated to a real false→true light (the ignite SOUND + haptic are driven by home off the
+// lit edge, so they also cover the flameless tower). No flash oval. Transforms/opacity only (never
+// the path `d`). Wrapped in a pointerEvents="none" View so it never eats page touches.
+import React, { useCallback, useEffect, useRef } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import Svg, { Defs, RadialGradient, LinearGradient, Stop, Path, Circle, Ellipse, G } from 'react-native-svg';
 import Animated, {
@@ -21,7 +22,6 @@ import Animated, {
   useReducedMotion,
   type SharedValue,
 } from 'react-native-reanimated';
-import { success } from '../utils/haptics';
 import { loopNoise, loopNoiseSigned, makeSeed, type NoiseSeed } from '../lib/beaconNoise';
 import type { BeaconSkin } from '../lib/beaconSkins';
 
@@ -105,10 +105,9 @@ export type BeaconFireProps = {
   anchorX: number;
   anchorY: number;
   measured: boolean;
-  onIgnited?: () => void;
 };
 
-export default function BeaconFire({ skin, active, anchorX, anchorY, measured, onIgnited }: BeaconFireProps) {
+export default function BeaconFire({ skin, active, anchorX, anchorY, measured }: BeaconFireProps) {
   const { width: W, height: H } = useWindowDimensions();
   const reduce = useReducedMotion();
 
@@ -122,14 +121,19 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured, o
   const firstRun = useRef(true);
   const prevActiveRef = useRef(active);
 
-  // One UI-thread clock (seconds). Only ticks while lit/igniting — saves battery when unlit.
-  const frame = useFrameCallback((info) => {
+  // One UI-thread clock (seconds). Stable callback (avoids re-registering the frame loop on every
+  // re-render). Only ticks while lit AND motion is allowed — freezes the noise (glow shimmer, embers)
+  // under reduced-motion and costs nothing when unlit.
+  const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
+    'worklet';
     clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
-  }, false);
-  useEffect(() => {
-    frame.setActive(active);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, []);
+  const frame = useFrameCallback(tick, false);
+  useEffect(() => {
+    frame.setActive(active && !reduce);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, reduce]);
 
   // Idle flicker amplitudes/speed pulled from the skin (captured as primitives for the worklets).
   const aSy = skin.flicker.sy, aSx = skin.flicker.sx, aRot = skin.flicker.rot, fPer = skin.flicker.period;
@@ -165,7 +169,6 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured, o
       progress.value = first ? (active ? 1 : 0) : withTiming(active ? 1 : 0, { duration: 200 });
       flickerAmp.value = 0;
       glowOp.value = active ? 0.5 : 0;
-      if (justLit) { success(); onIgnited?.(); }
       return;
     }
 
@@ -175,7 +178,6 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured, o
         progress.value = 1;
         flickerAmp.value = 1;
       } else if (justLit) {
-        success();
         progress.value = withSpring(1, { damping: skin.ignition.damping, stiffness: skin.ignition.stiffness, mass: 0.8 });
         flickerAmp.value = withDelay(150, withTiming(1, { duration: 350 }));
         fireSparks();
@@ -183,7 +185,6 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured, o
           shock.value = 0;
           shock.value = withTiming(1, { duration: 520, easing: Easing.out(Easing.quad) });
         }
-        onIgnited?.();
       } else {
         progress.value = withTiming(1, { duration: 200 });
         flickerAmp.value = withTiming(1, { duration: 350 });
@@ -234,7 +235,7 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured, o
           {Array.from({ length: Math.min(skin.ember.count, MAX_EMBERS) }).map((_, i) => (
             <EmberDot key={`e${i}`} clock={clock} progress={progress} i={i} color={skin.ember.color} />
           ))}
-          {sparks.map((sp, i) => (
+          {sparks.slice(0, Math.min(skin.spark.count, MAX_SPARKS)).map((sp, i) => (
             <SparkDot key={`s${i}`} sv={sp} color={skin.spark.color} />
           ))}
         </G>
