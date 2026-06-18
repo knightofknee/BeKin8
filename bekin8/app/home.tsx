@@ -1,5 +1,5 @@
 // app/home.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,8 @@ import {
   Keyboard,
   InputAccessoryView,
   ScrollView,
+  Animated,
+  BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -40,7 +42,7 @@ import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
 import BottomBar from '@/components/BottomBar';
 import { SCREEN_PAD } from '@/components/ui/layout';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { syncPushTokenIfGranted, ensurePushPermissionsAndToken } from '../lib/push';
 import * as Notifications from 'expo-notifications';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
@@ -48,9 +50,11 @@ import { buildTimeHHmm, parseTimeHHmm } from '../lib/beaconTime';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
-import { tap, press, selection } from '../utils/haptics';
-import TutorialModal from '../components/tutorial/TutorialModal';
-import { beaconSteps } from '../components/tutorial/content';
+import { tap, press, selection, success } from '../utils/haptics';
+import TutorialResumeBanner from '../components/tutorial/TutorialResumeBanner';
+import { buildBeaconTour } from '../components/tutorial/tourSteps';
+import { useTour, useTourTarget } from '../providers/TourProvider';
+import { useOnboarding } from '../providers/OnboardingProvider';
 import { getSeen, setSeen } from '../lib/tutorialFlags';
 import { ensureNotifyPermission } from '../lib/notifyPermission';
 
@@ -88,7 +92,6 @@ const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 // announce that they've joined. Only used for the guided first beacon, never the default.
 const FIRST_BEACON_INTRO = 'I just joined BeKin — hi! 👋';
 const MSG_ACCESSORY_ID = 'beacon-msg-accessory';
-const IOS_ACCESSORY_HEIGHT = 48;
 const BEACON_MESSAGE_MAX = 1000;
 
 // --- Friend groups ---
@@ -100,10 +103,11 @@ type FriendGroup = {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string }>();
-  const { profile } = useAuth();
+  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string; tutorial?: string; tourTarget?: string }>();
+  const { profile, user } = useAuth();
   const { colors } = useTheme();
   const online = useOnline();
+  const insets = useSafeAreaInsets();
 
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
@@ -114,6 +118,9 @@ export default function HomeScreen() {
 
   // Modal state (options + details)
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [optionsRendered, setOptionsRendered] = useState(false);
+  const optionsAnim = useRef(new Animated.Value(0)).current;
+  const [kbVisible, setKbVisible] = useState(false);
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
   const [timeHourInput, setTimeHourInput] = useState<string>("");   // 1..12 as typed
   const [timeMinuteInput, setTimeMinuteInput] = useState<string>(""); // 00..59 as typed
@@ -136,7 +143,48 @@ export default function HomeScreen() {
   const [message, setMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
-  const [showBeaconTutorial, setShowBeaconTutorial] = useState(false);
+  // Coach-mark tour: target refs to spotlight + the tour controller.
+  const { startTour, isActive, currentStepId, endTour } = useTour();
+  // Base-setup progress (username + friend + notifications) drives the resume banner.
+  const onboarding = useOnboarding();
+  const logsRef = useTourTarget('beacon-logs');
+  const optionsCtaRef = useTourTarget('beacon-options-cta');
+  const dayRef = useTourTarget('sheet-day');
+  const timeRef = useTourTarget('sheet-time');
+  const groupsRef = useTourTarget('sheet-groups');
+  const messageRef = useTourTarget('sheet-message');
+  // Whether the user has ≥1 friend — read when the tour is built so it can drop the "Add Brian"
+  // step (that card only renders at zero friends). `friendsLoaded` gates auto-start so the tour is
+  // NEVER built before the count is known (the old race kept add-brian in for users who have
+  // friends, then auto-skipped its missing target).
+  const hasFriendsRef = useRef(false);
+  const [friendsLoaded, setFriendsLoaded] = useState(false);
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) return;
+    // Use the SAME source the Friends screen's "Add Brian" card gates on (accepted FriendEdges,
+    // symmetric: both parties are in `uids`), so the step is dropped exactly when the card won't
+    // render. The error branch still flips friendsLoaded so an offline cold start can't wedge the
+    // tour from ever auto-starting (unknown count → treat as none, which just keeps add-brian).
+    const qEdges = query(
+      collection(db, 'FriendEdges'),
+      where('uids', 'array-contains', uid),
+      where('state', '==', 'accepted')
+    );
+    const unsub = onSnapshot(
+      qEdges,
+      (snap) => {
+        hasFriendsRef.current = snap.size > 0;
+        setFriendsLoaded(true);
+      },
+      (e) => {
+        if (__DEV__) console.warn('friends-count listener error', e);
+        hasFriendsRef.current = false;
+        setFriendsLoaded(true);
+      }
+    );
+    return () => unsub();
+  }, [user?.uid]);
 
   // First-time notification onboarding prompted after a user creates a beacon
   // while OS-level notification permission is not yet granted. Explains
@@ -470,8 +518,9 @@ export default function HomeScreen() {
     setOptionsOpen(true);
   };
 
-  // Guided first beacon (from the onboarding tutorial): pre-fill an intro message, default to
-  // today, and skip the time/group steps. Per-run only — DEFAULT_BEACON_MESSAGE is untouched.
+  // Guided first beacon (final tour step): pre-fill an intro message + default to today and OPEN
+  // the options sheet — editing options and hitting Save is how you set a beacon, and doing so
+  // completes the tour (see the beacon-set effect below). Per-run only; defaults are untouched.
   const startFirstBeacon = () => {
     setMessage(FIRST_BEACON_INTRO);
     setPlannedMessage(FIRST_BEACON_INTRO);
@@ -486,19 +535,13 @@ export default function HomeScreen() {
   // Whether the user has no beacon yet (drives the first-beacon prompt + label).
   const hasNoBeaconYet = !isLit && !myActiveBeacon && !nextPlannedDate;
 
-  const goToFriends = () => {
-    setShowBeaconTutorial(false);
-    setSeen('beacon');
-    router.push('/friends');
-  };
-
   // From the tutorial's notifications step: get OS permission, and on success opt the user into
   // beacon notifications from all friends (the master toggle), so future friends are covered.
   const enableBeaconNotifications = async () => {
     const granted = await ensureNotifyPermission(
       'Turn on notifications so you know the moment a friend lights a beacon.'
     );
-    if (!granted) return;
+    if (!granted) return; // ensureNotifyPermission emits the permission-change signal on grant
     const uid = auth.currentUser?.uid;
     if (!uid) return;
     try {
@@ -512,20 +555,129 @@ export default function HomeScreen() {
     }
   };
 
-  // Auto-show the beacon tutorial once for a new user. Skipped when arriving via a
-  // notification deep link (params.beaconId) so we don't cover the opened beacon.
+  // Start (or replay) the beacon coach-mark tour. `startAtTarget` lets the resume banner jump to
+  // the earliest incomplete setup step.
+  const pendingStartTargetRef = useRef<string | undefined>(undefined);
+  const startBeaconTour = (opts?: { startAtTarget?: string }) => {
+    // Never build the tour before the friend count is known — otherwise the add-brian step can be
+    // wrongly kept (the auto-start/resume/banner/help entry points all funnel through here). Defer
+    // via the pendingAutoStart machinery, which re-fires this once isLit + friendsLoaded are ready
+    // (remembering the requested jump target across the defer).
+    if (!friendsLoaded) {
+      pendingStartTargetRef.current = opts?.startAtTarget;
+      setPendingAutoStart(true);
+      return;
+    }
+    startTour(
+      buildBeaconTour({
+        openSheet: () => setOptionsOpen(true),
+        closeSheet: () => setOptionsOpen(false),
+        goFriends: () => router.navigate('/friends'),
+        goHome: () => router.navigate('/home'),
+        goSettings: () => router.navigate('/settings'),
+        // The notifications step lives on /settings; jump back Home before opening the beacon sheet.
+        openFirstBeacon: () => { router.navigate('/home'); startFirstBeacon(); },
+        hasFriends: hasFriendsRef.current,
+        online,
+        onEnableNotifications: enableBeaconNotifications,
+      }),
+      {
+        startAtTarget: opts?.startAtTarget,
+        onFinish: () => {
+          setSeen('beacon');
+        },
+      }
+    );
+  };
+
+  // On the final step the user edits options and SETS a beacon — Save schedules it (the listener
+  // then fills nextPlannedDate) or tapping the logs lights it. The moment they have a beacon, the
+  // tour completes (same as Done). Scoped to the final step + a false→true transition so a beacon
+  // set earlier (or on the step-1 demo) doesn't end onboarding before they reach the finish.
+  const prevBeaconSetRef = useRef(!hasNoBeaconYet);
+  useEffect(() => {
+    const was = prevBeaconSetRef.current;
+    const beaconSet = !hasNoBeaconYet;
+    prevBeaconSetRef.current = beaconSet;
+    if (isActive && currentStepId === 'set-first-beacon' && !was && beaconSet) {
+      success();
+      endTour(true);
+    }
+  }, [hasNoBeaconYet, isActive, currentStepId, endTour]);
+
+  // Decide ONCE whether to auto-pop the tour for a new user (the resume banner takes over after).
+  // Skipped when arriving via a notification deep link so we don't cover the opened beacon.
+  const [pendingAutoStart, setPendingAutoStart] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (params.beaconId) return;
-      const seen = await getSeen('beacon');
-      if (!cancelled && !seen) setShowBeaconTutorial(true);
+      const [done, introShown] = await Promise.all([getSeen('beacon'), getSeen('beacon_intro')]);
+      if (cancelled) return;
+      if (!done && !introShown) {
+        setPendingAutoStart(true);
+        setSeen('beacon_intro');
+      }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Start the auto-shown tour only once Home's content (hence the spotlight targets) is mounted —
+  // i.e. after isLit resolves — and the friend count is known. Also re-fires a deferred start
+  // (banner/resume) once those are ready, preserving the requested jump target.
+  useEffect(() => {
+    if (pendingAutoStart && isLit !== null && friendsLoaded) {
+      setPendingAutoStart(false);
+      const t = pendingStartTargetRef.current;
+      pendingStartTargetRef.current = undefined;
+      startBeaconTour(t ? { startAtTarget: t } : undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoStart, isLit, friendsLoaded]);
+
+  // Resume the tutorial when navigated here from the resume banner on another screen, optionally
+  // jumping to the first incomplete step (?tourTarget=...).
+  useEffect(() => {
+    if (params.tutorial === '1') {
+      const t = typeof params.tourTarget === 'string' ? params.tourTarget : undefined;
+      startBeaconTour(t ? { startAtTarget: t } : undefined);
+      router.setParams({ tutorial: undefined as any, tourTarget: undefined as any });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.tutorial]);
+
+  // Track keyboard visibility so the options sheet can drop its home-indicator padding while
+  // typing — keeps the Save/Cancel row tight to the keyboard's Done bar.
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
+  // Slide the options sheet in/out; keep it mounted through the exit animation.
+  useEffect(() => {
+    if (optionsOpen) {
+      setOptionsRendered(true);
+      Animated.timing(optionsAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+    } else {
+      Animated.timing(optionsAnim, { toValue: 0, duration: 180, useNativeDriver: true }).start(({ finished }) => {
+        if (finished) setOptionsRendered(false);
+      });
+    }
+  }, [optionsOpen, optionsAnim]);
+
+  // Android hardware back closes the sheet instead of leaving the screen.
+  useEffect(() => {
+    if (!optionsOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setOptionsOpen(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [optionsOpen]);
 
   // toggle (off/on)
   const toggleBeacon = () => {
@@ -787,13 +939,20 @@ export default function HomeScreen() {
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
         <View style={styles.page}>
+          <TutorialResumeBanner
+            visible={onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart}
+            doneCount={onboarding.doneCount}
+            total={onboarding.total}
+            nextLabel={onboarding.firstIncomplete?.label}
+            onPress={() => startBeaconTour({ startAtTarget: onboarding.firstIncomplete?.target })}
+          />
           <View style={styles.beaconsWrap}>
             <FriendsBeaconsList onSelect={setSelectedBeacon} showExampleWhenEmpty />
           </View>
 
           <View style={[styles.controls, { backgroundColor: colors.bg }]}>
             <View style={styles.myBeaconColumn}>
-              <View style={{ position: 'relative' }}>
+              <View ref={logsRef} collapsable={false} style={{ position: 'relative' }}>
                 <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
                   {isLit ? (
                     <Image
@@ -808,8 +967,8 @@ export default function HomeScreen() {
                   )}
                 </TouchableOpacity>
 
-                {!showBeaconTutorial && (
-                  <Pressable onPress={() => setShowBeaconTutorial(true)} hitSlop={12} style={styles.helpBtn}>
+                {!isActive && (
+                  <Pressable onPress={() => startBeaconTour()} hitSlop={12} style={styles.helpBtn}>
                     <Ionicons name="help-circle" size={28} color={colors.primary} />
                   </Pressable>
                 )}
@@ -833,6 +992,8 @@ export default function HomeScreen() {
             ) : null}
 
             <Pressable
+              ref={optionsCtaRef}
+              collapsable={false}
               onPress={openOptions}
               hitSlop={8}
               style={({ pressed }) => [styles.optionsCta, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.optionsCtaPressed]}
@@ -841,29 +1002,38 @@ export default function HomeScreen() {
               <View style={[styles.optionsCtaIconWrap, { backgroundColor: colors.primary }]}>
                 <Ionicons name="calendar" size={20} color="#fff" />
               </View>
-              <View style={{ flex: 1 }}>
-                {/* Invisible placeholder reserves the title's vertical space so the card height doesn't change */}
-                <Text style={[styles.optionsCtaTitle, { opacity: 0 }]}>Beacon options</Text>
+              <View style={styles.optionsCtaTextWrap}>
+                <Text style={[styles.optionsCtaTitle, { color: colors.text }]}>Beacon options</Text>
                 <Text style={[styles.optionsCtaSubtitle, { color: colors.subtle }]}>Pick a day • choose friends • add a note</Text>
               </View>
-              <Ionicons name="chevron-forward" size={22} color={colors.primary} style={{ marginLeft: 4, marginRight: 2 }} />
-              {/* Title centered to the screen horizontally, same vertical position as before */}
-              <Text style={[styles.optionsCtaTitle, styles.optionsCtaTitleAbs, { color: colors.text }]}>Beacon options</Text>
+              <Ionicons name="chevron-forward" size={22} color={colors.primary} />
             </Pressable>
 
             <Text style={[styles.status, { color: colors.subtle }]}>Your beacon is set for {scheduledLabel}</Text>
           </View>
         </View>
 
-        {/* Options Modal */}
-        <Modal visible={optionsOpen} animationType="slide" transparent>
-          <View style={[styles.modalBackdrop, { backgroundColor: colors.backdrop }]}>
+        {/* Options sheet — an in-tree overlay (not a RN <Modal>) so the coach-mark tour can point
+            at the day/time/group/message controls. The tab bar is hidden while it's open (see
+            BottomBar below) so it doesn't paint over the sheet. */}
+        {optionsRendered && (
+          <View style={[StyleSheet.absoluteFill, { justifyContent: 'flex-end' }]}>
+            <Animated.View
+              style={[StyleSheet.absoluteFill, { top: -insets.top, backgroundColor: colors.backdrop, opacity: optionsAnim }]}
+              pointerEvents="none"
+            />
             <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'position' : 'height'}
+              behavior={Platform.OS === 'ios' ? 'position' : undefined}
               keyboardVerticalOffset={0}
               style={{ width: '100%' }}
             >
-              <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
+              <Animated.View
+                style={[
+                  styles.modalCard,
+                  { backgroundColor: colors.card, paddingBottom: 16 + (kbVisible ? 0 : insets.bottom) },
+                  { transform: [{ translateY: optionsAnim.interpolate({ inputRange: [0, 1], outputRange: [500, 0] }) }] },
+                ]}
+              >
                 <View style={styles.modalHeader}>
                   <Text style={[styles.modalTitle, { color: colors.text }]}>Schedule / Edit Beacon</Text>
                   <Pressable onPress={() => { tap(); setOptionsOpen(false); }} hitSlop={8} style={styles.closeBtn}>
@@ -873,12 +1043,12 @@ export default function HomeScreen() {
 
                 <ScrollView
                   keyboardShouldPersistTaps="handled"
-                  contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? IOS_ACCESSORY_HEIGHT + 8 : 12 }}
+                  contentContainerStyle={{ paddingBottom: 12 }}
                   showsVerticalScrollIndicator={false}
                 >
                   {/* Day */}
                   <Text style={[styles.modalLabel, { color: colors.text }]}>Day</Text>
-                  <View style={styles.daysWrap}>
+                  <View ref={dayRef} collapsable={false} style={styles.daysWrap}>
                     {next7Days.map((d) => (
                       <Pressable
                         key={d.offset}
@@ -894,7 +1064,7 @@ export default function HomeScreen() {
 
                   {/* Time (optional) */}
                   <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Time (optional)</Text>
-                  <View style={styles.timeRow}>
+                  <View ref={timeRef} collapsable={false} style={styles.timeRow}>
                     <TextInput
                       style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
                       keyboardType="number-pad"
@@ -905,6 +1075,7 @@ export default function HomeScreen() {
                       onChangeText={(s) => setTimeHourInput(s.replace(/\D/g, '').slice(0, 2))}
                       returnKeyType="next"
                       accessibilityLabel="Hour"
+                      inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
                     />
                     <Text style={[styles.timeColon, { color: colors.text }]}>:</Text>
                     <TextInput
@@ -917,6 +1088,7 @@ export default function HomeScreen() {
                       onChangeText={(s) => setTimeMinuteInput(s.replace(/\D/g, '').slice(0, 2))}
                       returnKeyType="done"
                       accessibilityLabel="Minute"
+                      inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
                     />
                     <Pressable
                       onPress={() => { selection(); setTimeMeridiem((m) => (m === 'AM' ? 'PM' : 'AM')); }}
@@ -940,11 +1112,10 @@ export default function HomeScreen() {
                   </View>
                   {timeRangeError ? (
                     <Text style={[styles.timeError, { color: colors.error }]}>{timeRangeError}</Text>
-                  ) : (
-                    <Text style={[styles.msgHint, { color: colors.subtle }]}>Leave blank to skip</Text>
-                  )}
+                  ) : null}
 
                   {/* Friend Groups */}
+                  <View ref={groupsRef} collapsable={false}>
                   <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>
                     Friend Groups (if none selected, all friends can see)
                   </Text>
@@ -977,8 +1148,10 @@ export default function HomeScreen() {
                       {online ? "No groups yet — create some in Friends." : "Can't load groups — no internet connection."}
                     </Text>
                   )}
+                  </View>
 
                   {/* Message */}
+                  <View ref={messageRef} collapsable={false}>
                   <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Message</Text>
                   <TextInput
                     style={[styles.msgInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
@@ -989,10 +1162,10 @@ export default function HomeScreen() {
                     maxLength={BEACON_MESSAGE_MAX}
                     multiline
                     inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
-                    returnKeyType="done"
+                    returnKeyType="default"
                     blurOnSubmit={false}
                   />
-                  <Text style={[styles.msgHint, { color: colors.subtle }]}>{`${BEACON_MESSAGE_MAX} chars • defaults if left blank`}</Text>
+                  </View>
 
                   <View style={styles.modalBtnRow}>
                     <TouchableOpacity style={[styles.btn, styles.btnGhost, { backgroundColor: colors.inputBg, borderColor: colors.border }]} onPress={() => { tap(); setOptionsOpen(false); }}>
@@ -1012,7 +1185,7 @@ export default function HomeScreen() {
                     </TouchableOpacity>
                   </View>
                 </ScrollView>
-              </View>
+              </Animated.View>
             </KeyboardAvoidingView>
             {Platform.OS === 'ios' && (
               <InputAccessoryView nativeID={MSG_ACCESSORY_ID}>
@@ -1027,7 +1200,7 @@ export default function HomeScreen() {
               </InputAccessoryView>
             )}
           </View>
-        </Modal>
+        )}
 
         {/* Beacon details modal. KeyboardAvoidingView around the backdrop so when
             the chat composer is focused, the detailCard shrinks from the bottom
@@ -1061,27 +1234,8 @@ export default function HomeScreen() {
         </Modal>
       </SafeAreaView>
 
-      <BottomBar />
+      {!optionsRendered && <BottomBar />}
 
-      {/* Beacon tutorial \u2014 auto-shows once for new users, re-openable via the "?" button. */}
-      <TutorialModal
-        visible={showBeaconTutorial}
-        steps={beaconSteps({
-          onGoToFriends: goToFriends,
-          isFirstBeacon: hasNoBeaconYet,
-          onEnableNotifications: enableBeaconNotifications,
-        })}
-        onClose={() => {
-          setShowBeaconTutorial(false);
-          setSeen('beacon');
-        }}
-        onFinish={() => {
-          // If they have no beacon yet, open the pre-filled first-beacon flow. Delay so the
-          // tutorial sheet finishes dismissing before the options modal presents (avoids
-          // stacking two modals during the transition).
-          if (hasNoBeaconYet) setTimeout(() => startFirstBeacon(), 350);
-        }}
-      />
 
       {/* First-time beacon notification onboarding */}
       <Modal
@@ -1109,6 +1263,7 @@ export default function HomeScreen() {
                   setBeaconNotifBusy(true);
                   const { granted } = await ensurePushPermissionsAndToken();
                   setShowBeaconNotifOnboarding(false);
+                  if (granted) onboarding.refresh(); // keep the setup banner in sync
                   if (!granted) {
                     Alert.alert(
                       "Permission declined",
@@ -1248,7 +1403,7 @@ const styles = StyleSheet.create({
   },
   myChatBtnTxt: { fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
 
-  status: { fontSize: 16, color: '#555' },
+  status: { fontSize: 16, color: '#555', marginTop: 10, textAlign: 'center', minHeight: 22 },
   // Split the old marginBottom:12 evenly across top + bottom so the active-state
   // text is vertically centered between the "Open beacon chat" button above and
   // the Beacon options card below — without changing total layout height.
@@ -1368,7 +1523,7 @@ const styles = StyleSheet.create({
   },
   optionsCtaPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
   optionsCtaIconWrap: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  optionsCtaTitle: { fontSize: 19, fontWeight: '800', color: '#0B1426' },
-  optionsCtaTitleAbs: { position: 'absolute', left: 0, right: 0, top: 22, textAlign: 'center' },
-  optionsCtaSubtitle: { marginTop: 2, color: '#48608C' },
+  optionsCtaTextWrap: { flex: 1, alignItems: 'center' },
+  optionsCtaTitle: { fontSize: 19, fontWeight: '800', color: '#0B1426', textAlign: 'center' },
+  optionsCtaSubtitle: { marginTop: 2, color: '#48608C', textAlign: 'center' },
 });

@@ -19,9 +19,6 @@ export default function ExampleBeaconCard({ caption = DEFAULT_CAPTION }: Props) 
   return (
     <View>
       <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
-        <View style={[styles.pill, { backgroundColor: colors.subtle }]}>
-          <Text style={styles.pillTxt}>Example</Text>
-        </View>
         <View style={styles.row}>
           <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
             <Text style={styles.avatarTxt}>A</Text>
@@ -54,15 +51,6 @@ const styles = StyleSheet.create({
     padding: 12,
     opacity: 0.75,
   },
-  pill: {
-    position: "absolute",
-    top: -9,
-    right: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  pillTxt: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 0.3 },
   row: { flexDirection: "row", alignItems: "flex-start", gap: 10, flex: 1 },
   avatar: {
     width: 28,

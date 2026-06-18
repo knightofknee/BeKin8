@@ -90,27 +90,36 @@ export default function FriendsProfileAndInvite({
         </>
       )}
 
-      {/* Invite a friend — share your smart link / code */}
-      {onShareInvite && (
-        <View style={[styles.cardInner, { marginTop: 14 }]}>
-          <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
-          <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
-            Share your link — when a friend joins (or already has BeKin), you’re instantly connected.
-          </Text>
-          <View style={styles.inputRow}>
-            <View style={[styles.codeBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
-              <Text style={[styles.codeTxt, { color: colors.text }]}>{inviteCode ?? "······"}</Text>
+      {/* Invite a friend — share your smart link / code. Hidden until a username exists, since the
+          invite code is only minted once a username is set. */}
+      {onShareInvite &&
+        (currentUsername ? (
+          <View style={[styles.cardInner, { marginTop: 14 }]}>
+            <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
+            <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
+              Share your link — when a friend joins (or already has BeKin), you’re instantly connected.
+            </Text>
+            <View style={styles.inputRow}>
+              <View style={[styles.codeBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
+                <Text style={[styles.codeTxt, { color: colors.text }]}>{inviteCode ?? "······"}</Text>
+              </View>
+              <Pressable
+                disabled={!inviteCode}
+                onPress={() => { press(); onShareInvite(); }}
+                style={[styles.btn, { paddingHorizontal: 16, opacity: inviteCode ? 1 : 0.5, backgroundColor: colors.primary }]}
+              >
+                <Text style={styles.btnText}>Share</Text>
+              </Pressable>
             </View>
-            <Pressable
-              disabled={!inviteCode}
-              onPress={() => { press(); onShareInvite(); }}
-              style={[styles.btn, { paddingHorizontal: 16, opacity: inviteCode ? 1 : 0.5, backgroundColor: colors.primary }]}
-            >
-              <Text style={styles.btnText}>Share</Text>
-            </Pressable>
           </View>
-        </View>
-      )}
+        ) : (
+          <View style={[styles.cardInner, { marginTop: 14 }]}>
+            <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
+            <Text style={[styles.subtle, { color: colors.subtle }]}>
+              Pick a username above to unlock your shareable invite link.
+            </Text>
+          </View>
+        ))}
 
       {/* Add Friend */}
       <View style={[styles.cardInner, { marginTop: 14 }]}>

@@ -21,7 +21,11 @@ export function buildInviteUrl(code: string): string {
  */
 export function parseInviteCode(url: string | null | undefined): string | null {
   if (!url) return null;
-  const m = url.match(/invite\/([A-Za-z0-9]{6})(?:[/?#]|$)/);
+  // Anchor to the two shapes we actually issue so a hostile page can't fire
+  // bekin8://anything/invite/XXXXXX and silently friend the user via the custom scheme.
+  const m = url.match(
+    /^(?:bekin8:\/\/invite\/|https:\/\/www\.waldgrave\.com\/bekin\/invite\/)([A-Za-z0-9]{6})(?:[/?#]|$)/i
+  );
   if (!m) return null;
   const code = m[1].toUpperCase();
   return CODE_RE.test(code) ? code : null;

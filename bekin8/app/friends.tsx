@@ -1,5 +1,5 @@
 // app/friends.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -45,6 +45,10 @@ import { useTheme } from "../providers/ThemeProvider";
 import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
 import { buildInviteUrl } from "../lib/inviteLink";
+import TutorialResumeBanner from "@/components/tutorial/TutorialResumeBanner";
+import { useTour, useTourTarget } from "../providers/TourProvider";
+import { useOnboarding } from "../providers/OnboardingProvider";
+import { emitNotifyPermissionChange } from "../lib/notifyPermission";
 
 import * as Notifications from "expo-notifications";
 
@@ -109,23 +113,43 @@ export default function FriendsScreen() {
   // NEW: my blocked users set
   const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
 
-  // Ensure this user has a permanent invite code (generates one server-side if missing).
+  // Ensure this user has a permanent invite code (server issues one once they have a username).
   useEffect(() => {
-    if (!profileLoaded || profile?.inviteCode) return;
+    if (!profileLoaded || profile?.inviteCode || !currentUsername?.trim()) return;
     (async () => {
       try {
         await httpsCallable(getFunctions(), "ensureInviteCode")({});
       } catch {
-        // best-effort; the Share button stays disabled until a code exists
+        // best-effort; the Share button stays disabled until a username + code exist
       }
     })();
-  }, [profileLoaded, profile?.inviteCode]);
+  }, [profileLoaded, profile?.inviteCode, currentUsername]);
+
+  // Coach-mark tour targets on this screen.
+  const { isActive: tourActive } = useTour();
+  const profileTarget = useTourTarget("friends-profile");
+  const groupsTarget = useTourTarget("friends-groups");
+  const brianTarget = useTourTarget("add-brian");
+
+  // Base-setup progress drives the resume banner here too, so a user on Friends sees it persist
+  // until username + friend + notifications are all done.
+  const onboarding = useOnboarding();
 
   const handleShareInvite = async () => {
     const code = profile?.inviteCode;
     if (!code) return;
+    const url = buildInviteUrl(code);
+    const blurb =
+      "Add me on BeKin 👋 — it's where friends light a “beacon” when they're free to hang out, so you actually see each other. Tap my link and we'll be connected automatically:";
     try {
-      await Share.share({ message: `Add me on BeKin 👋 ${buildInviteUrl(code)}` });
+      if (Platform.OS === "ios") {
+        // iOS attaches `url` separately so apps can show a rich link preview; keep it out of the
+        // message text so the link doesn't appear twice. `subject` pre-fills the email subject line.
+        await Share.share({ message: blurb, url }, { subject: "Add me on BeKin" });
+      } else {
+        // Android ignores `url`, so the link has to live inside the message text.
+        await Share.share({ message: `${blurb}\n${url}` }, { dialogTitle: "Invite a friend to BeKin" });
+      }
     } catch {
       // user cancelled or share failed — no-op
     }
@@ -914,6 +938,7 @@ export default function FriendsScreen() {
         }
       }
       try { await syncPushTokenIfGranted(); } catch {}
+      emitNotifyPermissionChange(); // refresh the setup banner's notifications step
     }
 
     setNotifyAllBusy(true);
@@ -989,6 +1014,7 @@ export default function FriendsScreen() {
         } catch (e) {
           if (__DEV__) console.warn("syncPushTokenIfGranted failed (best‑effort)", e);
         }
+        emitNotifyPermissionChange(); // refresh the setup banner's notifications step
 
         // 5) Persist ON + subscribe
         await setDoc(
@@ -1071,9 +1097,23 @@ export default function FriendsScreen() {
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
+            <TutorialResumeBanner
+              visible={onboarding.loaded && !onboarding.allDone && !tourActive}
+              doneCount={onboarding.doneCount}
+              total={onboarding.total}
+              nextLabel={onboarding.firstIncomplete?.label}
+              onPress={() =>
+                router.push(
+                  onboarding.firstIncomplete
+                    ? `/home?tutorial=1&tourTarget=${onboarding.firstIncomplete.target}`
+                    : "/home?tutorial=1"
+                )
+              }
+            />
             <Text style={[styles.header, { color: tc.text }]}>Friends</Text>
 
             {/* Username + Invite */}
+            <View ref={profileTarget} collapsable={false}>
             <FriendsProfileAndInvite
               currentUsername={currentUsername}
               usernameInput={usernameInput}
@@ -1091,9 +1131,10 @@ export default function FriendsScreen() {
               onShareInvite={handleShareInvite}
               message={message}
             />
+            </View>
 
             {/* My Friend Groups */}
-            <View style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>
+            <View ref={groupsTarget} collapsable={false} style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>
               <View style={styles.groupsHeaderRow}>
                 <Text style={[styles.sectionTitle, { color: tc.text }]}>My Friend Groups</Text>
                 <Pressable onPress={() => { tap(); setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={[styles.plusBtn, { backgroundColor: tc.primary }]}>
@@ -1164,7 +1205,7 @@ export default function FriendsScreen() {
                     <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet — search for a username above to send a request.</Text>
 
                     {/* First-friend suggestion */}
-                    <View style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
+                    <View ref={brianTarget} collapsable={false} style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
                       <View style={[styles.brianAvatar, { backgroundColor: tc.primary }]}>
                         <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
                       </View>

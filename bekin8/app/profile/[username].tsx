@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTourTarget } from '../../providers/TourProvider';
 import { auth, db } from '../../firebase.config';
 import {
   collection,
@@ -160,6 +161,10 @@ export default function ProfileScreen() {
   const [displayNameDraft, setDisplayNameDraft] = useState('');
   const displayNameInputRef = useRef<TextInput>(null);
   const bioInputRef = useRef<TextInput>(null);
+
+  // Coach-mark tour targets (used when the beacon tour branches into the profile).
+  const heroTarget = useTourTarget('profile-displayname');
+  const bioTarget = useTourTarget('profile-bio');
 
   // Imperatively focus edit inputs after they mount — autoFocus is unreliable
   // when the TextInput is rendered inside a FlatList ListHeaderComponent.
@@ -606,7 +611,7 @@ export default function ProfileScreen() {
 
         {lists.length === 0 && isOwnProfile && (
           <Text style={[styles.emptyHint, { color: colors.subtle }]}>
-            Share your favorites with friends. Tap + Add to create a list.
+            Lists let you put your recommendations in order for others to see. Tap + Add to make one.
           </Text>
         )}
 
@@ -701,7 +706,7 @@ export default function ProfileScreen() {
   const renderHeader = () => (
     <View>
       {/* Hero section */}
-      <View style={styles.hero}>
+      <View ref={heroTarget} collapsable={false} style={styles.hero}>
         <Pressable onPress={isOwnProfile ? () => { selection(); setShowColorPicker((v) => !v); } : undefined} disabled={!isOwnProfile}>
           <View style={[styles.heroAvatar, { backgroundColor: profileColor }]}>
             <Text style={styles.heroInitial}>{initial}</Text>
@@ -757,7 +762,7 @@ export default function ProfileScreen() {
 
       {/* Bio section */}
       {(bio || isOwnProfile) && (
-        <View style={styles.bioSection}>
+        <View ref={bioTarget} collapsable={false} style={styles.bioSection}>
           {editingBio ? (
             <View style={styles.bioEditWrap}>
               <TextInput
@@ -799,6 +804,11 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Posts</Text>
       </View>
+      {posts.length === 0 && (
+        <Text style={[styles.emptyHint, { color: colors.subtle }]}>
+          {isOwnProfile ? "Your post history will show up here once you share something." : "No posts yet."}
+        </Text>
+      )}
     </View>
   );
 

@@ -64,8 +64,8 @@ export default function SignUp() {
       try {
         const CHECK_KEY = "@bekin_clipboard_invite_checked";
         if (await AsyncStorage.getItem(CHECK_KEY)) return;
-        await AsyncStorage.setItem(CHECK_KEY, "1");
         const text = await Clipboard.getStringAsync();
+        await AsyncStorage.setItem(CHECK_KEY, "1"); // burn the one-shot only after a successful read
         const code = coerceInviteCode(text);
         if (active && code) setInviteCodeInput(code);
       } catch {

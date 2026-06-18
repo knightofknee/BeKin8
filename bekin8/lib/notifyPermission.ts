@@ -6,6 +6,26 @@ import { Alert, Platform, Linking } from "react-native";
 import * as Notifications from "expo-notifications";
 import { syncPushTokenIfGranted } from "./push";
 
+// Lightweight pub/sub so anything that flips OS notification permission can notify interested
+// listeners (e.g. the onboarding banner). The iOS permission prompt is a modal that does NOT fire
+// an AppState change, so an explicit signal is the only way to refresh derived state promptly.
+const permissionListeners = new Set<() => void>();
+export function onNotifyPermissionChange(cb: () => void): () => void {
+  permissionListeners.add(cb);
+  return () => {
+    permissionListeners.delete(cb);
+  };
+}
+export function emitNotifyPermissionChange(): void {
+  permissionListeners.forEach((cb) => {
+    try {
+      cb();
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
 /** Returns true if notifications are (or become) granted. Shows the OS prompt if needed. */
 export async function ensureNotifyPermission(
   reason: string = "Turn on notifications to get alerts for beacons, comments, and requests."
@@ -31,6 +51,7 @@ export async function ensureNotifyPermission(
     } catch {
       /* ignore */
     }
+    emitNotifyPermissionChange();
     return true;
   }
 

@@ -9,6 +9,7 @@ import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { ensureNotifyPermission } from "../lib/notifyPermission";
+import { useTourTarget } from "../providers/TourProvider";
 import { tap, selection } from '../utils/haptics';
 
 const colors = {
@@ -36,6 +37,9 @@ export default function SettingsScreen() {
   const [newPostNotify, setNewPostNotify] = useState(false);
   const [newPostNotifyBusy, setNewPostNotifyBusy] = useState(false);
   const router = useRouter();
+  const commentsTarget = useTourTarget("settings-comments");
+  const commentNotifyTarget = useTourTarget("settings-comment-notify");
+  const notifSectionTarget = useTourTarget("settings-notifications");
 
   // Seed local state from cached profile once available
   React.useEffect(() => {
@@ -178,6 +182,9 @@ export default function SettingsScreen() {
         </View>
 
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
+          {/* Full control group — spotlighted together by the beacon onboarding tour ("You're in
+              control"): the how-we-use link + the comments toggle + all notification toggles. */}
+          <View ref={notifSectionTarget} collapsable={false}>
           {/* How we use notifications — transparency + enable entry point */}
           <Pressable
             style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
@@ -191,7 +198,7 @@ export default function SettingsScreen() {
           </Pressable>
 
           {/* Allow comments on my posts */}
-          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
+          <View ref={commentsTarget} collapsable={false} style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1 }}>
               <Text style={[s.link, { color: tc.primary }]}>Allow comments on my posts</Text>
               <Text style={[s.subtle, { color: tc.subtle }]}>Let friends comment on your posts</Text>
@@ -221,7 +228,7 @@ export default function SettingsScreen() {
           </View>
 
           {/* Notify: comments on my own posts */}
-          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
+          <View ref={commentNotifyTarget} collapsable={false} style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={[s.link, { color: tc.primary }]}>Post comment notifications</Text>
               <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on your post</Text>
@@ -263,6 +270,7 @@ export default function SettingsScreen() {
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
             />
+          </View>
           </View>
 
           {/* Push bottom actions down */}

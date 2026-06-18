@@ -7,7 +7,9 @@ import * as Notifications from "expo-notifications";
 import * as Linking from "expo-linking";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
 import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
-import { NetworkProvider } from "../providers/NetworkProvider";
+import { NetworkProvider, useOnline } from "../providers/NetworkProvider";
+import { TourProvider } from "../providers/TourProvider";
+import { OnboardingProvider } from "../providers/OnboardingProvider";
 import OfflineBanner from "../components/OfflineBanner";
 import {
   parseInviteCode,
@@ -34,6 +36,7 @@ function Gate() {
   const router = useRouter();
   const pathname = usePathname();
   const navState = useRootNavigationState(); // ✅ tells us when navigation is mounted
+  const online = useOnline();
 
   useEffect(() => {
     // wait until auth is known AND the navigator is mounted
@@ -111,31 +114,42 @@ function Gate() {
   }, [incomingUrl]);
 
   // Once authenticated, redeem any pending invite into an accepted friendship (server-side).
-  const redeemedInviteRef = useRef(false);
+  // The DONE guard latches only on a definitive outcome (success or unrecoverable), so a transient
+  // failure stays retryable; a separate IN-FLIGHT guard prevents overlapping runs. Re-runs on
+  // auth change and on network recovery (online), so a failed redeem retries without an app restart.
+  const redeemDoneRef = useRef(false);
+  const redeemInFlightRef = useRef(false);
   useEffect(() => {
     if (!initialized || !navState?.key || !user) return;
-    if (redeemedInviteRef.current) return;
-    redeemedInviteRef.current = true;
+    if (redeemDoneRef.current || redeemInFlightRef.current) return;
+    redeemInFlightRef.current = true;
     (async () => {
-      const code = await getPendingInvite();
-      if (!code) return;
       try {
+        const code = await getPendingInvite();
+        if (!code) {
+          redeemDoneRef.current = true; // nothing pending — done for this session
+          return;
+        }
         const res = await redeemInviteCode(code);
         if (res.ok) {
           await clearPendingInvite();
+          redeemDoneRef.current = true;
           if (!res.already) {
             const who = res.inviterUsername ? `@${res.inviterUsername}` : "your friend";
             Alert.alert("You're connected!", `You and ${who} are now friends on BeKin.`);
           }
         } else if (res.error === "SELF" || res.error === "NOT_FOUND" || res.error === "BAD_CODE") {
           await clearPendingInvite(); // unrecoverable — stop retrying
+          redeemDoneRef.current = true;
         }
-        // transient errors: keep the pending code to retry on a future launch
+        // transient errors: leave DONE unlatched + code pending so a later run retries
       } catch {
-        // network/other error — leave pending for next launch
+        // network/other error — leave DONE unlatched + code pending for retry
+      } finally {
+        redeemInFlightRef.current = false;
       }
     })();
-  }, [initialized, navState?.key, user]);
+  }, [initialized, navState?.key, user?.uid, online]);
 
   if (!initialized || !navState?.key) {
     return (
@@ -158,7 +172,11 @@ export default function RootLayout() {
     <AuthProvider>
       <ThemeProvider>
         <NetworkProvider>
-          <Gate />
+          <OnboardingProvider>
+            <TourProvider>
+              <Gate />
+            </TourProvider>
+          </OnboardingProvider>
         </NetworkProvider>
       </ThemeProvider>
     </AuthProvider>

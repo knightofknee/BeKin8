@@ -3,11 +3,10 @@
 //   ensureInviteCode() -> { code }   : returns (or generates) the caller's permanent 6-char code.
 //   redeemInvite({code}) -> { ok }   : turns an inviter's code into an accepted friendship.
 //
-// The friendship writes MUST happen server-side: a client cannot create FriendEdges or write
-// into another user's `users/{uid}/friends` / `Friends/{uid}` docs under sane security rules.
-// This mirrors the exact write shape of handleAddBrian() in app/friends.tsx so the two stay
-// compatible (note the legacy Friends arrayUnion uses {uid, username} with no timestamp, so
-// the union dedupes correctly).
+// The friendship writes happen server-side (Admin SDK) so this endpoint is the single source of
+// truth for invite-created friendships and stays idempotent across concurrent redeems. It mirrors
+// the write shape of handleAddBrian() in app/friends.tsx (the legacy Friends arrayUnion uses
+// {uid, username} with no timestamp so the union dedupes correctly — keep the shapes identical).
 import { randomBytes } from 'node:crypto';
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
@@ -30,6 +29,8 @@ function genCode(len = 6): string {
   return out;
 }
 
+const cleanName = (v: any): string => (typeof v === 'string' ? v.trim() : '');
+
 /** Returns the caller's permanent invite code, generating + persisting one if needed. */
 export const ensureInviteCode = onCall({ enforceAppCheck: false }, async (req) => {
   const uid = req.auth?.uid;
@@ -37,9 +38,16 @@ export const ensureInviteCode = onCall({ enforceAppCheck: false }, async (req) =
 
   const profRef = db.collection('Profiles').doc(uid);
   const existing = await profRef.get();
-  const existingCode = existing.exists ? (existing.data() as any)?.inviteCode : null;
+  const data = existing.exists ? (existing.data() as any) : null;
+  const existingCode = data?.inviteCode;
   if (existingCode && CODE_RE.test(String(existingCode))) {
     return { code: String(existingCode) };
+  }
+
+  // A code maps to a friendable identity and the redeem writes the inviter's username into friend
+  // docs — so never issue one before the user has a username.
+  if (!cleanName(data?.username)) {
+    throw new HttpsError('failed-precondition', 'Set a username before sharing an invite.');
   }
 
   // Generate-and-check, retrying on the rare collision.
@@ -78,49 +86,57 @@ export const redeemInvite = onCall({ enforceAppCheck: false }, async (req) => {
   if (!inviterUid) return { ok: false, error: 'NOT_FOUND' };
   if (inviterUid === meUid) return { ok: false, error: 'SELF' };
 
-  // Idempotent: already friends → nothing to do.
   const edgeRef = db.collection('FriendEdges').doc(edgeId(meUid, inviterUid));
-  const edgeSnap = await edgeRef.get();
-  if (edgeSnap.exists && (edgeSnap.data() as any)?.state === 'accepted') {
-    return { ok: true, already: true, inviterUid };
-  }
-
-  const [meProf, inviterProf] = await Promise.all([
-    db.collection('Profiles').doc(meUid).get(),
-    db.collection('Profiles').doc(inviterUid).get(),
-  ]);
-  const myUsername = (meProf.exists ? (meProf.data() as any)?.username : '') || '';
-  const inviterUsername = (inviterProf.exists ? (inviterProf.data() as any)?.username : '') || '';
-
   const now = FieldValue.serverTimestamp();
-  const batch = db.batch();
-  batch.set(
-    edgeRef,
-    { uids: [meUid, inviterUid], state: 'accepted', createdAt: now, updatedAt: now },
-    { merge: true }
-  );
-  batch.set(
-    db.collection('users').doc(meUid).collection('friends').doc(inviterUid),
-    { uid: inviterUid, username: inviterUsername, status: 'accepted', acceptedAt: now },
-    { merge: true }
-  );
-  batch.set(
-    db.collection('users').doc(inviterUid).collection('friends').doc(meUid),
-    { uid: meUid, username: myUsername, status: 'accepted', acceptedAt: now },
-    { merge: true }
-  );
-  batch.set(
-    db.collection('Friends').doc(meUid),
-    { friends: FieldValue.arrayUnion({ uid: inviterUid, username: inviterUsername }) },
-    { merge: true }
-  );
-  batch.set(
-    db.collection('Friends').doc(inviterUid),
-    { friends: FieldValue.arrayUnion({ uid: meUid, username: myUsername }) },
-    { merge: true }
-  );
-  await batch.commit();
 
+  // Whole thing in one transaction so concurrent redeems for the same pair can't both pass the
+  // idempotency guard. Usernames resolved INSIDE the tx (Profiles, falling back to users) for a
+  // consistent snapshot — so a username-less inviter doesn't write a blank-vs-uid mismatch.
+  const meProfRef = db.collection('Profiles').doc(meUid);
+  const meUserRef = db.collection('users').doc(meUid);
+  const invProfRef = db.collection('Profiles').doc(inviterUid);
+  const invUserRef = db.collection('users').doc(inviterUid);
+
+  const outcome = await db.runTransaction(async (tx) => {
+    const edgeSnap = await tx.get(edgeRef);
+    if (edgeSnap.exists && (edgeSnap.data() as any)?.state === 'accepted') {
+      return { status: 'already' as const, inviterUsername: '' };
+    }
+    const [meP, meU, invP, invU] = await Promise.all([
+      tx.get(meProfRef),
+      tx.get(meUserRef),
+      tx.get(invProfRef),
+      tx.get(invUserRef),
+    ]);
+    const myUsername = cleanName((meP.data() as any)?.username) || cleanName((meU.data() as any)?.username);
+    const inviterUsername =
+      cleanName((invP.data() as any)?.username) || cleanName((invU.data() as any)?.username);
+
+    tx.set(edgeRef, { uids: [meUid, inviterUid], state: 'accepted', createdAt: now, updatedAt: now }, { merge: true });
+    tx.set(
+      db.collection('users').doc(meUid).collection('friends').doc(inviterUid),
+      { uid: inviterUid, username: inviterUsername, status: 'accepted', acceptedAt: now },
+      { merge: true }
+    );
+    tx.set(
+      db.collection('users').doc(inviterUid).collection('friends').doc(meUid),
+      { uid: meUid, username: myUsername, status: 'accepted', acceptedAt: now },
+      { merge: true }
+    );
+    tx.set(
+      db.collection('Friends').doc(meUid),
+      { friends: FieldValue.arrayUnion({ uid: inviterUid, username: inviterUsername }) },
+      { merge: true }
+    );
+    tx.set(
+      db.collection('Friends').doc(inviterUid),
+      { friends: FieldValue.arrayUnion({ uid: meUid, username: myUsername }) },
+      { merge: true }
+    );
+    return { status: 'created' as const, inviterUsername };
+  });
+
+  if (outcome.status === 'already') return { ok: true, already: true, inviterUid };
   logger.info('redeemInvite: friendship created', { meUid, inviterUid, code });
-  return { ok: true, inviterUid, inviterUsername };
+  return { ok: true, inviterUid, inviterUsername: outcome.inviterUsername };
 });

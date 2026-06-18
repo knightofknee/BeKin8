@@ -27,9 +27,9 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { tap, press } from '../utils/haptics';
-import TutorialModal from '../components/tutorial/TutorialModal';
 import TutorialButton from '../components/tutorial/TutorialButton';
-import { postSteps } from '../components/tutorial/content';
+import { buildPostTour } from '../components/tutorial/tourSteps';
+import { useTour, useTourTarget } from '../providers/TourProvider';
 import { getSeen, setSeen } from '../lib/tutorialFlags';
 
 const BOTTOM_BAR_HEIGHT = 56;
@@ -113,20 +113,35 @@ export default function CreatePostScreen() {
     availableDay: string;
   } | null>(null);
   const [checkingLimit, setCheckingLimit] = useState(true);
-  const [showPostTutorial, setShowPostTutorial] = useState(false);
+  const { startTour } = useTour();
+  const limitTarget = useTourTarget('post-limit');
+  const bonusTarget = useTourTarget('post-bonus');
 
-  // Show the post-tab tutorial the first time this screen is focused. BottomBar exposes no
+  const startPostTour = () => {
+    startTour(
+      buildPostTour({
+        goSettings: () => router.navigate('/settings'),
+        goPost: () => router.navigate('/create-post'),
+      })
+    );
+  };
+
+  // Auto-show the post tour the first time this screen is focused (once). BottomBar exposes no
   // tab-press event, so focus is the right trigger.
   useFocusEffect(
     useCallback(() => {
       let active = true;
       (async () => {
         const seen = await getSeen('post');
-        if (active && !seen) setShowPostTutorial(true);
+        if (active && !seen) {
+          setSeen('post');
+          startPostTour();
+        }
       })();
       return () => {
         active = false;
       };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
   );
 
@@ -349,11 +364,13 @@ export default function CreatePostScreen() {
             {/* Header */}
             <View style={styles.headerRow}>
               <Text style={[styles.h1, { color: colors.text }]}>New Post</Text>
-              <TutorialButton onPress={() => setShowPostTutorial(true)} style={styles.headerHelp} />
+              <TutorialButton onPress={startPostTour} style={styles.headerHelp} />
             </View>
+            <View ref={limitTarget} collapsable={false}>
             <Text style={[styles.rateNote, { color: colors.subtle }]}>
               1 post every other day · Bank up to 3 bonus posts by taking days off
             </Text>
+            </View>
 
             <View style={[styles.form, { flex: 1 }]}>
               <FloatField
@@ -424,7 +441,7 @@ export default function CreatePostScreen() {
                 </Pressable>
 
                 {/* Bonus count badge */}
-                <View style={styles.bonusBadge}>
+                <View ref={bonusTarget} collapsable={false} style={styles.bonusBadge}>
                   <Text style={[styles.bonusCount, { color: colors.primary }]}>{bonusPosts}</Text>
                   <Text style={[styles.bonusLabel, { color: colors.subtle }]}>bonus</Text>
                 </View>
@@ -494,15 +511,6 @@ export default function CreatePostScreen() {
         </>
       )}
 
-      {/* Post-tab tutorial — auto-shows on first visit, re-openable via the "?" button. */}
-      <TutorialModal
-        visible={showPostTutorial}
-        steps={postSteps()}
-        onClose={() => {
-          setShowPostTutorial(false);
-          setSeen('post');
-        }}
-      />
     </>
   );
 }
