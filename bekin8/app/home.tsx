@@ -23,7 +23,9 @@ import { Ionicons } from '@expo/vector-icons';
 import BeaconStructure from '../components/BeaconStructure';
 import BeaconScene from '../components/BeaconScene';
 import BeaconFire from '../components/BeaconFire';
-import BeaconSmoke from '../components/BeaconSmoke';
+// Skia (GPU shader) smoke — drop-in for the old SVG BeaconSmoke. Revert by swapping this import
+// back to '../components/BeaconSmoke' (kept in the repo as the no-native-dep fallback).
+import BeaconSmoke from '../components/BeaconSmokeSkia';
 import { getSkin, DEFAULT_SKIN_ID, BEACON_SKINS } from '../lib/beaconSkins';
 import { getBeaconSkinId, setBeaconSkinId, onBeaconSkinChange } from '../lib/beaconSkinPref';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -151,7 +153,7 @@ export default function HomeScreen() {
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   // Coach-mark tour: target refs to spotlight + the tour controller.
-  const { startTour, isActive, endTour, currentStepId, currentStepTarget, goToTarget } = useTour();
+  const { startTour, isActive, currentStepId, currentStepTarget, goToTarget } = useTour();
   // Base-setup progress (username + friend + notifications) drives the resume banner.
   const onboarding = useOnboarding();
   const logsRef = useTourTarget('beacon-logs');
@@ -665,36 +667,32 @@ export default function HomeScreen() {
         // The notifications step lives on /settings; jump back Home before opening the beacon sheet.
         openFirstBeacon: () => { router.navigate('/home'); startFirstBeacon(); },
         hasFriends: hasFriendsRef.current,
+        // Whether the user ALREADY has a beacon (lit / active / planned) when the tour is built —
+        // switches the final step to the "you're all set" wrap-up instead of "set your first beacon".
+        hasBeacon: !hasNoBeaconYet,
         online,
         onEnableNotifications: enableBeaconNotifications,
       }),
       {
         startAtTarget: opts?.startAtTarget,
         onFinish: () => {
+          success();
           setSeen('beacon');
+        },
+        // Dismissing the main tour ANY way (skip or finish) also satisfies the standalone chat
+        // explainer — the chat is already covered by step 1's branch — so it never pops on the
+        // first light right after the user skips. (onClose fires on both skip and finish.)
+        onClose: () => {
+          setSeen('beacon_chat');
         },
       }
     );
   };
 
-  // The tour completes when the user has SET a beacon (Save schedules it → the listener fills
-  // nextPlannedDate; tapping the logs lights it) AND finished base setup (username + friend +
-  // notifications). Gating on allDone means lighting on the step-1 demo can't end onboarding early
-  // (a brand-new user isn't allDone yet); if anything is missing, the persistent banner nudges them
-  // to the first incomplete step instead.
-  const prevReadyRef = useRef(!hasNoBeaconYet && onboarding.allDone);
-  useEffect(() => {
-    const ready = !hasNoBeaconYet && onboarding.allDone; // beacon set AND username+friend+notifications
-    const was = prevReadyRef.current;
-    prevReadyRef.current = ready;
-    // Only auto-complete from the final wrap-up step, so finishing the LAST setup item on the
-    // notifications step (or lighting a beacon on the step-1 demo) can't end the tour before the
-    // user reaches "Set your first beacon".
-    if (isActive && currentStepId === 'set-first-beacon' && !was && ready) {
-      success();
-      endTour(true);
-    }
-  }, [hasNoBeaconYet, onboarding.allDone, isActive, currentStepId, endTour]);
+  // The final tour step is ALWAYS shown and completes only when the user taps Done — never
+  // auto-skipped, even when setup + a lit beacon are already done (that case just gets the
+  // celebratory "you're all set" variant; see buildBeaconTour's hasBeacon branch). Tapping Done
+  // ends the tour via onFinish (setSeen('beacon') + the success haptic).
 
   // If the user LIGHTS the beacon during tour step 1, opt into the chat mini-step (a branch) so we
   // explain the chat right there. Marks beacon_chat seen so the post-tour explainer won't repeat it.
@@ -1395,7 +1393,10 @@ export default function HomeScreen() {
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <Pressable style={StyleSheet.absoluteFill} onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} />
-            <View style={[styles.detailCard, { backgroundColor: colors.card }]} pointerEvents="box-none">
+            {/* Bottom gap lives on the CARD, not the KAV: KeyboardAvoidingView (behavior padding)
+                overwrites the container's paddingBottom with the keyboard height (0 when closed),
+                which would otherwise drop the card into the home-indicator / curved corner. */}
+            <View style={[styles.detailCard, { backgroundColor: colors.card, marginBottom: insets.bottom + 16 }]} pointerEvents="box-none">
               <View style={styles.modalHeader}>
                 <Pressable onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} hitSlop={8} style={styles.closeBtn}>
                   <Ionicons name="close" size={24} color={colors.text} />
@@ -1691,7 +1692,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingHorizontal: SCREEN_PAD,
     paddingTop: 130,
-    paddingBottom: 80,
+    paddingBottom: 0, // bottom gap is the card's marginBottom (insets-aware); see the modal above
   },
   detailCard: {
     flex: 1,

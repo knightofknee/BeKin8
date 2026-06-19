@@ -56,7 +56,7 @@ const OLD_GUARD: BeaconSkin = {
   flicker: { sy: 0.1, sx: 0.05, rot: 3, period: 1.5 },
   ember: { color: '#FFCF7A', count: 3 },
   spark: { color: '#FFE0A0', count: 8 },
-  ignition: { damping: 12, stiffness: 165, shake: false, shockwave: false },
+  ignition: { damping: 15, stiffness: 135, shake: false, shockwave: false }, // dignified, steady — low overshoot
   smoke: { tintLow: '#C7A98A', tintHigh: '#9AA3B2', opacity: 0.32, plumes: 7, rise: 1.0, drift: 26 },
   sound: { ignite: require('../assets/sounds/oldguard-ignite.m4a'), crackle: require('../assets/sounds/oldguard-crackle.m4a') },
 };
@@ -77,7 +77,7 @@ const BONFIRE: BeaconSkin = {
   flicker: { sy: 0.18, sx: 0.08, rot: 4, period: 1.0 },
   ember: { color: '#FFB24A', count: 5 },
   spark: { color: '#FFE0A0', count: 20 },
-  ignition: { damping: 8, stiffness: 185, shake: true, shockwave: true },
+  ignition: { damping: 7, stiffness: 195, shake: true, shockwave: true }, // explosive — big overshoot + shake + shockwave
   smoke: { tintLow: '#6B5E50', tintHigh: '#6A5F55', opacity: 0.4, plumes: 8, rise: 1.0, drift: 34 },
   sound: { ignite: require('../assets/sounds/bonfire-ignite.m4a'), crackle: require('../assets/sounds/bonfire-crackle.m4a') },
 };
@@ -97,7 +97,7 @@ const BEACONS: BeaconSkin = {
   flicker: { sy: 0.06, sx: 0.03, rot: 2, period: 2.2 },
   ember: { color: '#FFD98C', count: 2 },
   spark: { color: '#FFE6B0', count: 4 },
-  ignition: { damping: 16, stiffness: 140, shake: false, shockwave: false },
+  ignition: { damping: 18, stiffness: 125, shake: false, shockwave: false }, // calm gentle swell, no overshoot
   smoke: { tintLow: '#AEB6C4', tintHigh: '#AEB6C4', opacity: 0.18, plumes: 4, rise: 1.0, drift: 16 },
   sound: { ignite: require('../assets/sounds/beacons-ignite.m4a'), crackle: require('../assets/sounds/beacons-crackle.m4a') },
 };
@@ -117,7 +117,7 @@ const WISP: BeaconSkin = {
   flicker: { sy: 0.08, sx: 0.05, rot: 3, period: 1.9 },
   ember: { color: '#BFF4FF', count: 3 },
   spark: { color: '#E6FEFF', count: 5 },
-  ignition: { damping: 15, stiffness: 150, shake: false, shockwave: false },
+  ignition: { damping: 16, stiffness: 140, shake: false, shockwave: false }, // soft ethereal pulse
   smoke: { tintLow: '#9FE6FF', tintHigh: '#5FC8EE', opacity: 0.24, plumes: 5, rise: 1.0, drift: 22 },
   sound: { ignite: require('../assets/sounds/wisp-ignite.m4a'), crackle: require('../assets/sounds/wisp-crackle.m4a') },
 };
@@ -145,6 +145,7 @@ const CAMPFIRE: BeaconSkin = {
   blurb: 'Stacked logs and a living flame — the classic.',
   structure: 'logs',
   origin: 0.18,
+  ignition: { damping: 11, stiffness: 178, shake: false, shockwave: false }, // lively, quick snappy catch
   sound: { ignite: require('../assets/sounds/campfire-ignite.m4a'), crackle: require('../assets/sounds/campfire-crackle.m4a') },
 };
 

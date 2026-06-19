@@ -19,6 +19,9 @@ export type BeaconTourCtx = {
   openFirstBeacon: () => void;
   /** True once the user has ≥1 friend — drops the "Add Brian" step (its card only shows at 0). */
   hasFriends: boolean;
+  /** True if the user already has a beacon (lit / active / planned) — switches the final step to
+   * the "you're all set" wrap-up instead of the "set your first beacon" prompt. */
+  hasBeacon: boolean;
   /** Whether the device is online — the "Add Brian" card is replaced by an offline notice when not. */
   online: boolean;
   onEnableNotifications: () => void;
@@ -153,14 +156,25 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       growDown: true,
       onEnter: ctx.goSettings,
     },
-    {
-      id: "set-first-beacon",
-      title: "Set your first beacon 🔥",
-      body: "Last step! We've pre-filled a quick hello for today. Tweak the day, time, or who can see it, then Save to set your beacon — that wraps up the tour. (Tap Done to finish anytime.)",
-      interactive: true,
-      cta: "Done",
-      onEnter: ctx.openFirstBeacon,
-    },
+    // Final step is ALWAYS shown (never auto-skipped). Two versions depending on what's already
+    // done: a celebratory wrap-up if the user already has a beacon, otherwise the guided first beacon.
+    ctx.hasBeacon
+      ? {
+          id: "set-first-beacon",
+          title: "You're all set! 🎉",
+          body: "That's everything — your beacon's already going and your setup's complete, so friends can see when you're free to hang out. Tap Done to finish.",
+          interactive: true,
+          cta: "Done",
+          onEnter: () => { ctx.goHome(); ctx.closeSheet(); },
+        }
+      : {
+          id: "set-first-beacon",
+          title: "Set your first beacon 🔥",
+          body: "Last step! We've pre-filled a quick hello for today. Tweak the day, time, or who can see it, then Save to set your beacon — that wraps up the tour. (Tap Done to finish anytime.)",
+          interactive: true,
+          cta: "Done",
+          onEnter: ctx.openFirstBeacon,
+        },
   ];
 
   return steps.filter(Boolean) as TourStep[];

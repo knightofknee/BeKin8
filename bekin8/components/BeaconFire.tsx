@@ -6,7 +6,7 @@
 // ramp, edge-gated to a real false→true light (the ignite SOUND + haptic are driven by home off the
 // lit edge, so they also cover the flameless tower). No flash oval. Transforms/opacity only (never
 // the path `d`). Wrapped in a pointerEvents="none" View so it never eats page touches.
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import Svg, { Defs, RadialGradient, LinearGradient, Stop, Path, Circle, Ellipse, G } from 'react-native-svg';
 import Animated, {
@@ -116,24 +116,44 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
   const flickerAmp = useSharedValue(0);
   const glowOp = useSharedValue(0);
   const shock = useSharedValue(0); // Wildfire ignition shockwave ring
+  const shakeX = useSharedValue(0); // ignition screen-shake (skins with ignition.shake — Bonfire)
+  const shakeY = useSharedValue(0);
   const sparks: Spark[] = Array.from({ length: MAX_SPARKS }, () => ({ tx: useSharedValue(0), ty: useSharedValue(0), op: useSharedValue(0) }));
 
   const firstRun = useRef(true);
   const prevActiveRef = useRef(active);
 
+  // Mount the fire ONLY while lit (+ a short fade tail). Unlit ⇒ render nothing at all — definitively
+  // no stray glow/flame when the beacon isn't lit, regardless of any leftover shared-value state.
+  const [visible, setVisible] = useState(active);
+  useEffect(() => {
+    if (active) {
+      setVisible(true);
+      return;
+    }
+    const t = setTimeout(() => setVisible(false), 750); // keep mounted through the glow fade-out
+    return () => clearTimeout(t);
+  }, [active]);
+
   // One UI-thread clock (seconds). Stable callback (avoids re-registering the frame loop on every
   // re-render). Only ticks while lit AND motion is allowed — freezes the noise (glow shimmer, embers)
   // under reduced-motion and costs nothing when unlit.
+  // The idle clock runs on a frame callback that is ALWAYS registered but gated INTERNALLY by a
+  // `motion` flag. setActive()/autostart on a fresh mount proved unreliable — a cold start, or a
+  // skin-switch mount into an already-lit beacon, left the flame frozen (no flicker). The worklet
+  // no-ops when not lit / reduced-motion, so an always-on loop costs ~nothing and can't get stuck.
+  const motion = useSharedValue(active && !reduce ? 1 : 0);
+  useEffect(() => {
+    motion.value = active && !reduce ? 1 : 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, reduce]);
   const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
     'worklet';
+    if (motion.value === 0) return;
     clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const frame = useFrameCallback(tick, false);
-  useEffect(() => {
-    frame.setActive(active && !reduce);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, reduce]);
+  useFrameCallback(tick, true);
 
   // Idle flicker amplitudes/speed pulled from the skin (captured as primitives for the worklets).
   const aSy = skin.flicker.sy, aSx = skin.flicker.sx, aRot = skin.flicker.rot, fPer = skin.flicker.period;
@@ -143,6 +163,10 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
   const coreProps = useFlameTongue(clock, progress, flickerAmp, fPer, aSy, aSx, aRot, S.cSy, S.cSx, S.cSx, S.cOp, 0.92, false);
   const glowProps = useAnimatedProps(() => ({ opacity: glowOp.value * (0.85 + loopNoise(clock.value, S.glow) * 0.3) }));
   const shockProps = useAnimatedProps(() => ({ r: 8 + shock.value * 92, opacity: (1 - shock.value) * 0.55 }));
+  // Root transform = the measured anchor + the ignition shake offset (so the WHOLE fire jolts).
+  const rootProps = useAnimatedProps(() => ({
+    transform: [{ translateX: anchorX + shakeX.value }, { translateY: anchorY + shakeY.value }],
+  }));
 
   useEffect(() => {
     const first = firstRun.current;
@@ -185,6 +209,17 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
           shock.value = 0;
           shock.value = withTiming(1, { duration: 520, easing: Easing.out(Easing.quad) });
         }
+        if (skin.ignition.shake) {
+          // A decaying jolt of the whole fire — the "screen goes wild" on a big ignition (Bonfire).
+          shakeX.value = withSequence(
+            withTiming(-9, { duration: 45 }), withTiming(8, { duration: 45 }), withTiming(-5, { duration: 45 }),
+            withTiming(4, { duration: 45 }), withTiming(-2, { duration: 45 }), withTiming(0, { duration: 50 })
+          );
+          shakeY.value = withSequence(
+            withTiming(7, { duration: 45 }), withTiming(-5, { duration: 45 }), withTiming(3, { duration: 45 }),
+            withTiming(-2, { duration: 45 }), withTiming(0, { duration: 50 })
+          );
+        }
       } else {
         progress.value = withTiming(1, { duration: 200 });
         flickerAmp.value = withTiming(1, { duration: 350 });
@@ -199,13 +234,13 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
 
   useEffect(() => {
     return () => {
-      cancelAnimation(clock); cancelAnimation(progress); cancelAnimation(flickerAmp); cancelAnimation(glowOp); cancelAnimation(shock);
+      cancelAnimation(clock); cancelAnimation(progress); cancelAnimation(flickerAmp); cancelAnimation(glowOp); cancelAnimation(shock); cancelAnimation(shakeX); cancelAnimation(shakeY);
       sparks.forEach((sp) => { cancelAnimation(sp.tx); cancelAnimation(sp.ty); cancelAnimation(sp.op); });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!measured) return null;
+  if (!measured || !visible) return null;
 
   const fs = skin.flameScale;
   return (
@@ -222,7 +257,7 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
           <LinearGradient id="bfCore" x1="0" y1="1" x2="0" y2="0"><Stop offset="0%" stopColor={skin.core[0]} /><Stop offset="100%" stopColor={skin.core[1]} /></LinearGradient>
         </Defs>
 
-        <G transform={`translate(${anchorX} ${anchorY})`}>
+        <AnimatedG animatedProps={rootProps}>
           {skin.ignition.shockwave && (
             <AnimatedCircle cx={0} cy={-40} r={8} fill="none" stroke="#FFE8C0" strokeWidth={3} animatedProps={shockProps} />
           )}
@@ -238,7 +273,7 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
           {sparks.slice(0, Math.min(skin.spark.count, MAX_SPARKS)).map((sp, i) => (
             <SparkDot key={`s${i}`} sv={sp} color={skin.spark.color} />
           ))}
-        </G>
+        </AnimatedG>
       </Svg>
     </View>
   );

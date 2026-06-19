@@ -1,9 +1,10 @@
 // components/BeaconTower.tsx
-// The "Two Lanterns" beacon — Paul Revere's signal ("one if by land, two if by sea"). A colonial
-// church steeple (Old North Church: square tower → belfry w/ clock → open lantern stage → tall white
-// spire + weathervane) with TWO lanterns at the lantern stage. On lit, both lanterns glow and flicker
-// — staggered so one catches, then the other. Animated (reanimated); home drives the ignite sound +
-// haptic, so this only handles the visual. Authored 0..100; shares the 180×180 footprint.
+// The "Two Lanterns" beacon — Old North Church (Boston), modeled on the real building: a tall WHITE
+// tiered steeple (spire + finial → upper tier → open belfry with arched louvered openings) on top of
+// a RED-BRICK square tower (tall arched window, the Paul Revere plaque, an arched door). The TWO
+// signal lanterns glow in the belfry openings on lit — staggered (one catches, then the other).
+// "One if by land, two if by sea." Animated (reanimated); home drives the ignite sound + haptic.
+// No clock (the real steeple in the iconic view doesn't show one). Authored 0..100; 180×180 footprint.
 import React, { useEffect, useState } from 'react';
 import Svg, { Defs, RadialGradient, Stop, Path, Rect, Circle, Line, G } from 'react-native-svg';
 import Animated, {
@@ -22,19 +23,24 @@ import Animated, {
 const AnimatedG = Animated.createAnimatedComponent(G);
 const SIN = Easing.inOut(Easing.sin);
 
-const WHITE = '#E8E4D6';
-const SHADE = '#C6C0AE';
-const TRIM = '#AFA995';
-const DARK = '#2A2620';
-const GLASS_OFF = '#3C362B';
+const WHITE = '#ECE8DC';
+const WHITE_SH = '#CFC9B6';
+const TRIM = '#F4F1E8';
+const BRICK = '#8C3B2C';
+const BRICK_SH = '#6F2E22';
+const MORTAR = '#5C2620';
+const DARK = '#241E18';
+const PLAQUE = '#CBB68A';
+const GOLD = '#D7B45A';
 
+// A lit signal lantern (warm body + flame + halo) shown in a belfry opening. cy ≈ belfry middle.
 function Lantern({ op, cx }: { op: SharedValue<number>; cx: number }) {
   const props = useAnimatedProps(() => ({ opacity: op.value }));
   return (
     <AnimatedG animatedProps={props}>
-      <Circle cx={cx} cy={33} r={10} fill="url(#twGlow)" />
-      <Rect x={cx - 2} y={28.5} width={4} height={8.5} rx={1.4} fill="#FFE9B0" />
-      <Path d={`M${cx} 30 C${cx - 2} 32 ${cx - 1.6} 35 ${cx} 36.5 C${cx + 1.6} 35 ${cx + 2} 32 ${cx} 30 Z`} fill="#FFF6D8" />
+      <Circle cx={cx} cy={37} r={9} fill="url(#twGlow)" />
+      <Rect x={cx - 1.8} y={33.5} width={3.6} height={7.5} rx={1.2} fill="#FFE9B0" />
+      <Path d={`M${cx} 35 C${cx - 1.8} 36.6 ${cx - 1.4} 39 ${cx} 40.2 C${cx + 1.4} 39 ${cx + 1.8} 36.6 ${cx} 35 Z`} fill="#FFF6D8" />
     </AnimatedG>
   );
 }
@@ -43,9 +49,7 @@ export default function BeaconTower({ lit, size = 180 }: { lit: boolean; size?: 
   const reduce = useReducedMotion();
   const glowL = useSharedValue(0);
   const glowR = useSharedValue(0);
-  // Only MOUNT the glowing lantern overlays while lit (+ a short fade tail). When unlit they don't
-  // render at all, so the lanterns are unambiguously dark — no "lit-but-static" at mount/skin-select
-  // (the animated opacity on an <AnimatedG> isn't reliably applied until a tween runs).
+  // Mount the glowing lanterns ONLY while lit (+ a fade tail) so unlit is unambiguously dark glass.
   const [glowing, setGlowing] = useState(lit);
   useEffect(() => {
     if (lit) {
@@ -88,44 +92,60 @@ export default function BeaconTower({ lit, size = 180 }: { lit: boolean; size?: 
         </RadialGradient>
       </Defs>
 
-      {/* Spire + weathervane */}
-      <Line x1="50" y1="6" x2="50" y2="1" stroke={TRIM} strokeWidth="1" />
-      <Line x1="47" y1="2.5" x2="53" y2="2.5" stroke={TRIM} strokeWidth="1" />
-      <Path d="M50 6 L57 28 L43 28 Z" fill={WHITE} />
-      <Path d="M50 6 L57 28 L50 28 Z" fill={SHADE} />
+      {/* ===== WHITE STEEPLE (top) ===== */}
+      {/* Weathervane + finial */}
+      <Line x1="50" y1="6" x2="50" y2="0.5" stroke={GOLD} strokeWidth="0.9" />
+      <Path d="M50 1 l4 1.4 l-4 1.4 z" fill={GOLD} />
+      <Circle cx="50" cy="6.2" r="1.2" fill={GOLD} />
 
-      {/* Open lantern stage (the two lanterns sit between the columns) */}
-      <Rect x="41" y="28" width="18" height="2.6" fill={WHITE} />
-      <Rect x="41" y="38" width="18" height="2.6" rx="0.6" fill={WHITE} />
-      <Rect x="41.5" y="29" width="2.2" height="9.6" fill={WHITE} />
-      <Rect x="56.3" y="29" width="2.2" height="9.6" fill={WHITE} />
-      <Rect x="49" y="29" width="2" height="9.6" fill={SHADE} />
-      <Rect x="44" y="29" width="4.6" height="9.4" fill={DARK} />
-      <Rect x="51.6" y="29" width="4.6" height="9.4" fill={DARK} />
-      {/* unlit lantern bodies (warm overlay fades in on top when lit) */}
-      <Rect x="44.3" y="29.4" width="4" height="8.6" rx="1.4" fill={GLASS_OFF} />
-      <Rect x="51.9" y="29.4" width="4" height="8.6" rx="1.4" fill={GLASS_OFF} />
+      {/* Spire */}
+      <Path d="M50 6 L56.5 25 L43.5 25 Z" fill={WHITE} />
+      <Path d="M50 6 L56.5 25 L50 25 Z" fill={WHITE_SH} />
 
-      {/* Belfry with a clock face */}
-      <Rect x="39.5" y="41" width="21" height="11" fill={WHITE} />
-      <Rect x="55" y="41" width="5.5" height="11" fill={SHADE} />
-      <Circle cx="49" cy="46.5" r="3.4" fill="#F2EEE2" stroke={TRIM} strokeWidth="0.7" />
-      <Line x1="49" y1="46.5" x2="49" y2="44.4" stroke={DARK} strokeWidth="0.6" />
-      <Line x1="49" y1="46.5" x2="50.6" y2="46.5" stroke={DARK} strokeWidth="0.6" />
+      {/* Upper tier under the spire */}
+      <Rect x="44.5" y="24" width="11" height="4.5" fill={WHITE} />
+      <Rect x="50" y="24" width="5.5" height="4.5" fill={WHITE_SH} />
 
-      {/* Square tower base */}
-      <Rect x="37" y="52" width="26" height="42" fill={WHITE} />
-      <Rect x="55.5" y="52" width="7.5" height="42" fill={SHADE} />
-      <Rect x="37" y="52" width="26" height="42" fill="none" stroke={TRIM} strokeWidth="0.6" />
-      {/* tall arched windows */}
-      <Rect x="41" y="58" width="5" height="10" rx="2.5" fill={DARK} />
-      <Rect x="54" y="58" width="5" height="10" rx="2.5" fill={DARK} />
-      {/* door */}
-      <Rect x="45.5" y="82" width="9" height="12" rx="3.5" fill={DARK} />
+      {/* Belfry: open white stage with two tall arched louvered openings (the lanterns sit here) */}
+      <Rect x="39.5" y="29" width="21" height="2.6" fill={WHITE} />
+      <Rect x="39.5" y="42.5" width="21" height="2.8" rx="0.5" fill={WHITE} />
+      <Rect x="39.5" y="31" width="2.6" height="11.5" fill={WHITE} />
+      <Rect x="57.9" y="31" width="2.6" height="11.5" fill={WHITE_SH} />
+      <Rect x="49" y="31" width="2" height="11.5" fill={WHITE_SH} />
+      {/* arched openings (dark, louvered) */}
+      <Path d="M43 42.5 L43 35 Q43 32 45.6 32 Q48.2 32 48.2 35 L48.2 42.5 Z" fill={DARK} />
+      <Path d="M51.8 42.5 L51.8 35 Q51.8 32 54.4 32 Q57 32 57 35 L57 42.5 Z" fill={DARK} />
+      <Line x1="43" y1="37" x2="48.2" y2="37" stroke="#3A332A" strokeWidth="0.5" />
+      <Line x1="43" y1="39.5" x2="48.2" y2="39.5" stroke="#3A332A" strokeWidth="0.5" />
+      <Line x1="51.8" y1="37" x2="57" y2="37" stroke="#3A332A" strokeWidth="0.5" />
+      <Line x1="51.8" y1="39.5" x2="57" y2="39.5" stroke="#3A332A" strokeWidth="0.5" />
 
-      {/* The two signal lanterns, lit (only rendered while glowing; dark glass shows otherwise) */}
-      {glowing && <Lantern op={glowL} cx={46.3} />}
-      {glowing && <Lantern op={glowR} cx={53.9} />}
+      {/* White cornice the brick tower carries */}
+      <Rect x="37.5" y="45.5" width="25" height="4.2" fill={WHITE} />
+      <Rect x="55.5" y="45.5" width="7" height="4.2" fill={WHITE_SH} />
+
+      {/* ===== RED BRICK TOWER (bottom) ===== */}
+      <Rect x="37.5" y="49.5" width="25" height="44.5" fill={BRICK} />
+      <Rect x="56" y="49.5" width="6.5" height="44.5" fill={BRICK_SH} />
+      {/* mortar courses */}
+      {[54, 58.5, 63, 67.5, 72, 76.5, 81, 85.5, 90].map((y) => (
+        <Line key={`m${y}`} x1="37.5" y1={y} x2="62.5" y2={y} stroke={MORTAR} strokeWidth="0.4" opacity={0.7} />
+      ))}
+      {/* tall arched window (white trim + dark glass + muntins) */}
+      <Path d="M44 70 L44 61 Q44 55.5 50 55.5 Q56 55.5 56 61 L56 70 Z" fill={TRIM} />
+      <Path d="M45.2 68.8 L45.2 61.4 Q45.2 56.7 50 56.7 Q54.8 56.7 54.8 61.4 L54.8 68.8 Z" fill={DARK} />
+      <Line x1="50" y1="57" x2="50" y2="68.8" stroke={TRIM} strokeWidth="0.5" opacity={0.8} />
+      <Line x1="45.2" y1="63" x2="54.8" y2="63" stroke={TRIM} strokeWidth="0.5" opacity={0.7} />
+      {/* Paul Revere plaque */}
+      <Rect x="44" y="73.5" width="12" height="6" rx="0.6" fill={PLAQUE} stroke={MORTAR} strokeWidth="0.4" />
+      <Line x1="45.5" y1="75.5" x2="54.5" y2="75.5" stroke="#9A8866" strokeWidth="0.4" />
+      <Line x1="45.5" y1="77.2" x2="54.5" y2="77.2" stroke="#9A8866" strokeWidth="0.4" />
+      {/* arched door */}
+      <Path d="M45.5 94 L45.5 87 Q45.5 83 50 83 Q54.5 83 54.5 87 L54.5 94 Z" fill={DARK} />
+
+      {/* The two signal lanterns, lit (only while glowing; dark openings show otherwise) */}
+      {glowing && <Lantern op={glowL} cx={45.6} />}
+      {glowing && <Lantern op={glowR} cx={54.4} />}
     </Svg>
   );
 }
