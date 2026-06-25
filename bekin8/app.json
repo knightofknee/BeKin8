@@ -17,7 +17,8 @@
         "applinks:www.waldgrave.com"
       ],
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "EXDevMenuShowFloatingActionButton": false
       }
     },
     "android": {

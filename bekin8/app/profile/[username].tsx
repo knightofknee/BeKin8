@@ -166,7 +166,7 @@ export default function ProfileScreen() {
   const heroTarget = useTourTarget('profile-displayname');
   const bioTarget = useTourTarget('profile-bio');
 
-  // Imperatively focus edit inputs after they mount — autoFocus is unreliable
+  // Imperatively focus edit inputs after they mount, autoFocus is unreliable
   // when the TextInput is rendered inside a FlatList ListHeaderComponent.
   useEffect(() => {
     if (!editingDisplayName) return;
@@ -351,7 +351,7 @@ export default function ProfileScreen() {
     press();
     if (!me || !resolvedUid || me.uid !== resolvedUid) return;
     const trimmed = bioDraft.trim();
-    // No-op when nothing changed — just dismiss the editor.
+    // No-op when nothing changed, just dismiss the editor.
     if (trimmed === (bio || '').trim()) {
       setEditingBio(false);
       return;
@@ -379,7 +379,7 @@ export default function ProfileScreen() {
       Alert.alert('Invalid', 'Display name must be 3–40 characters, or empty to use your username.');
       return;
     }
-    // No-op when nothing changed — just dismiss the editor (saves a Firestore write).
+    // No-op when nothing changed, just dismiss the editor (saves a Firestore write).
     const currentNormalized = displayName === resolvedUsername ? '' : displayName;
     if (trimmed === currentNormalized) {
       setEditingDisplayName(false);
@@ -560,7 +560,7 @@ export default function ProfileScreen() {
     if (!content) { Alert.alert('Content required'); return; }
     const nextTitle = editPostTitle.trim();
     const nextUrl = editPostUrl.trim();
-    // No-op when nothing changed — just dismiss (saves a Firestore write).
+    // No-op when nothing changed, just dismiss (saves a Firestore write).
     const currTitle = (editingPost.title || '').trim();
     const currContent = (editingPost.content || '').trim();
     const currUrl = (editingPost.url || '').trim();
@@ -742,7 +742,7 @@ export default function ProfileScreen() {
           <Text style={[styles.heroUsername, { color: colors.subtle }]} numberOfLines={1} ellipsizeMode="tail">@{resolvedUsername}</Text>
         )}
 
-        {/* Color picker — own profile only, shown on avatar tap */}
+        {/* Color picker, own profile only, shown on avatar tap */}
         {isOwnProfile && showColorPicker && (
           <View style={styles.colorRow}>
             {PROFILE_COLORS.map((c) => (
@@ -856,7 +856,7 @@ export default function ProfileScreen() {
             keyboardShouldPersistTaps="handled"
             // Call renderHeader() to pass a JSX element instead of a function
             // reference. With a function, FlatList sees a new component identity
-            // every render and unmounts/remounts the entire header subtree —
+            // every render and unmounts/remounts the entire header subtree,
             // which in turn nukes TextInput focus on every keystroke and
             // detaches the Save/Cancel Pressable handlers. Passing an element
             // lets React reconcile in place: TextInput keeps its instance and
@@ -865,7 +865,7 @@ export default function ProfileScreen() {
             ListEmptyComponent={
               <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 20 }}>
                 <Text style={{ fontSize: 15, color: colors.subtle }}>
-                  {online ? "No posts yet" : "Can't load posts — no internet connection."}
+                  {online ? "No posts yet" : "Can't load posts. No internet connection."}
                 </Text>
               </View>
             }

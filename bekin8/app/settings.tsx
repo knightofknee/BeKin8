@@ -196,10 +196,10 @@ export default function SettingsScreen() {
         </View>
 
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
-          {/* Full control group — spotlighted together by the beacon onboarding tour ("You're in
+          {/* Full control group, spotlighted together by the beacon onboarding tour ("You're in
               control"): the how-we-use link + the comments toggle + all notification toggles. */}
           <View ref={notifSectionTarget} collapsable={false}>
-          {/* How we use notifications — transparency + enable entry point */}
+          {/* How we use notifications, transparency + enable entry point */}
           <Pressable
             style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
             onPress={() => { tap(); router.push("/notifications-permission"); }}
@@ -287,7 +287,7 @@ export default function SettingsScreen() {
           </View>
           </View>
 
-          {/* Fire sounds — device-local, default off (separate from the notification group above). */}
+          {/* Fire sounds, device-local, default off (separate from the notification group above). */}
           <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={[s.link, { color: tc.primary }]}>Fire sounds</Text>
@@ -304,7 +304,7 @@ export default function SettingsScreen() {
           {/* Push bottom actions down */}
           <View style={{ flexGrow: 1 }} />
 
-          {/* Edit Profile — primary action */}
+          {/* Edit Profile, primary action */}
           <Pressable
             style={[s.prominentBtn, { backgroundColor: tc.primary }]}
             onPress={() => { tap(); if (profile?.username) router.push(`/profile/${profile.username}`); }}
@@ -312,7 +312,7 @@ export default function SettingsScreen() {
             <Text style={s.prominentBtnTxt}>Edit Profile</Text>
           </Pressable>
 
-          {/* Dark mode — inverse color scheme */}
+          {/* Dark mode, inverse color scheme */}
           <Pressable
             style={[s.prominentBtn, { backgroundColor: isDark ? '#FFFFFF' : '#111827' }]}
             onPress={() => { selection(); toggleTheme(); }}

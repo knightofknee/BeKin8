@@ -127,7 +127,7 @@ function Gate() {
       try {
         const code = await getPendingInvite();
         if (!code) {
-          redeemDoneRef.current = true; // nothing pending — done for this session
+          redeemDoneRef.current = true; // nothing pending, done for this session
           return;
         }
         const res = await redeemInviteCode(code);
@@ -139,12 +139,12 @@ function Gate() {
             Alert.alert("You're connected!", `You and ${who} are now friends on BeKin.`);
           }
         } else if (res.error === "SELF" || res.error === "NOT_FOUND" || res.error === "BAD_CODE") {
-          await clearPendingInvite(); // unrecoverable — stop retrying
+          await clearPendingInvite(); // unrecoverable, stop retrying
           redeemDoneRef.current = true;
         }
         // transient errors: leave DONE unlatched + code pending so a later run retries
       } catch {
-        // network/other error — leave DONE unlatched + code pending for retry
+        // network/other error, leave DONE unlatched + code pending for retry
       } finally {
         redeemInFlightRef.current = false;
       }
@@ -161,7 +161,9 @@ function Gate() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <Stack screenOptions={{ headerShown: false, animation: 'none' }} />
+      {/* contentStyle paints the screen container the theme bg, so a mounting/transitioning route
+          never flashes the default WHITE before its own background paints (worst on first mount). */}
+      <Stack screenOptions={{ headerShown: false, animation: 'none', contentStyle: { backgroundColor: colors.bg } }} />
       <OfflineBanner />
     </View>
   );

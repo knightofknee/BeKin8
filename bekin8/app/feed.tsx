@@ -57,7 +57,7 @@ interface Post {
   url?: string;
   commentsEnabled?: boolean;
   authorCommentsEnabled?: boolean;
-  // cursor support — raw timestamp for pagination
+  // cursor support, raw timestamp for pagination
   _timestamp: number;
 }
 
@@ -158,7 +158,7 @@ export default function Feed() {
   // oldest timestamp loaded so far (for pagination cursor)
   const oldestTs = useRef<number>(Date.now());
 
-  // my global comments setting — from cached profile, no extra read
+  // my global comments setting, from cached profile, no extra read
   const myGlobalCommentsEnabled = profile?.commentsEnabled ?? false;
 
   // ── persist show-mine toggle ────────────────────────────────────────────────
@@ -244,11 +244,11 @@ export default function Feed() {
   }, []);
 
   // ── load one page of posts ──────────────────────────────────────────────────
-  // olderThan: unix ms — load posts with timestamp < olderThan
+  // olderThan: unix ms, load posts with timestamp < olderThan
   const loadPage = useCallback(async (uids: string[], olderThan: number): Promise<Post[]> => {
     if (!uids.length) return [];
 
-    // Fire one query per author (Firestore limitation — no OR on different fields)
+    // Fire one query per author (Firestore limitation, no OR on different fields)
     // Each returns up to PAGE_SIZE, we then merge and take the top PAGE_SIZE globally
     const perAuthorLimit = Math.max(3, Math.ceil(PAGE_SIZE / uids.length) + 2);
 
@@ -342,7 +342,7 @@ export default function Feed() {
 
   useEffect(() => { initialLoad(); }, [initialLoad]);
 
-  // ── live refresh on friend changes — skip the first snapshot (it's just the initial delivery) ──
+  // ── live refresh on friend changes, skip the first snapshot (it's just the initial delivery) ──
   useEffect(() => {
     const me = auth.currentUser?.uid;
     if (!me) return;
@@ -351,7 +351,7 @@ export default function Feed() {
       if (skip.val) { skip.val = false; return; }
       clearTimeout(debounce);
       debounce = setTimeout(() => {
-        // keep author cache — names don't change just because friends list changed
+        // keep author cache, names don't change just because friends list changed
         oldestTs.current = Date.now() + 1000;
         setHasMore(true);
         initialLoad();

@@ -73,7 +73,7 @@ export default function FriendsScreen() {
   const [notifyAllBusy, setNotifyAllBusy] = useState(false);
   const router = useRouter();
 
-  // Username state — seeded from cached profile, editable locally
+  // Username state, seeded from cached profile, editable locally
   const [usernameInput, setUsernameInput] = useState("");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
   const [busyUsername, setBusyUsername] = useState(false);
@@ -126,20 +126,45 @@ export default function FriendsScreen() {
   }, [profileLoaded, profile?.inviteCode, currentUsername]);
 
   // Coach-mark tour targets on this screen.
-  const { isActive: tourActive } = useTour();
+  const { isActive: tourActive, currentStepTarget, measureTarget } = useTour();
   const groupsTarget = useTourTarget("friends-groups");
   const brianTarget = useTourTarget("add-brian");
+  // Wraps the Requests section + the My Friends list/add-brian card so the tour highlights them as one
+  // step. The page FlatList scrolls this block into view when the tour reaches it.
+  const requestsListTarget = useTourTarget("friends-requests");
+  const listRef = useRef<FlatList>(null);
+  const scrollYRef = useRef(0);
 
   // Base-setup progress drives the resume banner here too, so a user on Friends sees it persist
   // until username + friend + notifications are all done.
   const onboarding = useOnboarding();
+
+  // When the tour reaches a Friends step that sits low in the page (the add-friend card or the
+  // requests/friends-list block), scroll it into view. Uses the tour's measureTarget so it works for
+  // any registered target, including ones inside child components.
+  useEffect(() => {
+    const SCROLLABLE = ["friends-add-card", "friends-requests"];
+    if (!currentStepTarget || !SCROLLABLE.includes(currentStepTarget)) return;
+    const bring = async () => {
+      const r = await measureTarget(currentStepTarget);
+      if (!r) return;
+      const desiredY = 120; // bring the block's top near the top, above the low callout
+      const delta = r.y - desiredY;
+      if (Math.abs(delta) > 12) {
+        listRef.current?.scrollToOffset({ offset: Math.max(0, scrollYRef.current + delta), animated: true });
+      }
+    };
+    const t1 = setTimeout(bring, 320); // after the navigation to Friends settles
+    const t2 = setTimeout(bring, 650); // a second pass in case layout was still mounting
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [currentStepTarget, measureTarget]);
 
   const handleShareInvite = async () => {
     const code = profile?.inviteCode;
     if (!code) return;
     const url = buildInviteUrl(code);
     const blurb =
-      "Add me on BeKin 👋 — it's where friends light a “beacon” when they're free to hang out, so you actually see each other. Tap my link and we'll be connected automatically:";
+      "Add me on BeKin 👋, it's where friends light a “beacon” when they're free to hang out, so you actually see each other. Tap my link and we'll be connected automatically:";
     try {
       if (Platform.OS === "ios") {
         // iOS attaches `url` separately so apps can show a rich link preview; keep it out of the
@@ -150,7 +175,7 @@ export default function FriendsScreen() {
         await Share.share({ message: `${blurb}\n${url}` }, { dialogTitle: "Invite a friend to BeKin" });
       }
     } catch {
-      // user cancelled or share failed — no-op
+      // user cancelled or share failed, no-op
     }
   };
 
@@ -219,7 +244,7 @@ export default function FriendsScreen() {
   }, [profileLoaded]);
 
   // Tracks which uids we've already fetched the canonical Profile for, so we
-  // don't refetch on every snapshot — but unlike the old logic, this is NOT
+  // don't refetch on every snapshot, but unlike the old logic, this is NOT
   // seeded from the stamped denorm. The denorm's username may be stale or
   // wrong-cased; the canonical Profiles/{uid} doc is the source of truth.
   const profilesFetchedRef = useRef<Set<string>>(new Set());
@@ -237,7 +262,7 @@ export default function FriendsScreen() {
           if (prof.exists()) {
             const data = prof.data() as any;
             const uname = data?.username || data?.usernameLower;
-            // Overwrite any stamped value — canonical Profile wins.
+            // Overwrite any stamped value, canonical Profile wins.
             if (uname) nameCacheRef.current[uid] = String(uname);
             if (data?.displayName) displayNameCacheRef.current[uid] = String(data.displayName);
             // Fall back to legacy `avatarColor` field for older users whose
@@ -246,7 +271,7 @@ export default function FriendsScreen() {
             if (color) colorCacheRef.current[uid] = color;
           }
         } catch {
-          // ignore — leave the cache as-is so the stamped fallback survives
+          // ignore, leave the cache as-is so the stamped fallback survives
         }
       })
     );
@@ -314,7 +339,7 @@ export default function FriendsScreen() {
       onSnapshot(collection(db, "users", user.uid, "friends"), (snap) => {
         const arr = snap.docs.map((d) => d.data() as any);
         const cleaned = cleanAndDedupeFriends(arr);
-        // Intentionally NOT seeding nameCacheRef from the stamped denorm —
+        // Intentionally NOT seeding nameCacheRef from the stamped denorm,
         // the denorm can be stale or wrong-cased. The merge effect below
         // triggers a canonical Profile fetch instead, and the stamped
         // username flows through as a fallback in makeFriend().
@@ -338,7 +363,7 @@ export default function FriendsScreen() {
           return;
         }
         const cleaned = cleanAndDedupeFriends((snap.data() as any)?.friends || []);
-        // Same as the subcollection listener — don't seed nameCacheRef from
+        // Same as the subcollection listener, don't seed nameCacheRef from
         // the stamped denorm; let resolveUsernames fetch the canonical Profile.
         setLegacyFriends(cleaned);
       })
@@ -367,7 +392,11 @@ export default function FriendsScreen() {
       );
       cleanups.push(
         onSnapshot(qGroups, (snap) => {
-          const arr: any[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+          // Exclude the reserved onboarding "test" group (id `${uid}__tutorial_test`) so users can't
+          // rename / add members to / delete it here, it must stay empty to "notify no one".
+          const arr: any[] = snap.docs
+            .map((d) => ({ id: d.id, ...(d.data() as any) }))
+            .filter((g) => !String(g.id).endsWith('__tutorial_test'));
           setGroups(arr);
         })
       );
@@ -416,7 +445,7 @@ export default function FriendsScreen() {
       const other = e.uids.find((u) => u !== me.uid);
       if (!other) return;
       if (!map.has(other)) {
-        // No stamped username for edge-only friends — fall back to uid string
+        // No stamped username for edge-only friends, fall back to uid string
         // until resolveUsernames fills in the cache.
         map.set(other, makeFriend(other, other));
       }
@@ -529,7 +558,7 @@ export default function FriendsScreen() {
         return showMessage("User not found.", "error");
       }
 
-      // If WE have THEM blocked, sending a fresh request implicitly unblocks —
+      // If WE have THEM blocked, sending a fresh request implicitly unblocks,
       // delete our block doc first, then proceed. The cloud function won't
       // reverse this because the trigger fires on block creation, not deletion.
       if (myBlockOnThem.exists()) {
@@ -560,7 +589,7 @@ export default function FriendsScreen() {
         return showMessage("Request already sent.", "error");
       }
       if (existingIn.exists() && (existingIn.data() as any).status === "pending") {
-        return showMessage("They already requested you — check requests above.", "success");
+        return showMessage("They already requested you. Check requests above.", "success");
       }
       if (
         (existingOut.exists() && (existingOut.data() as any).status === "accepted") ||
@@ -811,7 +840,7 @@ export default function FriendsScreen() {
     [incoming, blockedUids]
   );
 
-  // "Add Brian" — first-friend suggestion (only shown when user has zero friends)
+  // "Add Brian", first-friend suggestion (only shown when user has zero friends)
   const [addingBrian, setAddingBrian] = useState(false);
   const handleAddBrian = async () => {
     const me = auth.currentUser;
@@ -1007,7 +1036,7 @@ export default function FriendsScreen() {
           }
         }
 
-        // 4) We have permission now — BEST‑EFFORT token sync (do not block on failure)
+        // 4) We have permission now, BEST‑EFFORT token sync (do not block on failure)
         try {
           await syncPushTokenIfGranted();
         } catch (e) {
@@ -1073,6 +1102,7 @@ export default function FriendsScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: tc.bg }}>
       <FlatList
+        ref={listRef}
         data={visibleFriends}
         keyExtractor={(item, index) =>
           item.uid ? `uid:${item.uid}` : `name:${item.username.toLowerCase()}:${index}`
@@ -1111,8 +1141,8 @@ export default function FriendsScreen() {
             />
             <Text style={[styles.header, { color: tc.text }]}>Friends</Text>
 
-            {/* Username + Invite — its own tour targets (friends-username / friends-invite) are
-                registered inside the component. */}
+            {/* Username + Invite. Its tour targets (friends-username / friends-profile / friends-add)
+                are registered inside the component. */}
             <FriendsProfileAndInvite
               currentUsername={currentUsername}
               usernameInput={usernameInput}
@@ -1142,7 +1172,7 @@ export default function FriendsScreen() {
 
               {groups.length === 0 ? (
                 <Text style={[styles.subtle, { color: tc.subtle }]}>
-                  {online ? "No groups yet — tap + to create one." : "Can't load groups — no internet connection."}
+                  {online ? "No groups yet. Tap + to create one." : "Can't load groups. No internet connection."}
                 </Text>
               ) : (
                 <View style={{ rowGap: 8 }}>
@@ -1170,6 +1200,8 @@ export default function FriendsScreen() {
               )}
             </View>
 
+            {/* Requests + friends list, wrapped so the tour highlights them as one step (friends-requests). */}
+            <View ref={requestsListTarget} collapsable={false}>
             {/* Requests */}
             <FriendRequestsSection
               incoming={visibleIncoming}
@@ -1200,7 +1232,7 @@ export default function FriendsScreen() {
               {visibleFriends.length === 0 && (
                 online ? (
                   <>
-                    <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet — search for a username above to send a request.</Text>
+                    <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet. Search for a username above to send a request.</Text>
 
                     {/* First-friend suggestion */}
                     <View ref={brianTarget} collapsable={false} style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
@@ -1225,10 +1257,11 @@ export default function FriendsScreen() {
                   </>
                 ) : (
                   <Text style={[styles.subtle, { color: tc.subtle }]}>
-                    Can't load friends — no internet connection.
+                    Can't load friends. No internet connection.
                   </Text>
                 )
               )}
+            </View>
             </View>
           </View>
         }
@@ -1254,6 +1287,8 @@ export default function FriendsScreen() {
           rowGap: 14,
         }}
         style={{ flex: 1 }}
+        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "on-drag" : "none"}
         removeClippedSubviews={false}

@@ -231,7 +231,7 @@ export default function CreatePostScreen() {
 
   // Minimal URL plausibility check: must look like "something.tld[…]" with no
   // whitespace, where the TLD-ish part is at least 2 chars. Doesn't require a
-  // protocol — a user can type "example.com" or "https://example.com/path".
+  // protocol, a user can type "example.com" or "https://example.com/path".
   const PLAUSIBLE_URL = /^[^\s]+\.[^\s]{2,}$/;
 
   // ── Field validation (shared) ─────────────────────────────────────────────
@@ -250,7 +250,7 @@ export default function CreatePostScreen() {
     }
     const trimmedLink = link.trim();
     if (trimmedLink && !PLAUSIBLE_URL.test(trimmedLink)) {
-      Alert.alert('Invalid link', 'That doesn’t look like a URL — try something like example.com or https://example.com.');
+      Alert.alert('Invalid link', 'That doesn’t look like a URL. Try something like example.com or https://example.com.');
       return false;
     }
     return true;
@@ -299,7 +299,7 @@ export default function CreatePostScreen() {
         if (data.reason === 'daily_cap') {
           Alert.alert('Daily limit reached', 'You can post up to 5 times per day.');
         }
-        // rate_limited: UI already shows state — just return silently
+        // rate_limited: UI already shows state, just return silently
         return;
       }
       await writePost();
@@ -337,7 +337,7 @@ export default function CreatePostScreen() {
     }
   };
 
-  // ── Loading state — only wait for profile, not rate-limit check ──────────
+  // ── Loading state, only wait for profile, not rate-limit check ──────────
   if (!profileLoaded) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.bg }]}>
@@ -454,7 +454,7 @@ export default function CreatePostScreen() {
                 </Text>
               )}
 
-              {/* Bonus post button — shown when rate-limited */}
+              {/* Bonus post button, shown when rate-limited */}
               {isLimited && (
                 <Pressable
                   onPress={handleBonusSubmit}
@@ -484,7 +484,7 @@ export default function CreatePostScreen() {
         <BottomBar />
       </SafeAreaView>
 
-      {/* iOS Done bar — one per field */}
+      {/* iOS Done bar, one per field */}
       {Platform.OS === 'ios' && (
         <>
           <InputAccessoryView nativeID={ACCESSORY_ID_TITLE}>
