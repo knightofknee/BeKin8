@@ -46,7 +46,7 @@ export function prefetchBeaconMessages(beaconId: string, n: number = PREFETCH_LI
 
 /**
  * Hook-based variant: call with the list of beacon ids currently visible to
- * the user. Prefetches each once. Safe to call repeatedly — already-prefetched
+ * the user. Prefetches each once. Safe to call repeatedly, already-prefetched
  * ids are skipped.
  */
 export function usePrefetchBeaconMessages(beaconIds: Array<string | undefined | null>) {

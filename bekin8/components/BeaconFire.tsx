@@ -1,5 +1,5 @@
 // components/BeaconFire.tsx
-// The beacon FIRE — glow + nested flame tongues + embers + ignition sparks — drawn ON TOP of the
+// The beacon FIRE, glow + nested flame tongues + embers + ignition sparks, drawn ON TOP of the
 // structure (rendered as the LAST child of the home page). Skin-driven: all colors/sizes/amplitudes
 // come from the BeaconSkin. The idle flicker is driven by loopNoise off a single UI-thread clock, so
 // it's randomized yet seamlessly looping. Ignition = master `progress` spring + ember sparks + glow
@@ -116,14 +116,14 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
   const flickerAmp = useSharedValue(0);
   const glowOp = useSharedValue(0);
   const shock = useSharedValue(0); // Wildfire ignition shockwave ring
-  const shakeX = useSharedValue(0); // ignition screen-shake (skins with ignition.shake — Bonfire)
+  const shakeX = useSharedValue(0); // ignition screen-shake (skins with ignition.shake, Bonfire)
   const shakeY = useSharedValue(0);
   const sparks: Spark[] = Array.from({ length: MAX_SPARKS }, () => ({ tx: useSharedValue(0), ty: useSharedValue(0), op: useSharedValue(0) }));
 
   const firstRun = useRef(true);
   const prevActiveRef = useRef(active);
 
-  // Mount the fire ONLY while lit (+ a short fade tail). Unlit ⇒ render nothing at all — definitively
+  // Mount the fire ONLY while lit (+ a short fade tail). Unlit ⇒ render nothing at all, definitively
   // no stray glow/flame when the beacon isn't lit, regardless of any leftover shared-value state.
   const [visible, setVisible] = useState(active);
   useEffect(() => {
@@ -136,10 +136,10 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
   }, [active]);
 
   // One UI-thread clock (seconds). Stable callback (avoids re-registering the frame loop on every
-  // re-render). Only ticks while lit AND motion is allowed — freezes the noise (glow shimmer, embers)
+  // re-render). Only ticks while lit AND motion is allowed, freezes the noise (glow shimmer, embers)
   // under reduced-motion and costs nothing when unlit.
   // The idle clock runs on a frame callback that is ALWAYS registered but gated INTERNALLY by a
-  // `motion` flag. setActive()/autostart on a fresh mount proved unreliable — a cold start, or a
+  // `motion` flag. setActive()/autostart on a fresh mount proved unreliable, a cold start, or a
   // skin-switch mount into an already-lit beacon, left the flame frozen (no flicker). The worklet
   // no-ops when not lit / reduced-motion, so an always-on loop costs ~nothing and can't get stuck.
   const motion = useSharedValue(active && !reduce ? 1 : 0);
@@ -210,7 +210,7 @@ export default function BeaconFire({ skin, active, anchorX, anchorY, measured }:
           shock.value = withTiming(1, { duration: 520, easing: Easing.out(Easing.quad) });
         }
         if (skin.ignition.shake) {
-          // A decaying jolt of the whole fire — the "screen goes wild" on a big ignition (Bonfire).
+          // A decaying jolt of the whole fire, the "screen goes wild" on a big ignition (Bonfire).
           shakeX.value = withSequence(
             withTiming(-9, { duration: 45 }), withTiming(8, { duration: 45 }), withTiming(-5, { duration: 45 }),
             withTiming(4, { duration: 45 }), withTiming(-2, { duration: 45 }), withTiming(0, { duration: 50 })

@@ -308,20 +308,20 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
 
   // Keyboard handling is owned by the parent modal wrapper via KeyboardAvoidingView
   // (see app/feed.tsx and app/profile/[username].tsx where this modal is rendered).
-  // Translating the panel here pushed the header off-screen — instead, the parent
+  // Translating the panel here pushed the header off-screen, instead, the parent
   // shrinks the card from the bottom so the header stays pinned and the composer
   // sits just above the keyboard.
 
   // Comments are on only if: per-post flag is enabled AND author's global setting allows comments
-  // authorCommentsEnabled=null means still loading — show composer optimistically if per-post is enabled
+  // authorCommentsEnabled=null means still loading, show composer optimistically if per-post is enabled
   const commentsOn = post.commentsEnabled !== false && (authorCommentsEnabled === null || authorCommentsEnabled === true);
 
   return (
     <>
-      {/* Full-screen backdrop — tap outside card to close */}
+      {/* Full-screen backdrop, tap outside card to close */}
       <Pressable style={[StyleSheet.absoluteFill, styles.backdrop, { backgroundColor: tc.backdrop }]} onPress={onClose} />
 
-      {/* Floating card — centered; KeyboardAvoidingView shrinks available space
+      {/* Floating card, centered; KeyboardAvoidingView shrinks available space
           when the composer is focused so the card sits above the keyboard. */}
       <KeyboardAvoidingView
         style={styles.cardOuter}
@@ -344,7 +344,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
           </Pressable>
         </View>
 
-        {/* Comment thread — hidden entirely when comments are off */}
+        {/* Comment thread, hidden entirely when comments are off */}
         {commentsOn ? (
           <>
             <View
@@ -367,7 +367,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                   {comments.length === 0 && (
                     <View style={styles.emptyWrap}>
                       <Text style={[styles.emptyText, { color: tc.subtle }]}>
-                        {online ? "No comments yet. Be the first!" : "Can't load comments — no internet connection."}
+                        {online ? "No comments yet. Be the first!" : "Can't load comments. No internet connection."}
                       </Text>
                     </View>
                   )}
@@ -460,7 +460,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
             </View>
           </>
         ) : (
-          /* Comments are off — hide thread, show banner only */
+          /* Comments are off, hide thread, show banner only */
           <View style={styles.commentsOffWrap}>
             <Text style={styles.commentsOffIcon}>💬</Text>
             <Text style={[styles.commentsOffText, { color: tc.subtle }]}>Comments are turned off</Text>

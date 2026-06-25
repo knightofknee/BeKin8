@@ -1,5 +1,5 @@
 // components/BeaconBonfire.tsx
-// The "Bonfire" beacon STRUCTURE: a big, deliberately-BUILT pyre — a stacked log-cabin base, a dense
+// The "Bonfire" beacon STRUCTURE: a big, deliberately-BUILT pyre, a stacked log-cabin base, a dense
 // teepee of leaning logs, and a criss-cross of logs over the front. Clearly stacked WOOD (cut-end
 // rings + grain), heartier/wider than the Campfire. Static SVG; the dramatic fire renders on top.
 // Authored 0..100, shares the 180×180 footprint.

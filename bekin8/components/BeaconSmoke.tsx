@@ -1,5 +1,5 @@
 // components/BeaconSmoke.tsx
-// The beacon SMOKE — billowing puff-clusters that peel off the flame and rise the FULL background
+// The beacon SMOKE, billowing puff-clusters that peel off the flame and rise the FULL background
 // height, behind every tile (FIRST child of the home page, pointerEvents View wrapper, tiles in
 // front). Skin-driven tint/opacity/plume-count/rise/drift. Each plume rises on a clock sawtooth and
 // drifts via loopNoise so the column never shows a seam. Only mounts while lit (+ a fade tail).

@@ -1,10 +1,10 @@
 // components/BeaconSmokeSkia.tsx
-// The beacon SMOKE, rendered with a GPU shader (Skia RuntimeEffect / SkSL) instead of SVG puffs —
+// The beacon SMOKE, rendered with a GPU shader (Skia RuntimeEffect / SkSL) instead of SVG puffs,
 // a real volumetric column that rises the full background height BEHIND the tiles. One full-screen
 // fragment shader: multi-octave value-noise FBM + domain warp, scrolled upward so it reads as
 // rising, shaped into a column that widens and thins with height. Neutral wood-smoke color, shared
 // by every skin (per product decision); per-skin intensity still rides skin.smoke.opacity. Drop-in
-// for the SVG BeaconSmoke (same props). NATIVE: needs a dev/EAS rebuild — Skia is a native module.
+// for the SVG BeaconSmoke (same props). NATIVE: needs a dev/EAS rebuild, Skia is a native module.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Canvas, Fill, Shader, Skia } from '@shopify/react-native-skia';
@@ -21,7 +21,7 @@ import type { BeaconSkin } from '../lib/beaconSkins';
 // Neutral wood-smoke (linear-ish RGB, 0..1). Same for every skin.
 const SMOKE_RGB: [number, number, number] = [0.64, 0.66, 0.70];
 
-// FBM uses hash-based value noise (NO trig in the noise — a known mobile-GPU killer); a single sin
+// FBM uses hash-based value noise (NO trig in the noise, a known mobile-GPU killer); a single sin
 // drives the column's gentle sway. 5 octaves + one warp pass reads as soft, organic smoke.
 const SMOKE_SKSL = `
 uniform float u_time;     // seconds since lit
@@ -77,8 +77,12 @@ half4 main(vec2 fragCoord){
   float d = fbm(sp + warp * 1.7);
   d = smoothstep(0.30, 0.93, d);                    // wispy contrast
 
+  // Warm under-lighting: smoke near the fire is lit warm from below, cooling to neutral as it rises.
+  float warm = exp(-max(h, 0.0) / (u_origin.y * 0.32 + 1.0));
+  vec3 lit = mix(u_color, vec3(1.0, 0.52, 0.22), warm * 0.45);
+
   float a = clamp(env * d * 0.62 * u_act * u_density, 0.0, 1.0);
-  return half4(u_color * a, a);                     // premultiplied
+  return half4(lit * a, a);                          // premultiplied
 }
 `;
 
@@ -94,9 +98,10 @@ export type BeaconSmokeProps = {
   anchorX: number;
   anchorY: number;
   measured: boolean;
+  focused?: boolean;
 };
 
-export default function BeaconSmokeSkia({ skin, active, anchorX, anchorY, measured }: BeaconSmokeProps) {
+export default function BeaconSmokeSkia({ skin, active, anchorX, anchorY, measured, focused = true }: BeaconSmokeProps) {
   const { width: W, height: H } = useWindowDimensions();
   const reduce = useReducedMotion();
 
@@ -109,14 +114,14 @@ export default function BeaconSmokeSkia({ skin, active, anchorX, anchorY, measur
   const firstRun = useRef(true);
   const [visible, setVisible] = useState(false);
 
-  // Always-registered frame loop gated by `motion` (see BeaconFire) — reliable across cold/skin
+  // Always-registered frame loop gated by `motion` (see BeaconFire), reliable across cold/skin
   // mounts. The GPU shader still only paints while the Canvas is mounted (visible = lit), so the
   // expensive work is still hard-stopped when unlit; only this counter advances.
-  const motion = useSharedValue(active && !reduce && hasSmoke ? 1 : 0);
+  const motion = useSharedValue(active && !reduce && hasSmoke && focused ? 1 : 0);
   useEffect(() => {
-    motion.value = active && !reduce && hasSmoke ? 1 : 0;
+    motion.value = active && !reduce && hasSmoke && focused ? 1 : 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, reduce, hasSmoke]);
+  }, [active, reduce, hasSmoke, focused]);
   const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
     'worklet';
     if (motion.value === 0) return;

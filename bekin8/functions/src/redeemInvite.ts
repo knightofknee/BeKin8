@@ -6,7 +6,7 @@
 // The friendship writes happen server-side (Admin SDK) so this endpoint is the single source of
 // truth for invite-created friendships and stays idempotent across concurrent redeems. It mirrors
 // the write shape of handleAddBrian() in app/friends.tsx (the legacy Friends arrayUnion uses
-// {uid, username} with no timestamp so the union dedupes correctly — keep the shapes identical).
+// {uid, username} with no timestamp so the union dedupes correctly, keep the shapes identical).
 import { randomBytes } from 'node:crypto';
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
@@ -45,7 +45,7 @@ export const ensureInviteCode = onCall({ enforceAppCheck: false }, async (req) =
   }
 
   // A code maps to a friendable identity and the redeem writes the inviter's username into friend
-  // docs — so never issue one before the user has a username.
+  // docs, so never issue one before the user has a username.
   if (!cleanName(data?.username)) {
     throw new HttpsError('failed-precondition', 'Set a username before sharing an invite.');
   }
@@ -60,7 +60,7 @@ export const ensureInviteCode = onCall({ enforceAppCheck: false }, async (req) =
       if (pCode && CODE_RE.test(String(pCode))) return String(pCode); // concurrent winner
       const inviteRef = db.collection('Invites').doc(code);
       const invSnap = await tx.get(inviteRef);
-      if (invSnap.exists) return null; // collision — retry with a new code
+      if (invSnap.exists) return null; // collision, retry with a new code
       tx.set(inviteRef, { uid, createdAt: FieldValue.serverTimestamp() });
       tx.set(profRef, { inviteCode: code, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
       return code;
@@ -91,7 +91,7 @@ export const redeemInvite = onCall({ enforceAppCheck: false }, async (req) => {
 
   // Whole thing in one transaction so concurrent redeems for the same pair can't both pass the
   // idempotency guard. Usernames resolved INSIDE the tx (Profiles, falling back to users) for a
-  // consistent snapshot — so a username-less inviter doesn't write a blank-vs-uid mismatch.
+  // consistent snapshot, so a username-less inviter doesn't write a blank-vs-uid mismatch.
   const meProfRef = db.collection('Profiles').doc(meUid);
   const meUserRef = db.collection('users').doc(meUid);
   const invProfRef = db.collection('Profiles').doc(inviterUid);

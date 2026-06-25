@@ -12,7 +12,7 @@ import { syncPushTokenIfGranted } from "./push";
  *
  * Returns `{ user, isRelayEmail }` on success.
  * `isRelayEmail` is true when Apple's "Hide My Email" was used (first sign-in only).
- * Throws on cancellation or error — caller should catch.
+ * Throws on cancellation or error, caller should catch.
  */
 export async function signInWithApple() {
   // 1. Generate a cryptographic nonce (required by Firebase for Apple OAuth)
@@ -47,7 +47,7 @@ export async function signInWithApple() {
   const userCredential = await signInWithCredential(auth, credential);
   const user = userCredential.user;
 
-  // 5. Check if this is a first-time user — create Firestore doc if needed.
+  // 5. Check if this is a first-time user, create Firestore doc if needed.
   const userDocRef = doc(db, "users", user.uid);
   const userDoc = await getDoc(userDocRef);
 

@@ -23,7 +23,7 @@ export type ThemeColors = {
   backdrop: string;
   tabInactive: string;
   linkText: string;
-  // Coach-mark tour callout — deliberately distinct from every app surface so the tour reads as a
+  // Coach-mark tour callout, deliberately distinct from every app surface so the tour reads as a
   // separate guidance layer (not app chrome). tourBorder echoes the spotlight ring (primary).
   tourSurface: string;
   tourBorder: string;

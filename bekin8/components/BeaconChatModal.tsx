@@ -201,7 +201,7 @@ export default function BeaconChatModal({
         <View style={[styles.modalCard, { backgroundColor: tc.card }]}>
           <View style={styles.modalHeader}>
             <Text style={[styles.modalTitle, { color: tc.text }]}>
-              {isToday ? '🔥 Today' : '🗓 Upcoming'} — {beacon.displayName}
+              {isToday ? '🔥 Today' : '🗓 Upcoming'}: {beacon.displayName}
             </Text>
             <Pressable onPress={() => { tap(); onClose(); }}>
               <Text style={[styles.close, { color: tc.subtle }]}>✕</Text>
@@ -212,7 +212,7 @@ export default function BeaconChatModal({
             {beacon.startAt.toDate().toLocaleDateString()} • clears at{' '}
             {beacon.expiresAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
-          <Text style={[styles.modalMessage, { color: tc.text }]}>"{beacon.message || 'Beacon lit — who’s in?'}"</Text>
+          <Text style={[styles.modalMessage, { color: tc.text }]}>"{beacon.message || 'Beacon lit, who’s in?'}"</Text>
 
           <View style={[styles.hr, { backgroundColor: tc.border }]} />
 

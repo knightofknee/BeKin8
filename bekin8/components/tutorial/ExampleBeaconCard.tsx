@@ -1,6 +1,6 @@
 // components/tutorial/ExampleBeaconCard.tsx
 // A purely illustrative "what a friend's beacon looks like" card for new users with
-// zero friends. It is LOCAL-ONLY — never written to Firestore — so it can't leak into
+// zero friends. It is LOCAL-ONLY, never written to Firestore, so it can't leak into
 // real queries or notifications, and the real list naturally replaces it once a friend
 // beacon arrives. Visibly marked as an example (dashed border, dimmed, "Example" pill).
 import React from "react";
@@ -12,7 +12,7 @@ type Props = {
   caption?: string | null;
 };
 
-const DEFAULT_CAPTION = "Example — this is how a friend's lit beacon will appear here.";
+const DEFAULT_CAPTION = "Example: this is how a friend's lit beacon will appear here.";
 
 export default function ExampleBeaconCard({ caption = DEFAULT_CAPTION }: Props) {
   const { colors } = useTheme();

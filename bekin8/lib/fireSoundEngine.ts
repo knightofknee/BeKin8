@@ -1,5 +1,5 @@
 // lib/fireSoundEngine.ts
-// Imperative fire-audio engine (expo-audio createAudioPlayer — stable players we own/release, NOT
+// Imperative fire-audio engine (expo-audio createAudioPlayer, stable players we own/release, NOT
 // the useAudioPlayer hook which recreates a player whenever the source id changes and was the cause
 // of the skin-switch dropout + ignition-stops bugs).
 //
@@ -12,7 +12,7 @@ import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
 
 const CRACKLE_VOL = 0.32;
 const IGNITE_VOL = 0.72;
-const CRACKLE_DUR = 20.0; // synthesized crackle clip length (s) — used to pick safe random offsets
+const CRACKLE_DUR = 20.0; // synthesized crackle clip length (s), used to pick safe random offsets
 const SEG_MIN = 4.0;
 const SEG_MAX = 7.0; // a "segment" plays this long before crossfading to a fresh random offset
 const XFADE_MS = 900; // crossfade length
@@ -229,7 +229,10 @@ export class FireSoundEngine {
     const b = this.cB;
     const va0 = this.safeVol(a);
     const vb0 = this.safeVol(b);
-    const steps = Math.max(1, Math.round(XFADE_MS / STEP_MS));
+    // A SHORT fade on extinguish (not the long crossfade length) so the sound stops promptly when the
+    // user puts the beacon out, instead of lingering ~1s.
+    const STOP_FADE_MS = 220;
+    const steps = Math.max(1, Math.round(STOP_FADE_MS / STEP_MS));
     let i = 0;
     this.ramp = setInterval(() => {
       i++;

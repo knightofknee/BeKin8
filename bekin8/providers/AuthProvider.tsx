@@ -66,7 +66,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       setUser(u ?? null);
       setInitialized(true);
       if (!u) {
-        // signed out — clear profile
+        // signed out, clear profile
         setProfile(null);
         setProfileLoaded(false);
       }
@@ -74,7 +74,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     return () => { mounted = false; unsub(); };
   }, []);
 
-  // Profile listener — subscribe once we have a user
+  // Profile listener, subscribe once we have a user
   useEffect(() => {
     if (!user) return;
     const unsub = onSnapshot(

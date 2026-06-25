@@ -1,8 +1,8 @@
 // components/BeaconTower.tsx
-// The "Two Lanterns" beacon — Old North Church (Boston), modeled on the real building: a tall WHITE
+// The "Two Lanterns" beacon, Old North Church (Boston), modeled on the real building: a tall WHITE
 // tiered steeple (spire + finial → upper tier → open belfry with arched louvered openings) on top of
 // a RED-BRICK square tower (tall arched window, the Paul Revere plaque, an arched door). The TWO
-// signal lanterns glow in the belfry openings on lit — staggered (one catches, then the other).
+// signal lanterns glow in the belfry openings on lit, staggered (one catches, then the other).
 // "One if by land, two if by sea." Animated (reanimated); home drives the ignite sound + haptic.
 // No clock (the real steeple in the iconic view doesn't show one). Authored 0..100; 180×180 footprint.
 import React, { useEffect, useState } from 'react';

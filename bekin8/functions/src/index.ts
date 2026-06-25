@@ -23,6 +23,7 @@ type Beacon = {
   details?: string;
   active?: boolean;
   allowedUids?: string[];
+  groupIds?: string[];
   startAt?: FirebaseFirestore.Timestamp;
 };
 
@@ -104,14 +105,23 @@ async function friendUidsOf(ownerUid: string): Promise<string[]> {
  *            ∩ users who opted in (new subdoc OR legacy notify flag)
  *            − ownerUid
  */
-async function eligibleRecipients(allowed: string[] | undefined, ownerUid: string): Promise<string[]> {
+async function eligibleRecipients(
+  allowed: string[] | undefined,
+  ownerUid: string,
+  groupIds?: string[]
+): Promise<string[]> {
   // Normalize allowed list (remove falsy, remove owner)
   const normalizedAllowed: string[] = Array.isArray(allowed)
     ? allowed.filter((u): u is string => !!u).filter((u) => u !== ownerUid)
     : [];
 
-  // If no allowed list, fall back to all accepted friends
-  const base: string[] = normalizedAllowed.length > 0
+  // A beacon with groupIds is SCOPED to exactly those groups, so honor allowedUids verbatim: an empty
+  // audience (e.g. the "test" group with no members, which resolves to just the owner) notifies NO ONE.
+  // Only an UNSCOPED beacon (no groups selected = "all friends") falls back to the full friend list.
+  const scoped = Array.isArray(groupIds) && groupIds.length > 0;
+  const base: string[] = scoped
+    ? normalizedAllowed
+    : normalizedAllowed.length > 0
     ? normalizedAllowed
     : await friendUidsOf(ownerUid);
 
@@ -146,7 +156,7 @@ async function getPushTokensFromSubcollection(uid: string): Promise<string[]> {
  * Gather all unique Expo tokens for a user.
  * Reads only from the canonical per-installation subcollection. Legacy single-token
  * fields (Profiles.expoPushToken, users.expoPushToken, users.pushToken) are no longer
- * read — they were causing duplicate sends when a uid had stale entries in multiple
+ * read, they were causing duplicate sends when a uid had stale entries in multiple
  * legacy locations alongside the modern subcollection token.
  */
 async function getAllExpoTokens(uid: string): Promise<string[]> {
@@ -239,7 +249,7 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   const ownerUid = b.ownerUid;
   if (!ownerUid) return;
 
-  const recipients = await eligibleRecipients(b.allowedUids, ownerUid);
+  const recipients = await eligibleRecipients(b.allowedUids, ownerUid, b.groupIds);
   logger.info('fanOut recipients', {
     beaconId,
     ownerUid,
@@ -495,7 +505,7 @@ export const onBeaconCommentNotify = onDocumentCreated(
 
     const recipients: string[] = [];
 
-    // Beacon owner: default-on. They created the beacon — they get notified
+    // Beacon owner: default-on. They created the beacon, they get notified
     // about all activity on it regardless of their commentNotify pref.
     if (ownerUid && ownerUid !== senderUid) {
       recipients.push(ownerUid);
@@ -595,12 +605,12 @@ export const onPostCommentNotify = onDocumentCreated(
 
     const recipients: string[] = [];
 
-    // 1) Post owner — uses postCommentNotify pref
+    // 1) Post owner, uses postCommentNotify pref
     if (ownerUid && ownerUid !== authorUid) {
       if (await wantsPostCommentNotify(ownerUid)) recipients.push(ownerUid);
     }
 
-    // 2) Prior commenters — uses commentOnCommentNotify pref, minus silenced
+    // 2) Prior commenters, uses commentOnCommentNotify pref, minus silenced
     const commenterUids = await getCommentAuthorUids(postId);
     const commenterCandidates = commenterUids.filter(
       (uid) => uid !== authorUid && uid !== ownerUid // owner already handled
@@ -733,7 +743,7 @@ export const onPostCreatedNotify = onDocumentCreated('Posts/{postId}', async (ev
   }
 });
 
-// ===== 7) Block user — end friendship bilaterally =====
+// ===== 7) Block user, end friendship bilaterally =====
 //
 // Trigger: a new doc appears at users/{ownerUid}/blocks/{blockedUid}.
 //
@@ -748,7 +758,7 @@ export const onPostCreatedNotify = onDocumentCreated('Posts/{postId}', async (ev
 //   - Cancels any pending FriendRequests in either direction (sets status
 //     to 'cancelled' so the client UI hides them).
 //
-// The block doc itself stays put — that's the source of truth for "owner has
+// The block doc itself stays put, that's the source of truth for "owner has
 // blocked this uid". To unblock, the owner sends a fresh friend request
 // (handled client-side in app/friends.tsx, which deletes the block doc as
 // part of the send).

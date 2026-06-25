@@ -1,6 +1,6 @@
 // lib/beaconNoise.ts
 // Seamless, randomized looping noise for the beacon fire + smoke. The trick (BIT-101 looping noise):
-// linear time never loops, so we sample value-noise along a CIRCLE in noise-space — at t=0 and
+// linear time never loops, so we sample value-noise along a CIRCLE in noise-space, at t=0 and
 // t=period the sampled point is identical, so any quantity driven by loopNoise(t, seed) is perfectly
 // PERIODIC (no visible seam) yet irregular. Give every animated quantity its OWN seed with an
 // incommensurate period and the many loops almost never re-align within a session → it reads as

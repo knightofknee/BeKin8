@@ -91,7 +91,7 @@ export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPos
         return { allowed: false, reason: 'rate_limited', availableDay };
       }
 
-      // useBonus === true — attempt atomic bonus deduction
+      // useBonus === true, attempt atomic bonus deduction
       const userRef = db.collection('users').doc(uid);
 
       try {
@@ -126,7 +126,7 @@ export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPos
       return { allowed: true };
     }
 
-    // ── Not rate-limited — free post ──────────────────────────────────────────
+    // ── Not rate-limited, free post ──────────────────────────────────────────
     logger.info('checkPostAllowed: allowed (free)', { uid, todayCount, yesterdayCount });
     return { allowed: true };
   }

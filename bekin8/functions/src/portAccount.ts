@@ -195,7 +195,7 @@ export const portAccountData = onCall(
           if (!otherUid) { batch.delete(edgeDoc.ref); return; }
 
           if (newFriendUids.has(otherUid)) {
-            // Already friends via new account — delete duplicate edge
+            // Already friends via new account, delete duplicate edge
             batch.delete(edgeDoc.ref);
           } else {
             // Reassign edge to new account

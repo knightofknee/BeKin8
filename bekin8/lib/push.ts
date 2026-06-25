@@ -77,7 +77,7 @@ export async function ensurePushPermissionsAndToken(): Promise<{
     return { granted: false };
   }
 
-  // 3) We have permission — get / save token
+  // 3) We have permission, get / save token
   const token = await getExpoPushToken();
   const user = auth.currentUser;
   if (user && token) {
@@ -102,7 +102,7 @@ export async function ensurePushPermissionsAndToken(): Promise<{
     );
 
     // Drain any legacy single-token mirrors so they can't generate duplicate sends.
-    // Failures here are non-fatal — fields may not exist yet, or the user may lack write
+    // Failures here are non-fatal, fields may not exist yet, or the user may lack write
     // perms on legacy fields; either way, the canonical subcollection write above is
     // what matters for delivery.
     await Promise.all([

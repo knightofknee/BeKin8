@@ -1,7 +1,7 @@
 // components/tutorial/TutorialResumeBanner.tsx
 // A slim top banner that persists until the user finishes base setup (username + friend +
 // notifications). It shows progress and, when tapped, jumps the tour to the earliest incomplete
-// step. Driven by useOnboarding() via its host screen — not by whether the tour was watched.
+// step. Driven by useOnboarding() via its host screen, not by whether the tour was watched.
 import React from "react";
 import { Pressable, Text, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -41,7 +41,7 @@ export default function TutorialResumeBanner({ visible, onPress, doneCount, tota
           </Text>
         ) : null}
       </View>
-      {/* Progress pips — filled for completed steps. */}
+      {/* Progress pips, filled for completed steps. */}
       <View style={styles.pips}>
         {Array.from({ length: total }).map((_, i) => (
           <View key={i} style={[styles.pip, { backgroundColor: i < doneCount ? "#fff" : "rgba(255,255,255,0.35)" }]} />

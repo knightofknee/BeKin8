@@ -3,7 +3,7 @@
 // `sound`); the engine re-points to the current skin's clips on change WITHOUT a dropout, crossfades
 // the crackle so it loops seamlessly and never repeats, and fires the ignition reliably. Plays
 // through the silent switch (alarm-like); the in-app fire-sound toggle is the control.
-// NOTE: expo-audio is native — audible only in a build, not OTA-only.
+// NOTE: expo-audio is native, audible only in a build, not OTA-only.
 import { useCallback, useEffect, useRef } from 'react';
 import { setAudioModeAsync } from 'expo-audio';
 import type { BeaconSkin } from './beaconSkins';

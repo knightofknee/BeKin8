@@ -97,7 +97,7 @@ export default function LinkPreview({ url }: { url: string }) {
       const data = extractMeta(html);
       if (data.title) return data;
 
-      // Some shortlinks use JS/meta-refresh redirects — try to follow them
+      // Some shortlinks use JS/meta-refresh redirects, try to follow them
       const refresh = html.match(
         /<meta[^>]+http-equiv=["']refresh["'][^>]+content=["']\d+;\s*url=([^"']+)["']/i
       );
@@ -112,7 +112,7 @@ export default function LinkPreview({ url }: { url: string }) {
         if (d2.title) return d2;
       }
 
-      // If redirect was followed, res.url may differ — re-fetch the final destination
+      // If redirect was followed, res.url may differ, re-fetch the final destination
       if (res.url && res.url !== target) {
         const r3 = await fetch(res.url, {
           signal: controller.signal,

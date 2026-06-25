@@ -31,7 +31,7 @@ export default function FriendRequestsSection({
       <Text style={[styles.sectionTitle, { color: colors.text }]}>Requests</Text>
       {incoming.length === 0 && outgoing.length === 0 ? (
         <Text style={[styles.subtle, { color: colors.subtle }]}>
-          {online ? "No active requests." : "Can't load requests — no internet connection."}
+          {online ? "No active requests." : "Can't load requests. No internet connection."}
         </Text>
       ) : (
         <>

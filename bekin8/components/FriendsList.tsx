@@ -15,7 +15,7 @@ type RowProps = {
   onToggleNotify?: (value: boolean) => void;
   onPressName?: () => void;
   onDoubleTap?: () => void;
-  notifyDisabled?: boolean; // master "notify all" is ON — show as on but grayed out
+  notifyDisabled?: boolean; // master "notify all" is ON, show as on but grayed out
 };
 
 function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, onPressName, onDoubleTap, notifyDisabled }: RowProps) {
@@ -35,7 +35,7 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
 
   return (
     <Pressable onPress={handleRowPress} style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      {/* Avatar — tappable to view profile */}
+      {/* Avatar, tappable to view profile */}
       <Pressable
         onPress={() => { tap(); onPressName?.(); }}
         disabled={!onPressName}

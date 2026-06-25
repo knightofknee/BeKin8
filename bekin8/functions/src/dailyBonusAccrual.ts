@@ -41,7 +41,7 @@ function calendarDaysBetween(earlier: string, later: string): number {
 export const dailyBonusAccrual = onSchedule('0 6 * * *', async () => {
   const todayStr = todayCentralStr();
 
-  // "Day before yesterday" start — used as the 2-day post lookback window
+  // "Day before yesterday" start, used as the 2-day post lookback window
   const startDayBeforeYesterday = startOfCentralDay(-2);
 
   logger.info('dailyBonusAccrual: starting', { todayStr, startDayBeforeYesterday });
@@ -109,7 +109,7 @@ export const dailyBonusAccrual = onSchedule('0 6 * * *', async () => {
 
         if (!recentPostsSnap.empty) {
           totalSkipped++;
-          return; // posted recently — don't accrue
+          return; // posted recently, don't accrue
         }
 
         // ── Both conditions satisfied → increment ──────────────────────────

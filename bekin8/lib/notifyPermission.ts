@@ -55,7 +55,7 @@ export async function ensureNotifyPermission(
     return true;
   }
 
-  // Already permanently denied — direct to OS settings.
+  // Already permanently denied, direct to OS settings.
   await new Promise<void>((resolve) =>
     Alert.alert(
       "Notifications Off",

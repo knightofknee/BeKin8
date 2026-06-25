@@ -47,12 +47,21 @@ export default function FriendsProfileAndInvite({
   message,
 }: Props) {
   const { colors } = useTheme();
-  // Tour targets: step "Pick your username" spotlights ONLY the username block; the next step
-  // ("Your name & invite link") spotlights the invite block (and mentions the display name above).
+  // Tour targets: step "Pick your username" spotlights ONLY the username block; step "Your name &
+  // invite link" spotlights the WHOLE profile block below (username + display name + invite) so the
+  // display name its copy mentions is highlighted and tappable, not just the invite.
   const usernameTarget = useTourTarget("friends-username");
-  const inviteTarget = useTourTarget("friends-invite");
+  const profileTarget = useTourTarget("friends-profile");
+  // Anchor only: the username/profile tour steps sit their callout JUST BELOW this "send a friend
+  // request" field (so it stays barely visible) rather than below their own spotlighted block.
+  const addFieldTarget = useTourTarget("friends-add");
+  // The whole card (username + invite link + add-by-username): the speed tour's "add a friend" step (2a).
+  const addCardTarget = useTourTarget("friends-add-card");
   return (
-    <View style={[styles.card, { backgroundColor: colors.card }]}>
+    <View ref={addCardTarget} collapsable={false} style={[styles.card, { backgroundColor: colors.card }]}>
+      {/* Profile + invite area: one spotlight target for the "Your name & invite link" step, so the
+          username, display name, AND invite are all highlighted + tappable (per the step's copy). */}
+      <View ref={profileTarget} collapsable={false}>
       {/* Username + display name */}
       {currentUsername ? (
         <>
@@ -95,14 +104,14 @@ export default function FriendsProfileAndInvite({
         </View>
       )}
 
-      {/* Invite a friend — share your smart link / code. Hidden until a username exists, since the
+      {/* Invite a friend, share your smart link / code. Hidden until a username exists, since the
           invite code is only minted once a username is set. */}
       {onShareInvite &&
         (currentUsername ? (
-          <View ref={inviteTarget} collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
+          <View collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
             <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
-              Share your link — when a friend joins (or already has BeKin), you’re instantly connected.
+              Share your link. When a friend joins (or already has BeKin), you’re instantly connected.
             </Text>
             <View style={styles.inputRow}>
               <View style={[styles.codeBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
@@ -118,13 +127,14 @@ export default function FriendsProfileAndInvite({
             </View>
           </View>
         ) : (
-          <View ref={inviteTarget} collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
+          <View collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
             <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.subtle, { color: colors.subtle }]}>
               Pick a username above to unlock your shareable invite link.
             </Text>
           </View>
         ))}
+      </View>
 
       {/* Add Friend */}
       <View style={[styles.cardInner, { marginTop: 14 }]}>
@@ -132,7 +142,7 @@ export default function FriendsProfileAndInvite({
         {!hasProfileUsername && (
           <Text style={[styles.subtle, { marginBottom: 8, color: colors.subtle }]}>You need a username first.</Text>
         )}
-        <View style={styles.inputRow}>
+        <View ref={addFieldTarget} collapsable={false} style={styles.inputRow}>
           <TextInput
             value={nameInput}
             onChangeText={onChangeName}

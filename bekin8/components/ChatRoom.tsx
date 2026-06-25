@@ -154,7 +154,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
   // Keyboard handling is owned by the parent modal via KeyboardAvoidingView
   // (see app/home.tsx beacon-details modal). Translating the panel here would
-  // push the header off the top of the modal — instead, the parent shrinks the
+  // push the header off the top of the modal, instead, the parent shrinks the
   // panel's available space so the header stays pinned, the list shrinks, and
   // the composer sits just above the keyboard.
 
@@ -552,12 +552,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                 <ActivityIndicator />
               ) : (
                 <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                  Can't load messages — no internet connection.
+                  Can't load messages. No internet connection.
                 </Text>
               )
             ) : (
               <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                {online ? "No messages yet" : "Can't load messages — no internet connection."}
+                {online ? "No messages yet" : "Can't load messages. No internet connection."}
               </Text>
             )
           }

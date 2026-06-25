@@ -17,6 +17,11 @@ type TourCtx = {
     steps: TourStep[],
     opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string }
   ) => void;
+  /**
+   * Replace the active tour's steps in place (same index/history), for live content that changes
+   * mid-tour, e.g. the final step's checklist + gated Done. No-ops if no tour is running.
+   */
+  updateSteps: (steps: TourStep[]) => void;
   endTour: (finished: boolean) => void;
   /**
    * Jump the active tour to the step whose target matches `key` (e.g. an optional branch).
@@ -25,10 +30,18 @@ type TourCtx = {
   goToTarget: (key: string, opts?: { pushHistory?: boolean }) => void;
   /** Advance the active tour to the next step (e.g. a screen reacting to the sheet closing). */
   advance: () => void;
+  /** Step the active tour BACK (e.g. the sheet's own Cancel button returning to the previous step). */
+  back: () => void;
+  /** Swap the active tour to a new step array and restart from the first step (same onFinish/onClose).
+   *  Used by the "Speed tour" button to switch the full tour into the short path. */
+  restart: (steps: TourStep[]) => void;
   /** `id` of the step currently showing, so screens can react to which step is active. */
   currentStepId?: string;
   /** `target` of the step currently showing, so screens can react to it (e.g. open the sheet). */
   currentStepTarget?: string;
+  /** Direction of the LAST navigation: 'back' (onPrev) restores a previously-seen state and should
+   *  NOT replay entrance animations; 'forward'/'jump' may animate reveals. */
+  navDir: "forward" | "back" | "jump";
   isActive: boolean;
 };
 
@@ -36,11 +49,15 @@ const Ctx = createContext<TourCtx>({
   registerTarget: () => {},
   measureTarget: async () => null,
   startTour: () => {},
+  updateSteps: () => {},
   endTour: () => {},
   goToTarget: () => {},
   advance: () => {},
+  back: () => {},
+  restart: () => {},
   currentStepId: undefined,
   currentStepTarget: undefined,
+  navDir: "forward",
   isActive: false,
 });
 
@@ -52,6 +69,12 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const activeRef = useRef(false);
   const [steps, setSteps] = useState<TourStep[] | null>(null);
   const [index, setIndex] = useState(0);
+  // Bumped on each start/restart so SpotlightTour gets a fresh `key` and REMOUNTS (re-running the first
+  // step's onEnter). updateSteps does NOT bump it, so live content swaps never re-navigate.
+  const [runId, setRunId] = useState(0);
+  // Direction of the last navigation. Hosts read this to RESTORE prior state on Back without replaying
+  // entrance animations (e.g. the options sheet snaps open instead of sliding up). 'forward' by default.
+  const [navDir, setNavDir] = useState<"forward" | "back" | "jump">("forward");
 
   const registerTarget = useCallback((key: string, ref: TargetRef | null) => {
     if (ref) targets.current.set(key, ref);
@@ -76,10 +99,12 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       s: TourStep[],
       opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string }
     ) => {
-      if (activeRef.current) return; // a tour is already running — don't clobber it
+      if (activeRef.current) return; // a tour is already running, don't clobber it
       activeRef.current = true;
       cb.current = { onFinish: opts?.onFinish, onClose: opts?.onClose };
       history.current = [];
+      setNavDir("forward");
+      setRunId((r) => r + 1);
       // Optionally start mid-flow (e.g. the resume banner jumping to the first incomplete step).
       // History stays empty so Back is hidden until the user moves forward from here.
       let start = 0;
@@ -94,7 +119,24 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     []
   );
 
+  const updateSteps = useCallback((s: TourStep[]) => {
+    if (activeRef.current) setSteps(s);
+  }, []);
+
+  // Swap the running tour to a new step array and restart from the first step (clears history), keeping
+  // the same onFinish/onClose. Bumps runId so SpotlightTour remounts and the new first step's onEnter
+  // runs. Used by the "Speed tour" button to switch the full tour into the short path.
+  const restart = useCallback((s: TourStep[]) => {
+    if (!activeRef.current) return;
+    history.current = [];
+    setNavDir("forward");
+    setIndex(0);
+    setSteps(s);
+    setRunId((r) => r + 1);
+  }, []);
+
   const endTour = useCallback((finished: boolean) => {
+    if (!activeRef.current) return; // idempotent: a double end (Next-past-last twice, or Next then Skip) is a no-op
     activeRef.current = false;
     setSteps(null);
     history.current = [];
@@ -105,6 +147,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, []);
 
   const onNext = useCallback(() => {
+    setNavDir("forward");
     setIndex((i) => {
       if (!steps) return i;
       const cur = steps[i];
@@ -126,8 +169,9 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, [steps, endTour]);
 
   // Back follows the visited path (not index-1), so it always returns to the step/screen that
-  // actually came before — including across optional branches.
+  // actually came before, including across optional branches.
   const onPrev = useCallback(() => {
+    setNavDir("back");
     setIndex((i) => {
       const prev = history.current.pop();
       return prev !== undefined ? prev : i;
@@ -138,6 +182,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   const goToTarget = useCallback(
     (key: string, opts?: { pushHistory?: boolean }) => {
+      setNavDir("jump");
       setIndex((i) => {
         if (!steps) return i;
         const ni = steps.findIndex((s) => s.target === key);
@@ -160,11 +205,15 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         registerTarget,
         measureTarget,
         startTour,
+        updateSteps,
         endTour,
         goToTarget,
         advance: onNext,
+        back: onPrev,
+        restart,
         currentStepId,
         currentStepTarget,
+        navDir,
         isActive: !!steps,
       }}
     >
@@ -179,6 +228,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       </View>
       {steps && (
         <SpotlightTour
+          key={runId}
           steps={steps}
           index={index}
           canBack={history.current.length > 0}

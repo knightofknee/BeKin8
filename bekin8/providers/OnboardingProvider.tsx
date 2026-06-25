@@ -1,7 +1,7 @@
 // providers/OnboardingProvider.tsx
 // Tracks the "base setup" the user must finish to actually get value from BeKin: pick a username,
 // add a friend, and turn on notifications. Drives the resume banner (which persists until all three
-// are done — independent of whether the tour was watched) and tells it where to jump.
+// are done, independent of whether the tour was watched) and tells it where to jump.
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { AppState } from "react-native";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
@@ -54,7 +54,7 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   const [notifGranted, setNotifGranted] = useState(false);
   const [notifChecked, setNotifChecked] = useState(false);
 
-  // Friend count from accepted FriendEdges — the same canonical source the Friends screen and the
+  // Friend count from accepted FriendEdges, the same canonical source the Friends screen and the
   // tour's add-brian gate use (symmetric: both parties appear in `uids`). Errors resolve to "none".
   useEffect(() => {
     const uid = user?.uid;
@@ -82,7 +82,7 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
     return () => unsub();
   }, [user?.uid]);
 
-  // OS notification permission — re-checked on mount, on user change, and whenever the app returns
+  // OS notification permission, re-checked on mount, on user change, and whenever the app returns
   // to the foreground (so returning from iOS Settings clears the step). `refresh` covers the
   // in-app enable, which on iOS shows a modal that doesn't fire an AppState change.
   const checkNotif = useCallback(async () => {
@@ -114,7 +114,7 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   const hasUsername = !!profile?.username?.trim();
   const steps: OnboardingStep[] = [
     { key: "username", label: "Pick a username", done: hasUsername, target: "friends-username" },
-    { key: "friend", label: "Add a friend", done: hasFriend, target: "add-brian" },
+    { key: "friend", label: "Add a friend", done: hasFriend, target: "friends-requests" },
     { key: "notifications", label: "Turn on notifications", done: notifGranted, target: "settings-notifications" },
   ];
   const doneCount = steps.filter((s) => s.done).length;

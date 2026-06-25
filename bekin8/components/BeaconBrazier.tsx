@@ -1,5 +1,5 @@
 // components/BeaconBrazier.tsx
-// The "Old Guard" beacon STRUCTURE: a forged iron brazier on splayed legs, cradling stacked wood —
+// The "Old Guard" beacon STRUCTURE: a forged iron brazier on splayed legs, cradling stacked wood,
 // the grand-signal-beacon read (not a campfire). Static SVG; the fire/glow render on top via
 // BeaconFire. Authored in a 0..100 box so it shares the old 180×180 footprint. Unlit appearance
 // (dark iron + bare wood + faint banked coals); the flame is the fire layer's job.

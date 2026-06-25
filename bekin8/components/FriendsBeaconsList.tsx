@@ -120,7 +120,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
   // Tracks the friendUids signature (sorted, deduped, joined) of the currently-active
   // beacon subscriptions. When the parent re-renders and friendUids' array reference
   // changes but its CONTENTS are identical, we skip tearing down and re-creating all
-  // the per-batch onSnapshot listeners — they're still valid.
+  // the per-batch onSnapshot listeners, they're still valid.
   const subscriptionsKeyRef = useRef<string>('');
 
   // Final unmount cleanup for beacon listeners. The main subscription effect manages
@@ -257,7 +257,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
 
     // Prune past/expired entries from the store so it can't grow unboundedly across
     // long-running sessions. The query has no time filter, so old beacons accumulate
-    // unless we explicitly drop them — Firestore only reports them as 'removed'
+    // unless we explicitly drop them, Firestore only reports them as 'removed'
     // when the document itself is deleted.
     const cutoff = startOfDay(new Date()).getTime();
     const nowMs = Date.now();
@@ -362,7 +362,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       // Pre-mark these uids as fetched BEFORE starting the request. Without this,
       // concurrent computeAndSet calls (e.g. from rapid snapshot updates) would
       // see them as unfetched and kick off duplicate in-flight reads for the
-      // same profiles. This also covers the empty-result case — if a Profile
+      // same profiles. This also covers the empty-result case, if a Profile
       // genuinely doesn't exist we won't repeatedly retry it.
       list.forEach((uid) => profilesFetchedRef.current.add(uid));
       fetchProfileNames(list).then((map) => {
@@ -406,7 +406,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
           .catch((err) => {
             // Defensive: each inner map already try/catches, so this should be unreachable.
             // If something does throw (e.g. computeAndSet itself), don't leave the inflight
-            // refs / list in a broken state — clear them and try a recompute.
+            // refs / list in a broken state, clear them and try a recompute.
             if (__DEV__) console.warn('Groups fetch chain failed', err);
             toFetch.forEach((gid) => groupFetchInFlightRef.current.delete(gid));
             if (mountedRef.current) computeAndSet();
@@ -598,7 +598,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
         emptyReady ? (
           !online ? (
             <Text style={[styles.friendInactive, { color: tc.subtle }]}>
-              Can’t load beacons — no internet connection.
+              Can’t load beacons. No internet connection.
             </Text>
           ) : showExampleWhenEmpty && friendUids.length === 0 ? (
             <View style={{ marginTop: 12 }}>
