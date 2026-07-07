@@ -868,3 +868,4 @@ export { checkPostAllowed } from './checkPostAllowed.js';
 export { dailyBonusAccrual } from './dailyBonusAccrual.js';
 export { portAccountData } from './portAccount.js';
 export { ensureInviteCode, redeemInvite } from './redeemInvite.js';
+export { getFriendsOfFriends } from './friendsOfFriends.js';

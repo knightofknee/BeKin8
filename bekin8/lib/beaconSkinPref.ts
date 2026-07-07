@@ -10,7 +10,9 @@ const listeners = new Set<Listener>();
 
 export async function getBeaconSkinId(): Promise<string> {
   try {
-    return (await AsyncStorage.getItem(KEY)) || DEFAULT_SKIN_ID;
+    // Normalize through the registry: a persisted retired id (e.g. the old 'wisp') would render
+    // fine via getSkin's fallback but leave the style picker with no selected chip.
+    return getSkin(await AsyncStorage.getItem(KEY)).id;
   } catch {
     return DEFAULT_SKIN_ID;
   }

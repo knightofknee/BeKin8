@@ -121,6 +121,9 @@ type Props = {
   onNext: () => void;
   onPrev: () => void;
   onSkip: () => void;
+  /** Replay run (tour already completed/skipped once): the dismiss button reads "Close" instead of
+   *  "Skip tour", since a returning user isn't skipping onboarding, just leaving. */
+  isReplay?: boolean;
 };
 
 const DIM = "rgba(0,0,0,0.62)";
@@ -131,7 +134,7 @@ const PAD = 8;
 const stripEmoji = (s: string) =>
   s.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{FE0F}\u{200D}]/gu, "").replace(/\s+/g, " ").trim();
 
-export default function SpotlightTour({ steps, index, canBack, measureTarget, onNext, onPrev, onSkip }: Props) {
+export default function SpotlightTour({ steps, index, canBack, measureTarget, onNext, onPrev, onSkip, isReplay = false }: Props) {
   const { colors } = useTheme();
   const { width: W, height: H } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -254,7 +257,7 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, kbHeight]);
 
-  // Announce to screen readers when the gated final "Done" UNLOCKS. The host enables it via updateSteps
+  // Announce to screen readers when the gated final "Done" UNLOCKS. The host enables it via updateStepById
   // at the SAME index, which the per-step announce (keyed on [index]) does not catch, so a VoiceOver user
   // would otherwise get no signal that the action became available.
   const prevCtaDisabledRef = useRef(true);
@@ -456,8 +459,8 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
                 {`STEP ${step.stepLabel ?? current} OF ${total}`}
               </Text>
             </View>
-            <Pressable hitSlop={10} onPress={skip} accessibilityRole="button" accessibilityLabel="Skip tour">
-              <Text style={[styles.skipTxt, { color: colors.subtle }]}>Skip tour</Text>
+            <Pressable hitSlop={10} onPress={skip} accessibilityRole="button" accessibilityLabel={isReplay ? "Close tour" : "Skip tour"}>
+              <Text style={[styles.skipTxt, { color: colors.subtle }]}>{isReplay ? "Close" : "Skip tour"}</Text>
             </Pressable>
           </View>
 

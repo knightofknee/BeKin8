@@ -2,11 +2,13 @@
 // Step content for the coach-mark tours. Targets reference keys registered via useTourTarget()
 // across Home, the options sheet, Friends, the Post screen, and Settings. Steps marked
 // `interactive` let the user touch/edit the highlighted element without ending the tour.
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../providers/ThemeProvider";
 import { useOnboarding } from "../../providers/OnboardingProvider";
+import { getBeaconSkinId, onBeaconSkinChange } from "../../lib/beaconSkinPref";
+import { getSkin } from "../../lib/beaconSkins";
 import type { TourStep } from "./SpotlightTour";
 
 // ---------- Beacon tour (Home + sheet + Friends) ----------
@@ -21,9 +23,14 @@ export type BeaconTourCtx = {
   openFirstBeacon: () => void;
   /** True once the user has ≥1 friend, drops the "Add Brian" step (its card only shows at 0). */
   hasFriends: boolean;
-  /** The current skin's tappable noun ("logs" / "lighthouse" / "lanterns" / …) for step 1's copy. */
+  /** The current skin's tappable noun ("logs" / "lighthouse" / "lanterns" / …) for step 1's copy.
+   * Used only as the initial value: TapNounBody tracks live skin switches during the tour. */
   tapNoun: string;
-  /** Live setup state for the final-step checklist + gated Done (host refreshes via updateSteps). */
+  /** Spotlight headroom above the 180px structure box, sized to the current skin's flame height
+   * (the fixed 70 clipped Old Guard / Bonfire flames with a hard dim edge). Built-time like the
+   * rest of the step geometry; a mid-tour skin switch keeps it until the tour is rebuilt. */
+  holePadTop: number;
+  /** Live setup state for the final-step checklist + gated Done (host refreshes via updateStepById). */
   usernameDone: boolean;
   friendDone: boolean;
   /** True if the user's beacon is currently LIT / active (NOT merely a stale planned one) at build
@@ -96,6 +103,21 @@ function FirstBeaconBody({ usernameDone, friendDone, beaconLit }: { usernameDone
   );
 }
 
+// Live "tap the {noun}" body. The interactive 'beacon-style' step invites mid-tour skin switches
+// and Back can land on the light step again afterward, so the noun must track the CURRENT skin,
+// not the one captured when the steps were built.
+function TapNounBody({ initialNoun, template }: { initialNoun: string; template: (noun: string) => string }) {
+  const { colors } = useTheme();
+  const [noun, setNoun] = useState(initialNoun);
+  useEffect(() => {
+    let mounted = true;
+    getBeaconSkinId().then((id) => mounted && setNoun(getSkin(id).tap.noun)); // re-sync if it changed since build
+    const off = onBeaconSkinChange((id) => setNoun(getSkin(id).tap.noun));
+    return () => { mounted = false; off(); };
+  }, []);
+  return <Text style={[s.body, { color: colors.text }]}>{template(noun)}</Text>;
+}
+
 // Live body for the speed tour's "add a friend" step (2b). Reads the friend count live via
 // useOnboarding, so the instant the user adds a friend the text flips from "add me" to a congrats. The
 // actual friends list (on the Friends screen) swaps the Add-Brian card for the new friend row on its own.
@@ -115,7 +137,7 @@ function SpeedFriendBody() {
 }
 
 // The guided first-beacon final step. Built here so the host (home) can rebuild it live via
-// updateSteps as username/friend/beacon state change. `reached` is a STICKY flag (set once the user
+// updateStepById as username/friend/beacon state change. `reached` is a STICKY flag (set once the user
 // has a username, a friend, AND has lit a beacon): once true it switches to the celebratory wrap-up
 // with Done enabled, and stays there even if the beacon is later put out. Until then it's the gated
 // guided-first-beacon (checklist + disabled Done), which seeds the test group + sheet on enter.
@@ -156,10 +178,15 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       id: "light-beacon-demo",
       target: "beacon-logs",
       title: "Light your beacon",
-      body: `A beacon tells friends you're free to hang out. Tap the ${ctx.tapNoun} to light it, tap again to put it out. Nothing is shared yet: that starts once you add a username and a friend.`,
+      body: (
+        <TapNounBody
+          initialNoun={ctx.tapNoun}
+          template={(noun) => `A beacon tells friends you're free to hang out. Tap the ${noun} to light it, tap again to put it out. Nothing is shared yet: that starts once you add a username and a friend.`}
+        />
+      ),
       interactive: true,
       placement: "top", // keep the callout above the logs so it never covers the "tap the logs" caption below
-      holePadTop: 70, // reach UP over the logs + lower flame; the tip overlaps above the box (ok per user)
+      holePadTop: ctx.holePadTop, // reach UP over the structure + the current skin's full flame height
       holePadBottom: -16, // lower edge contains the full structure (incl. brazier legs) but clears the chat button
       nextTarget: "beacon-options-cta", // Next skips the chat branch below (only a real light opts into it)
       speedTour: ctx.onSpeedTour, // green button: jump to the short username/friend/light path
@@ -268,7 +295,7 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
     },
     // Final step is ALWAYS shown (never auto-skipped). It's a single LIVE step: gated guided-first-
     // beacon until the user has username + friend + a lit beacon, then the celebratory wrap-up. The
-    // host rebuilds it via updateSteps; `reached` here is the initial (build-time) value.
+    // host rebuilds it via updateStepById; `reached` here is the initial (build-time) value.
     makeFirstBeaconStep(
       { openFirstBeacon: ctx.openFirstBeacon, onEnterDone: home },
       {
@@ -332,11 +359,16 @@ export function buildSpeedTour(ctx: BeaconTourCtx): TourStep[] {
       id: "speed-light",
       target: "beacon-logs",
       title: "Light your beacon",
-      body: `Tap the ${ctx.tapNoun} to light your beacon. That tells your friends you are free to hang out.`,
+      body: (
+        <TapNounBody
+          initialNoun={ctx.tapNoun}
+          template={(noun) => `Tap the ${noun} to light your beacon. That tells your friends you are free to hang out.`}
+        />
+      ),
       interactive: true,
       placement: "top",
       stepLabel: "3a",
-      holePadTop: 70,
+      holePadTop: ctx.holePadTop,
       holePadBottom: -16,
       onEnter: home,
     },

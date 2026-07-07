@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
+import { Ionicons } from "@expo/vector-icons";
 import BottomBar from "../components/BottomBar";
 import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
@@ -312,25 +313,45 @@ export default function SettingsScreen() {
             <Text style={s.prominentBtnTxt}>Edit Profile</Text>
           </Pressable>
 
-          {/* Dark mode, inverse color scheme */}
+          {/* Dark mode, inverse color scheme. The LABEL is the only in-flow child (so it centers
+              exactly like Edit Profile's text); the sun/moon is an Ionicons vector icon (identical
+              rendering on simulator and device, unlike emoji) hung off a zero-width anchor a fixed
+              gap left of the label, tinted to match the text. */}
           <Pressable
             style={[s.prominentBtn, { backgroundColor: isDark ? '#FFFFFF' : '#111827' }]}
             onPress={() => { selection(); toggleTheme(); }}
           >
-            <Text style={[s.prominentBtnTxt, { color: isDark ? '#111827' : '#FFFFFF' }]}>
-              {isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
-            </Text>
+            <View>
+              <View style={s.btnEmojiAnchor}>
+                {/* Tinted like the emoji were: a golden sun, a pale-gold crescent moon. The sun is
+                    drawn bigger (its thin rays read smaller than the moon's solid shape at equal
+                    size), with a 1pt lift to keep it optically centered on the label. */}
+                <Ionicons
+                  name={isDark ? 'sunny' : 'moon'}
+                  size={isDark ? 21 : 17}
+                  color={isDark ? '#F6B93B' : '#F5D488'}
+                  style={[s.btnModeIcon, isDark && { top: -1 }]}
+                />
+              </View>
+              <Text style={[s.prominentBtnTxt, { color: isDark ? '#111827' : '#FFFFFF' }]}>
+                {isDark ? 'Light Mode' : 'Dark Mode'}
+              </Text>
+            </View>
           </Pressable>
 
-          {/* Advanced Settings */}
-          <Pressable
-            style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
-            onPress={() => { tap(); router.push("/advanced-settings"); }}
-          >
-            <Text style={[s.link, { color: tc.primary }]}>Advanced Settings</Text>
-            <Text style={[s.subtle, { color: tc.subtle }]}>›</Text>
-          </Pressable>
         </ScrollView>
+
+        {/* Advanced Settings: a FIXED footer pinned between the scroll area and the BottomBar,
+            OUTSIDE the ScrollView. The settings content is taller than the viewport, so anything
+            rendered after the buttons inside the scroll ends up below the fold; a pinned footer is
+            always visible and always centered, on every device, at every scroll position. */}
+        <Pressable
+          style={({ pressed }) => [s.advancedFooter, pressed && { opacity: 0.6 }]}
+          onPress={() => { tap(); router.push("/advanced-settings"); }}
+          hitSlop={8}
+        >
+          <Text style={[s.link, { color: tc.primary }]}>Advanced Settings ›</Text>
+        </Pressable>
       </SafeAreaView>
       <BottomBar />
     </>
@@ -352,8 +373,14 @@ const s = StyleSheet.create({
   back: { color: colors.primary, fontWeight: "800", fontSize: 16, width: 48 },
   title: { color: colors.text, fontWeight: "800", fontSize: 18, textAlign: "center" },
 
-  body: { flex: 1 },
-  bodyContent: { flexGrow: 1, padding: SCREEN_PAD, paddingBottom: 120 },
+  // The scroll area takes only its content's height (shrinking into a scrollable region when the
+  // content overflows); the Advanced Settings footer below it flexes into ALL leftover space, so
+  // its centered link is truly centered in whatever room is actually available.
+  body: { flexGrow: 0, flexShrink: 1 },
+  // The scroll area ends ABOVE the pinned Advanced Settings footer; zero bottom padding so the
+  // footer owns ALL the space below the Light Mode button (any padding here sits above the footer
+  // and shoves its centered link visually low).
+  bodyContent: { flexGrow: 1, padding: SCREEN_PAD, paddingBottom: 0 },
   row: {
     paddingVertical: 14,
     borderBottomWidth: 1,
@@ -373,4 +400,22 @@ const s = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800",
   },
+  // Footer strip between the scroll area and the 64pt absolute BottomBar. flexGrow absorbs all
+  // leftover vertical space; minHeight keeps a usable strip when the scroll content overflows.
+  advancedFooter: {
+    flexGrow: 1,
+    minHeight: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    // Biases the centered link UP a bit within the strip (per on-device eyeballing).
+    paddingBottom: 16,
+    marginBottom: 64,
+  },
+  // Zero-width anchor pinned a space-width before the label's first character; the mode icon hangs
+  // off its RIGHT edge. left: -5 = the gap between the icon's right edge and the label (roughly the
+  // original single-space width). The Ionicons glyph has a KNOWN width (= its size) and renders
+  // identically on simulator and device (emoji tofu advances made this unverifiable), so right: 0
+  // inside the anchor is exact; top: 1 optically aligns the 17pt icon with the 16pt bold label.
+  btnEmojiAnchor: { position: "absolute", left: -5, top: 0, bottom: 0, width: 0 },
+  btnModeIcon: { position: "absolute", right: 0, top: 1 },
 });

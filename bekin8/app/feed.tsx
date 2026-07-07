@@ -33,6 +33,7 @@ import {
   serverTimestamp,
   DocumentSnapshot,
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
 import { SCREEN_PAD } from '../components/ui/layout';
@@ -155,6 +156,10 @@ export default function Feed() {
   const authorCache = useRef<Record<string, { label: string; username: string; commentsEnabled: boolean }>>({});
   // friend uid set
   const friendUids = useRef<Set<string>>(new Set());
+  // friends-of-friends uid set (session cache, kept separate from friends)
+  const fofUids = useRef<Set<string>>(new Set());
+  // last seen value of my Profiles/{me}.friendsOfFriendsPosts flag
+  const prevFofFlagRef = useRef<boolean | null>(null);
   // oldest timestamp loaded so far (for pagination cursor)
   const oldestTs = useRef<number>(Date.now());
 
@@ -221,7 +226,29 @@ export default function Feed() {
     ]);
 
     friendUids.current = uids;
-    return uids;
+
+    // friends-of-friends: only when I opted in; the callable enforces mutual opt-in
+    const fof = new Set<string>();
+    try {
+      const mySnap = await getDoc(doc(db, 'Profiles', me));
+      if (mySnap.exists() && (mySnap.data() as any)?.friendsOfFriendsPosts === true) {
+        const getFriendsOfFriends = httpsCallable<void, { uids: string[] }>(
+          getFunctions(),
+          'getFriendsOfFriends'
+        );
+        const result = await getFriendsOfFriends();
+        const returned = Array.isArray(result.data?.uids) ? result.data.uids : [];
+        returned.forEach((u) => {
+          if (typeof u === 'string' && u && u !== me && !uids.has(u)) fof.add(u);
+        });
+      }
+    } catch (err) {
+      // FoF must never break the feed (offline, callable not deployed yet)
+      if (__DEV__) console.warn('Feed friends-of-friends load failed:', err);
+    }
+    fofUids.current = fof;
+
+    return new Set([...Array.from(uids), ...Array.from(fof)]);
   }, []);
 
   // ── resolve author label + commentsEnabled for a batch of uids ─────────────
@@ -322,7 +349,7 @@ export default function Feed() {
     if (loadingMore || !hasMore || !oldestTs.current) return;
     setLoadingMore(true);
     try {
-      const uids = Array.from(friendUids.current);
+      const uids = Array.from(new Set([...Array.from(friendUids.current), ...Array.from(fofUids.current)]));
       const page = await loadPage(uids, oldestTs.current);
       if (page.length < PAGE_SIZE) setHasMore(false);
       if (!page.length) return;
@@ -347,8 +374,7 @@ export default function Feed() {
     const me = auth.currentUser?.uid;
     if (!me) return;
     let debounce: ReturnType<typeof setTimeout>;
-    const makeRefresh = (skip: { val: boolean }) => () => {
-      if (skip.val) { skip.val = false; return; }
+    const triggerRefresh = () => {
       clearTimeout(debounce);
       debounce = setTimeout(() => {
         // keep author cache, names don't change just because friends list changed
@@ -357,11 +383,24 @@ export default function Feed() {
         initialLoad();
       }, 800);
     };
+    const makeRefresh = (skip: { val: boolean }) => () => {
+      if (skip.val) { skip.val = false; return; }
+      triggerRefresh();
+    };
     const skipObjA = { val: true };
     const skipObjB = { val: true };
     const unsubA = onSnapshot(collection(db, 'users', me, 'friends'), makeRefresh(skipObjA), () => {});
     const unsubB = onSnapshot(query(collection(db, 'FriendEdges'), where('uids', 'array-contains', me)), makeRefresh(skipObjB), () => {});
-    return () => { clearTimeout(debounce); unsubA(); unsubB(); };
+    // re-init when MY friendsOfFriendsPosts flag flips (toggled in advanced settings);
+    // watch only this field's value transitions, ignore unrelated profile changes
+    const unsubC = onSnapshot(doc(db, 'Profiles', me), (snap) => {
+      const flag = snap.exists() && (snap.data() as any)?.friendsOfFriendsPosts === true;
+      if (prevFofFlagRef.current === null) { prevFofFlagRef.current = flag; return; }
+      if (prevFofFlagRef.current === flag) return;
+      prevFofFlagRef.current = flag;
+      triggerRefresh();
+    }, () => {});
+    return () => { clearTimeout(debounce); unsubA(); unsubB(); unsubC(); };
   }, [initialLoad]);
 
   // ── filter ──────────────────────────────────────────────────────────────────

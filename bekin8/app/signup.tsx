@@ -31,10 +31,21 @@ import GoogleLogo from "../components/GoogleLogo";
 import PasswordInput, { type PasswordInputHandle } from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
 import { stashPendingInvite, coerceInviteCode } from "../lib/inviteLink";
+import { sendInitialVerification } from "../lib/emailVerification";
 
 const TOP_OFFSET = 64; // match login offset
 const PW_ACCESSORY_ID = "signup-password-accessory";
 const CONFIRM_ACCESSORY_ID = "signup-confirm-accessory";
+
+// One-account-per-email collisions: Google sign-in against an existing same-email
+// account is auto-resolved by Firebase to the SAME account (project-level
+// one-account-per-email default), so success paths need no change. These catches
+// cover the combinations Firebase refuses to auto-link (e.g. Apple vs password).
+const CROSS_PROVIDER_COLLISION_MSG =
+  "You already have an account with this email. Sign in with the method you first signed up with.";
+const isCrossProviderCollision = (code?: string) =>
+  code === "auth/account-exists-with-different-credential" ||
+  code === "auth/credential-already-in-use";
 
 export default function SignUp() {
   const { colors, isDark } = useTheme();
@@ -92,7 +103,7 @@ export default function SignUp() {
       case "auth/invalid-email":
         return "That email address looks invalid.";
       case "auth/email-already-in-use":
-        return "There's already an account with that email.";
+        return "You already have an account with this email. Sign in instead, and use Google or Apple if that is how you first signed up.";
       case "auth/weak-password":
         return "Password must be at least 6 characters.";
       case "auth/operation-not-allowed":
@@ -118,6 +129,11 @@ export default function SignUp() {
       setLoading(true);
       await stashInviteIfPresent();
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+
+      // Deferred email verification: fire-and-forget the initial verification
+      // email so it never blocks signup or navigation. Failures are fine here;
+      // the in-app nag banner offers a resend.
+      sendInitialVerification(cred.user).catch(() => {});
 
       await setDoc(doc(db, "users", cred.user.uid), {
         uid: cred.user.uid,
@@ -148,6 +164,10 @@ export default function SignUp() {
       router.replace("/home");
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
+      if (isCrossProviderCollision(e?.code)) {
+        setError(CROSS_PROVIDER_COLLISION_MSG);
+        return;
+      }
       setError("Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
@@ -172,6 +192,10 @@ export default function SignUp() {
       }
     } catch (e: any) {
       if (e?.code === "ERR_REQUEST_CANCELED") return;
+      if (isCrossProviderCollision(e?.code)) {
+        setError(CROSS_PROVIDER_COLLISION_MSG);
+        return;
+      }
       setError("Apple sign-in failed. Please try again.");
     } finally {
       setAppleLoading(false);

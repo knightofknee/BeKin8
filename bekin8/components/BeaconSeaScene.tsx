@@ -4,10 +4,12 @@
 // cool moonlight ripple highlights, a shimmering moon-glint column, foam on the crests, and the
 // lighthouse BEAM'S reflection sweeping the water in sync with the beam (pulses on each flash, only
 // while lit). The sea animates whenever this skin is shown; reduced-motion freezes it.
-import React, { useCallback, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import { Canvas, Fill, Shader, Skia } from '@shopify/react-native-skia';
-import { useSharedValue, useDerivedValue, useFrameCallback, withTiming, cancelAnimation, useReducedMotion } from 'react-native-reanimated';
+import { Canvas, Fill, Shader } from '@shopify/react-native-skia';
+import { useSharedValue, useDerivedValue, withTiming, cancelAnimation, useReducedMotion } from 'react-native-reanimated';
+import { makeShaderEffect } from '../lib/makeShaderEffect';
+import { useGatedClock } from '../lib/useGatedClock';
 
 const SEA_SKSL = `
 uniform float u_time;
@@ -109,38 +111,21 @@ half4 main(vec2 fragCoord){
 }
 `;
 
-const effect = Skia.RuntimeEffect.Make(SEA_SKSL);
-if (!effect && __DEV__) {
-  // eslint-disable-next-line no-console
-  console.warn('BeaconSeaScene: sea shader failed to compile');
-}
+const effect = makeShaderEffect(SEA_SKSL, 'BeaconSeaScene');
 
 export default function BeaconSeaScene({ active, focused = true }: { active: boolean; focused?: boolean }) {
   const { width: W, height: H } = useWindowDimensions();
   const reduce = useReducedMotion();
 
-  const clock = useSharedValue(0);
-  const lit = useSharedValue(active ? 1 : 0);
   // Pause the (full-screen) wave shader when off the Home tab or under reduced-motion.
-  const run = useSharedValue(!reduce && focused ? 1 : 0);
-  useEffect(() => {
-    run.value = !reduce && focused ? 1 : 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reduce, focused]);
-
-  const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
-    'worklet';
-    if (run.value === 0) return;
-    clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useFrameCallback(tick, true);
+  const { clock } = useGatedClock(!reduce && focused);
+  const lit = useSharedValue(active ? 1 : 0);
 
   useEffect(() => {
     lit.value = withTiming(active ? 1 : 0, { duration: active ? 700 : 500 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
-  useEffect(() => () => { cancelAnimation(clock); cancelAnimation(lit); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { cancelAnimation(lit); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const horizon = H * 0.42;
   const moon: [number, number] = [W * 0.7, H * 0.16];

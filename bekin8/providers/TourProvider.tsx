@@ -15,13 +15,16 @@ type TourCtx = {
   measureTarget: (key: string) => Promise<Rect | null>;
   startTour: (
     steps: TourStep[],
-    opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string }
+    opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; isReplay?: boolean }
   ) => void;
   /**
-   * Replace the active tour's steps in place (same index/history), for live content that changes
-   * mid-tour, e.g. the final step's checklist + gated Done. No-ops if no tour is running.
+   * Replace a SINGLE step (matched by id) in the active tour, splicing the provider's OWN current
+   * steps, for live content that changes mid-tour (e.g. the final step's checklist + gated Done).
+   * Operating on the provider's own array means a host screen can refresh one live step even after it
+   * has remounted mid-tour and lost any local mirror. Same-index swap: no navigation, no runId bump.
+   * No-op if no tour is running or no step has that id.
    */
-  updateSteps: (steps: TourStep[]) => void;
+  updateStepById: (id: string, next: TourStep) => void;
   endTour: (finished: boolean) => void;
   /**
    * Jump the active tour to the step whose target matches `key` (e.g. an optional branch).
@@ -49,7 +52,7 @@ const Ctx = createContext<TourCtx>({
   registerTarget: () => {},
   measureTarget: async () => null,
   startTour: () => {},
-  updateSteps: () => {},
+  updateStepById: () => {},
   endTour: () => {},
   goToTarget: () => {},
   advance: () => {},
@@ -70,11 +73,15 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [steps, setSteps] = useState<TourStep[] | null>(null);
   const [index, setIndex] = useState(0);
   // Bumped on each start/restart so SpotlightTour gets a fresh `key` and REMOUNTS (re-running the first
-  // step's onEnter). updateSteps does NOT bump it, so live content swaps never re-navigate.
+  // step's onEnter). updateStepById does NOT bump it, so live content swaps never re-navigate.
   const [runId, setRunId] = useState(0);
   // Direction of the last navigation. Hosts read this to RESTORE prior state on Back without replaying
   // entrance animations (e.g. the options sheet snaps open instead of sliding up). 'forward' by default.
   const [navDir, setNavDir] = useState<"forward" | "back" | "jump">("forward");
+  // Whether this run is a REPLAY (the tour has ended at least once before). The dismiss button reads
+  // "Skip tour" on the first run (you're opting out of onboarding) and "Close" on a replay (you've
+  // already seen it, you're just leaving).
+  const [isReplay, setIsReplay] = useState(false);
 
   const registerTarget = useCallback((key: string, ref: TargetRef | null) => {
     if (ref) targets.current.set(key, ref);
@@ -97,13 +104,14 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const startTour = useCallback(
     (
       s: TourStep[],
-      opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string }
+      opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; isReplay?: boolean }
     ) => {
       if (activeRef.current) return; // a tour is already running, don't clobber it
       activeRef.current = true;
       cb.current = { onFinish: opts?.onFinish, onClose: opts?.onClose };
       history.current = [];
       setNavDir("forward");
+      setIsReplay(!!opts?.isReplay);
       setRunId((r) => r + 1);
       // Optionally start mid-flow (e.g. the resume banner jumping to the first incomplete step).
       // History stays empty so Back is hidden until the user moves forward from here.
@@ -119,8 +127,18 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     []
   );
 
-  const updateSteps = useCallback((s: TourStep[]) => {
-    if (activeRef.current) setSteps(s);
+  // Replace one step by id, operating on the provider's own current steps (which survive a host
+  // remount). Same-index swap: no navigation, no runId bump.
+  const updateStepById = useCallback((id: string, next: TourStep) => {
+    if (!activeRef.current) return;
+    setSteps((cur) => {
+      if (!cur) return cur;
+      const idx = cur.findIndex((st) => st.id === id);
+      if (idx < 0) return cur;
+      const copy = cur.slice();
+      copy[idx] = next;
+      return copy;
+    });
   }, []);
 
   // Swap the running tour to a new step array and restart from the first step (clears history), keeping
@@ -205,7 +223,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         registerTarget,
         measureTarget,
         startTour,
-        updateSteps,
+        updateStepById,
         endTour,
         goToTarget,
         advance: onNext,
@@ -236,6 +254,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           onNext={onNext}
           onPrev={onPrev}
           onSkip={onSkip}
+          isReplay={isReplay}
         />
       )}
     </Ctx.Provider>

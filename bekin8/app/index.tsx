@@ -34,6 +34,16 @@ import { useTheme } from "../providers/ThemeProvider";
 const TOP_OFFSET = 64; // consistent "reach-friendly" offset
 const BOTTOM_GAP = 28; // desired minimal space between keyboard and card
 
+// One-account-per-email collisions: Google sign-in against an existing same-email
+// account is auto-resolved by Firebase to the SAME account (project-level
+// one-account-per-email default), so success paths need no change. These catches
+// cover the combinations Firebase refuses to auto-link (e.g. Apple vs password).
+const CROSS_PROVIDER_COLLISION_MSG =
+  "You already have an account with this email. Sign in with the method you first signed up with.";
+const isCrossProviderCollision = (code?: string) =>
+  code === "auth/account-exists-with-different-credential" ||
+  code === "auth/credential-already-in-use";
+
 export default function Index() {
   const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
@@ -156,6 +166,10 @@ export default function Index() {
       router.replace("/home");
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
+      if (isCrossProviderCollision(e?.code)) {
+        setError(CROSS_PROVIDER_COLLISION_MSG);
+        return;
+      }
       setError("Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
@@ -179,6 +193,10 @@ export default function Index() {
       }
     } catch (e: any) {
       if (e?.code === "ERR_REQUEST_CANCELED") return;
+      if (isCrossProviderCollision(e?.code)) {
+        setError(CROSS_PROVIDER_COLLISION_MSG);
+        return;
+      }
       setError("Apple sign-in failed. Please try again.");
     } finally {
       setAppleLoading(false);

@@ -3,18 +3,19 @@
 // home renders this for the 'lighthouse' skin). Two opposing volumetric light cones ROTATE around the
 // lantern (anchorX/anchorY); the lantern blooms brighter each time a beam sweeps toward the viewer
 // (the periodic FLASH). Drop-in props with BeaconFire. NATIVE (Skia). Reduced-motion freezes rotation.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import { Canvas, Fill, Shader, Skia } from '@shopify/react-native-skia';
+import { Canvas, Fill, Shader } from '@shopify/react-native-skia';
 import {
   useSharedValue,
   useDerivedValue,
-  useFrameCallback,
   withTiming,
   cancelAnimation,
   useReducedMotion,
 } from 'react-native-reanimated';
 import type { BeaconSkin } from '../lib/beaconSkins';
+import { makeShaderEffect } from '../lib/makeShaderEffect';
+import { useGatedClock } from '../lib/useGatedClock';
 
 function rgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
@@ -63,11 +64,7 @@ half4 main(vec2 fragCoord){
 }
 `;
 
-const effect = Skia.RuntimeEffect.Make(BEAM_SKSL);
-if (!effect && __DEV__) {
-  // eslint-disable-next-line no-console
-  console.warn('BeaconLighthouseBeam: beam shader failed to compile');
-}
+const effect = makeShaderEffect(BEAM_SKSL, 'BeaconLighthouseBeam');
 
 export type BeaconFireProps = {
   skin: BeaconSkin;
@@ -84,22 +81,9 @@ export default function BeaconLighthouseBeam({ skin, active, anchorX, anchorY, m
   const color = rgb(skin.glow.center);
   const len = Math.hypot(W, H);
 
-  const clock = useSharedValue(0);
+  const { clock } = useGatedClock(active && !reduce && focused);
   const lit = useSharedValue(active ? 1 : 0);
   const [visible, setVisible] = useState(active);
-
-  const motion = useSharedValue(active && !reduce && focused ? 1 : 0);
-  useEffect(() => {
-    motion.value = active && !reduce && focused ? 1 : 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, reduce, focused]);
-  const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
-    'worklet';
-    if (motion.value === 0) return;
-    clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useFrameCallback(tick, true);
 
   useEffect(() => {
     if (active) {
@@ -115,7 +99,7 @@ export default function BeaconLighthouseBeam({ skin, active, anchorX, anchorY, m
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  useEffect(() => () => { cancelAnimation(clock); cancelAnimation(lit); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { cancelAnimation(lit); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const uniforms = useDerivedValue(
     () => ({

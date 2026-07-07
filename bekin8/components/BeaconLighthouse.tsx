@@ -37,7 +37,7 @@ const f = (n: number) => n.toFixed(1);
 const band = (y0: number, y1: number) =>
   `M${f(leftX(y0))} ${f(y0)} L${f(rightX(y0))} ${f(y0)} L${f(rightX(y1))} ${f(y1)} L${f(leftX(y1))} ${f(y1)} Z`;
 
-export default function BeaconLighthouse({ lit, size = 180 }: { lit: boolean; size?: number }) {
+export default function BeaconLighthouse({ lit, size = 180, focused = true }: { lit: boolean; size?: number; focused?: boolean }) {
   const reduce = useReducedMotion();
   const glow = useSharedValue(lit ? 1 : 0);
   const [glowing, setGlowing] = useState(lit);
@@ -52,8 +52,11 @@ export default function BeaconLighthouse({ lit, size = 180 }: { lit: boolean; si
   }, [lit]);
 
   useEffect(() => {
+    // Blur acts like reduced motion: cancel the breathe loop and pin the lit glow while covered.
+    const still = reduce || !focused;
+    cancelAnimation(glow);
     if (lit) {
-      if (reduce) {
+      if (still) {
         glow.value = 1;
         return;
       }
@@ -63,11 +66,10 @@ export default function BeaconLighthouse({ lit, size = 180 }: { lit: boolean; si
         withRepeat(withSequence(withTiming(0.82, { duration: 1100, easing: SIN }), withTiming(1, { duration: 1100, easing: SIN })), -1, true)
       );
     } else {
-      cancelAnimation(glow);
       glow.value = withTiming(0, { duration: 420 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lit, reduce]);
+  }, [lit, reduce, focused]);
 
   useEffect(() => () => cancelAnimation(glow), []); // eslint-disable-line react-hooks/exhaustive-deps
 

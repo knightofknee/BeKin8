@@ -4,21 +4,21 @@
 // (skin-colored, height-ramped by the ignition progress), rising EMBER glints, and an ignition BLOOM
 // flash. Shake is folded into the origin uniform so the whole fire jolts. Drop-in for BeaconFire
 // (same props); the SVG BeaconFire is kept as a fallback (toggle USE_SKIA_FIRE in home). NATIVE (Skia).
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import { Canvas, Fill, Shader, Skia } from '@shopify/react-native-skia';
+import { Canvas, Fill, Shader } from '@shopify/react-native-skia';
 import {
   useSharedValue,
   useDerivedValue,
-  useFrameCallback,
   withTiming,
   withSpring,
   withSequence,
-  withDelay,
   cancelAnimation,
   useReducedMotion,
 } from 'react-native-reanimated';
 import type { BeaconSkin } from '../lib/beaconSkins';
+import { makeShaderEffect } from '../lib/makeShaderEffect';
+import { useGatedClock } from '../lib/useGatedClock';
 
 // #RRGGBB -> [r,g,b] in 0..1 (shader uniforms). Falls back to mid-grey on a bad value.
 function rgb(hex: string): [number, number, number] {
@@ -32,9 +32,13 @@ const FIRE_SKSL = `
 uniform float u_time;       // seconds
 uniform float u_progress;   // 0..1 flame height ramp (ignition + lit)
 uniform float u_ignite;     // 0..1 decaying flash pulse on lighting
+uniform float u_shock;      // 0..1 expanding shockwave ring progress (0 = off)
 uniform float u_intensity;  // overall brightness
 uniform vec2  u_origin;     // flame base (px), shake folded in
 uniform float u_scale;      // flame height (px)
+uniform float u_width;      // half-width as a fraction of flame height (skin flameShape.width)
+uniform float u_turb;       // sway/turbulence multiplier (skin flameShape.turb)
+uniform float u_speed;      // vertical noise scroll speed (skin flameShape.speed)
 uniform vec3  u_col0;       // hot core
 uniform vec3  u_col1;       // mid
 uniform vec3  u_col2;       // cool tip
@@ -52,7 +56,7 @@ half4 main(vec2 fragCoord){
   vec2 d = fragCoord - u_origin;
   float fh = max(u_scale * u_progress, 1.0);
   float yn = -d.y / fh;                 // 0 at base, 1 near tip (up)
-  float halfW = fh * 0.42;
+  float halfW = fh * u_width;
   float xn = d.x / halfW;
 
   vec3 prem = vec3(0.0);                // additive premultiplied emission
@@ -65,15 +69,16 @@ half4 main(vec2 fragCoord){
   gcov += u_ignite * (1.0 - smoothstep(0.0, 1.5, gd)) * 0.7;
   prem += u_glow * gcov; a += gcov;
 
-  // ---- FLAME body (domain-warped, skin-colored): a rounded TEARDROP, narrow at the very base so it
-  //      tucks into the wood, bulges through the lower third, tapers to the tip (no flat "fat bottom"). ----
-  if (yn > -0.05 && yn < 1.35) {
-    vec2 p = vec2(xn * 1.6, yn * 3.0 - u_time * 2.4);
+  // ---- FLAME body (domain-warped, skin-colored): WIDE at the wood line, tapering steadily to the
+  //      tip. A real fire engulfs the top of its fuel; the old profile pinched the base to nothing
+  //      and every skin read as a tiny-bottomed teardrop perched on the wood. ----
+  if (yn > -0.08 && yn < 1.35) {
+    vec2 p = vec2(xn * 1.6, yn * 3.0 - u_time * u_speed);
     float n = fbm(p + fbm(p * 0.6));
-    float sway = (n - 0.5) * (0.18 + yn * 0.9);
-    float rise = smoothstep(-0.04, 0.20, yn);        // round the base (≈0 wide at the very bottom)
-    float fall = 1.0 - smoothstep(0.30, 1.05, yn);   // taper to the tip
-    float width = rise * fall * 0.80 + 0.05;
+    float sway = (n - 0.5) * (0.10 + yn * 0.9) * u_turb;  // little sway at the base, grows upward
+    float rise = smoothstep(-0.10, 0.02, yn);        // full width almost immediately at the seat
+    float fall = 1.0 - smoothstep(0.10, 1.02, yn);   // steady taper to the tip
+    float width = rise * (0.30 + 0.70 * fall);
     float dist = abs(xn + sway) / width;
     float body = (1.0 - smoothstep(0.5, 1.0, dist))
                * (1.0 - smoothstep(0.9, 1.32, yn))
@@ -84,6 +89,22 @@ half4 main(vec2 fragCoord){
     fcol += (1.0 - smoothstep(0.0, 0.55, dist)) * (1.0 - smoothstep(0.0, 0.45, yn)) * 0.6;
     float fcov = body * u_intensity;
     prem += fcol * fcov; a += fcov;
+
+    // molten FIRE BED hugging the wood line so the fuel's top reads engulfed, not perched on.
+    // Kept within the body's base width: the bed must never read wider than the wood.
+    float bedY = 1.0 - smoothstep(0.02, 0.14, abs(yn - 0.03));
+    float bedX = 1.0 - smoothstep(0.70, 1.0, abs(xn));
+    float bed = bedY * bedX * u_progress * u_intensity;
+    prem += mix(u_col0, u_col1, 0.35) * bed * 0.55; a += bed * 0.4;
+  }
+
+  // ---- ignition SHOCKWAVE: a thin ring racing outward from the base, fading as it grows ----
+  if (u_shock > 0.001 && u_shock < 0.999) {
+    float rr = mix(14.0, fh * 2.1, u_shock);
+    float rw = 7.0 + u_shock * 22.0;
+    float rd = length(vec2(d.x, d.y * 1.15)) - rr;
+    float ring = exp(-(rd * rd) / (2.0 * rw * rw)) * (1.0 - u_shock);
+    prem += u_glow * ring * 0.85; a += ring * 0.6;
   }
 
   // ---- rising EMBER glints ----
@@ -103,11 +124,7 @@ half4 main(vec2 fragCoord){
 }
 `;
 
-const effect = Skia.RuntimeEffect.Make(FIRE_SKSL);
-if (!effect && __DEV__) {
-  // eslint-disable-next-line no-console
-  console.warn('BeaconFireSkia: fire shader failed to compile');
-}
+const effect = makeShaderEffect(FIRE_SKSL, 'BeaconFireSkia');
 
 export type BeaconFireProps = {
   skin: BeaconSkin;
@@ -128,28 +145,17 @@ export default function BeaconFireSkia({ skin, active, anchorX, anchorY, measure
   const glow = rgb(skin.glow.center);
   const uScale = 170 * skin.flameScale;
 
-  const clock = useSharedValue(0);
   const progress = useSharedValue(active ? 1 : 0);
   const ignite = useSharedValue(0);
+  const shock = useSharedValue(0);
   const shakeX = useSharedValue(0);
   const shakeY = useSharedValue(0);
   const firstRun = useRef(true);
   const prevActiveRef = useRef(active);
   const [visible, setVisible] = useState(active);
 
-  // Always-registered clock gated internally (reliable across cold/skin mounts; no-ops when unlit).
-  const motion = useSharedValue(active && !reduce && focused ? 1 : 0);
-  useEffect(() => {
-    motion.value = active && !reduce && focused ? 1 : 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, reduce, focused]);
-  const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
-    'worklet';
-    if (motion.value === 0) return;
-    clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useFrameCallback(tick, true);
+  // Shared gated clock (reliable across cold/skin mounts; registered + paused when unlit).
+  const { clock } = useGatedClock(active && !reduce && focused);
 
   // Mount the fire only while lit (+ fade tail) so unlit renders nothing.
   useEffect(() => {
@@ -180,6 +186,10 @@ export default function BeaconFireSkia({ skin, active, anchorX, anchorY, measure
       } else if (justLit) {
         progress.value = withSpring(1, { damping: skin.ignition.damping, stiffness: skin.ignition.stiffness, mass: 0.8 });
         ignite.value = withSequence(withTiming(1, { duration: 70 }), withTiming(0, { duration: 620 }));
+        if (skin.ignition.shockwave) {
+          shock.value = 0;
+          shock.value = withTiming(1, { duration: 560 });
+        }
         if (skin.ignition.shake) {
           shakeX.value = withSequence(
             withTiming(-9, { duration: 45 }), withTiming(8, { duration: 45 }), withTiming(-5, { duration: 45 }),
@@ -201,8 +211,8 @@ export default function BeaconFireSkia({ skin, active, anchorX, anchorY, measure
 
   useEffect(
     () => () => {
-      cancelAnimation(clock); cancelAnimation(progress); cancelAnimation(ignite);
-      cancelAnimation(shakeX); cancelAnimation(shakeY);
+      cancelAnimation(progress); cancelAnimation(ignite);
+      cancelAnimation(shock); cancelAnimation(shakeX); cancelAnimation(shakeY);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -213,9 +223,13 @@ export default function BeaconFireSkia({ skin, active, anchorX, anchorY, measure
       u_time: clock.value,
       u_progress: progress.value,
       u_ignite: ignite.value,
+      u_shock: shock.value,
       u_intensity: 1.0,
       u_origin: [anchorX + shakeX.value, anchorY + shakeY.value],
       u_scale: uScale,
+      u_width: skin.flameShape.width,
+      u_turb: skin.flameShape.turb,
+      u_speed: skin.flameShape.speed,
       u_col0: [col0[0], col0[1], col0[2]],
       u_col1: [col1[0], col1[1], col1[2]],
       u_col2: [col2[0], col2[1], col2[2]],

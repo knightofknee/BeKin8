@@ -6,113 +6,58 @@ import {
   Alert,
   Pressable,
   ActivityIndicator,
-  TextInput,
   ScrollView,
+  Switch,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
+import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { signOut, EmailAuthProvider, linkWithCredential } from "firebase/auth";
-import { Ionicons } from "@expo/vector-icons";
+import { signOut } from "firebase/auth";
 import BottomBar from "../components/BottomBar";
 import { SCREEN_PAD } from "../components/ui/layout";
-import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
-import GoogleLogo from "../components/GoogleLogo";
-import PasswordInput from "../components/PasswordInput";
+import { selection } from "../utils/haptics";
+
+const FEEDBACK_URL = "https://forms.gle/7Lyih79emL37g2ke8";
 
 export default function AdvancedSettingsScreen() {
   const { colors } = useTheme();
-  const { user } = useAuth();
   const router = useRouter();
   const functions = getFunctions();
 
-  // Provider detection
-  const [providers, setProviders] = useState<string[]>([]);
+  // Friends-of-friends posts opt-in (symmetric; lives on Profiles/{uid}.friendsOfFriendsPosts)
+  const [fofEnabled, setFofEnabled] = useState(false);
+  const [fofBusy, setFofBusy] = useState(false);
 
   useEffect(() => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
-    // Reload to get fresh providerData (the cached user object can be stale)
-    currentUser.reload().then(() => {
-      setProviders(currentUser.providerData.map((p) => p.providerId));
-    }).catch(() => {
-      // Fallback to cached data
-      setProviders(currentUser.providerData.map((p) => p.providerId));
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const unsub = onSnapshot(doc(db, "Profiles", uid), (snap) => {
+      if (snap.exists()) setFofEnabled(!!(snap.data() as any)?.friendsOfFriendsPosts);
     });
-  }, [user]);
+    return unsub;
+  }, []);
 
-  const hasPassword = providers.includes("password");
-  const showLinkSection = !hasPassword && providers.length > 0;
-
-  // Account linking form
-  const [linkEmail, setLinkEmail] = useState("");
-  const [linkPassword, setLinkPassword] = useState("");
-  const [linkBusy, setLinkBusy] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
+  const handleToggleFriendsOfFriends = async (val: boolean) => {
+    selection();
+    const uid = auth.currentUser?.uid;
+    if (!uid || fofBusy) return;
+    setFofEnabled(val);
+    setFofBusy(true);
+    try {
+      await setDoc(doc(db, "Profiles", uid), { friendsOfFriendsPosts: val, updatedAt: serverTimestamp() }, { merge: true });
+    } catch {
+      setFofEnabled(!val);
+    } finally {
+      setFofBusy(false);
+    }
+  };
 
   // Delete account
   const [deleteBusy, setDeleteBusy] = useState(false);
-
-  const handlePortAccount = async () => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
-
-    const trimmed = linkEmail.trim();
-    if (!trimmed) {
-      setLinkError("Please enter an email.");
-      return;
-    }
-    if (linkPassword.length < 6) {
-      setLinkError("Password must be at least 6 characters.");
-      return;
-    }
-
-    try {
-      setLinkBusy(true);
-      setLinkError(null);
-
-      // 1) Call Cloud Function to port data from old account
-      const apiKey = auth.app.options.apiKey;
-      const portCall = httpsCallable(functions, "portAccountData");
-      const result = await portCall({ oldEmail: trimmed, oldPassword: linkPassword, apiKey });
-      const data = result.data as any;
-
-      if (!data?.ok) {
-        const msg =
-          data?.error === "INVALID_CREDENTIALS"
-            ? "Could not verify the old account. Check email and password."
-            : data?.error === "SAME_ACCOUNT"
-            ? "That is the same account you are signed into."
-            : data?.message || "Port failed. Please try again.";
-        setLinkError(msg);
-        return;
-      }
-
-      // 2) Link the old email/password as a sign-in method on this account
-      try {
-        const credential = EmailAuthProvider.credential(trimmed, linkPassword);
-        await linkWithCredential(currentUser, credential);
-      } catch (linkErr: any) {
-        // Non-fatal: data was ported even if linking fails
-        if (__DEV__) console.warn("linkWithCredential failed after port:", linkErr?.message);
-      }
-
-      await currentUser.reload();
-      setProviders(currentUser.providerData.map((p) => p.providerId));
-      setLinkEmail("");
-      setLinkPassword("");
-      Alert.alert(
-        "Account Ported",
-        "Your friends and posts have been moved to this account. You can now also sign in with your old email and password."
-      );
-    } catch (e: any) {
-      setLinkError(e?.message ?? "Something went wrong. Please try again.");
-    } finally {
-      setLinkBusy(false);
-    }
-  };
 
   const confirmDelete = () => {
     Alert.alert(
@@ -142,32 +87,6 @@ export default function AdvancedSettingsScreen() {
     }
   };
 
-  const providerLabel = (id: string) => {
-    switch (id) {
-      case "password":
-        return "Email / Password";
-      case "apple.com":
-        return "Apple";
-      case "google.com":
-        return "Google";
-      default:
-        return id;
-    }
-  };
-
-  const providerIcon = (id: string) => {
-    switch (id) {
-      case "password":
-        return <Ionicons name="mail-outline" size={20} color={colors.text} />;
-      case "apple.com":
-        return <Ionicons name="logo-apple" size={20} color={colors.text} />;
-      case "google.com":
-        return <GoogleLogo size={20} />;
-      default:
-        return null;
-    }
-  };
-
   return (
     <>
       <SafeAreaView style={[s.safe, { backgroundColor: colors.bg }]} edges={["top", "left", "right"]}>
@@ -180,61 +99,29 @@ export default function AdvancedSettingsScreen() {
         </View>
 
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled">
-          <Text style={[s.h2, { color: colors.text }]}>Linked Accounts</Text>
-          <Text style={[s.subtleText, { color: colors.subtle }]}>Sign-in methods connected to your account.</Text>
-
-          {providers.map((id) => (
-            <View key={id} style={[s.row, s.rowBetween, { borderBottomColor: colors.border }]}>
-              <View style={s.providerRow}>
-                {providerIcon(id)}
-                <Text style={[s.providerLabel, { color: colors.text }]}>{providerLabel(id)}</Text>
-              </View>
-              <View style={s.badge}>
-                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-                <Text style={[s.badgeText, { color: colors.success }]}>Connected</Text>
-              </View>
-            </View>
-          ))}
-
-          {showLinkSection && (
-            <View style={[s.infoCard, { backgroundColor: colors.card }]}>
-              <Text style={[s.infoText, { color: colors.text }]}>
-                If you have an older email/password account, enter its credentials below to port your friends and posts to this account.
+          <Text style={[s.h2, { color: colors.text }]}>Friends of friends</Text>
+          <View style={[s.row, s.rowBetween, { borderBottomColor: colors.border }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: colors.primary }]}>See friends-of-friends posts</Text>
+              <Text style={[s.rowSub, { color: colors.subtle }]}>
+                Adds posts from friends of your friends to your feed. Only applies to people who turn this on too, and they will see your posts as well.
               </Text>
-              <TextInput
-                style={[s.input, { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text }]}
-                placeholder="Email address"
-                placeholderTextColor={colors.subtle}
-                value={linkEmail}
-                onChangeText={setLinkEmail}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-                editable={!linkBusy}
-              />
-              <View
-                style={[s.input, s.passwordRow, { marginTop: 10, borderColor: colors.border, backgroundColor: colors.inputBg }]}
-              >
-                <PasswordInput
-                  style={{ color: colors.text, fontSize: 16 }}
-                  placeholder="Password (min 6 characters)"
-                  placeholderTextColor={colors.subtle}
-                  value={linkPassword}
-                  onChangeText={setLinkPassword}
-                  editable={!linkBusy}
-                  toggleColor={colors.primary}
-                />
-              </View>
-              {linkError && <Text style={[s.err, { color: colors.error }]}>{linkError}</Text>}
-              <Pressable
-                style={[s.button, { backgroundColor: colors.primary, marginTop: 12 }, linkBusy && { opacity: 0.7 }]}
-                onPress={handlePortAccount}
-                disabled={linkBusy}
-              >
-                {linkBusy ? <ActivityIndicator color="#fff" /> : <Text style={s.buttonText}>Port Account Data</Text>}
-              </Pressable>
             </View>
-          )}
+            <Switch
+              value={fofEnabled}
+              onValueChange={handleToggleFriendsOfFriends}
+              disabled={fofBusy}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          <View style={[s.divider, { backgroundColor: colors.border }]} />
+
+          <Text style={[s.h2, { color: colors.text }]}>Contact</Text>
+          <Pressable style={[s.row, { borderBottomColor: colors.border }]} onPress={() => Linking.openURL(FEEDBACK_URL).catch(() => {})}>
+            <Text style={[s.link, { color: colors.primary }]}>Send feedback</Text>
+          </Pressable>
 
           <View style={[s.divider, { backgroundColor: colors.border }]} />
 
@@ -271,22 +158,15 @@ const s = StyleSheet.create({
   back: { fontWeight: "800", fontSize: 16, width: 48 },
   title: { fontWeight: "800", fontSize: 18, textAlign: "center" },
   body: { flex: 1 },
-  bodyContent: { padding: SCREEN_PAD, paddingBottom: 120 },
+  // paddingTop 20 gives the FIRST section heading the same breathing room below the header's
+  // border that later sections get below their dividers (divider marginVertical is 20).
+  bodyContent: { padding: SCREEN_PAD, paddingTop: 20, paddingBottom: 120 },
   h2: { fontSize: 18, fontWeight: "800", marginBottom: 6 },
-  subtleText: { fontSize: 14, marginBottom: 8 },
   row: { paddingVertical: 14, borderBottomWidth: 1 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  rowSub: { fontSize: 14 },
   link: { fontSize: 16, fontWeight: "700" },
   divider: { height: 1, marginVertical: 20 },
-  providerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  providerLabel: { fontSize: 16, fontWeight: "600" },
-  badge: { flexDirection: "row", alignItems: "center", gap: 4 },
-  badgeText: { fontSize: 14, fontWeight: "600" },
-  infoCard: { borderRadius: 12, padding: 16, marginTop: 12 },
-  infoText: { fontSize: 14, lineHeight: 20, marginBottom: 12 },
-  input: { borderWidth: 1, padding: 12, borderRadius: 10, fontSize: 16 },
-  passwordRow: { flexDirection: "row", alignItems: "center" },
-  err: { fontSize: 13, marginTop: 6 },
   button: { padding: 14, borderRadius: 12, alignItems: "center" },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
 });

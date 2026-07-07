@@ -19,6 +19,7 @@ import {
   BackHandler,
   useWindowDimensions,
   AccessibilityInfo,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import BeaconStructure from '../components/BeaconStructure';
@@ -26,7 +27,11 @@ import BeaconScene from '../components/BeaconScene';
 import BeaconFireSVG from '../components/BeaconFire';
 import BeaconFireSkia from '../components/BeaconFireSkia';
 import BeaconLighthouseBeam from '../components/BeaconLighthouseBeam';
+import BeaconSearchlightBeam from '../components/BeaconSearchlightBeam';
+import BeaconStormBolt from '../components/BeaconStormBolt';
 import BeaconSmokeSignal from '../components/BeaconSmokeSignal';
+import BeaconFireworks from '../components/BeaconFireworks';
+import BeaconSkyLanterns from '../components/BeaconSkyLanterns';
 // Centerpiece fire is the GPU Skia shader; flip to false to A/B against the original SVG flame.
 const USE_SKIA_FIRE = true;
 const BeaconFire = USE_SKIA_FIRE ? BeaconFireSkia : BeaconFireSVG;
@@ -143,7 +148,7 @@ export default function HomeScreen() {
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
   const [timeHourInput, setTimeHourInput] = useState<string>("");   // 1..12 as typed
   const [timeMinuteInput, setTimeMinuteInput] = useState<string>(""); // 00..59 as typed
-  const [timeMeridiem, setTimeMeridiem] = useState<"AM" | "PM">("AM");
+  const [timeMeridiem, setTimeMeridiem] = useState<"AM" | "PM">("PM"); // beacons are evening hangouts: default PM
 
   // Inline error: only the range-violation case, and only once a field has
   // 2 characters in it. Don't warn about "missing the other field", typing
@@ -163,7 +168,7 @@ export default function HomeScreen() {
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   // Coach-mark tour: target refs to spotlight + the tour controller.
-  const { startTour, updateSteps, isActive, currentStepId, currentStepTarget, goToTarget, navDir, advance, back, restart } = useTour();
+  const { startTour, updateStepById, isActive, currentStepId, currentStepTarget, goToTarget, navDir, advance, back, restart } = useTour();
   // Mirror the tour nav direction into a ref so the sheet animation can read it without re-running on
   // every nav. On a BACK navigation the sheet RESTORES (snaps) instead of replaying its open slide.
   const navDirRef = useRef(navDir);
@@ -185,7 +190,8 @@ export default function HomeScreen() {
   // (logs window pos − page window pos). That collapses the whole nesting chain into one offset and
   // is immune to safe-area insets / padding above. REQUIRES styles.page to keep paddingTop:0 and
   // paddingHorizontal:0 with no border, or the flame lands off the logs.
-  // Selected beacon SKIN (device-local pref; default Old Guard), drives fire, smoke, and structure.
+  // Selected beacon SKIN (device-local pref; default campfire, DEFAULT_SKIN_ID), drives scene,
+  // fire, smoke, and structure.
   const [skinId, setSkinId] = useState(DEFAULT_SKIN_ID);
   const skin = getSkin(skinId);
   useEffect(() => {
@@ -196,11 +202,11 @@ export default function HomeScreen() {
   }, []);
 
   const pageRef = useRef<View>(null);
-  // The flame base position within the structure box comes from the skin (0 = top, 1 = bottom); read
-  // via a ref so the measure callback stays stable. Re-measured when the skin changes.
-  const originRef = useRef(skin.origin);
-  originRef.current = skin.origin;
-  const [beaconAnchor, setBeaconAnchor] = useState({ x: 0, y: 0, measured: false });
+  // The measure stores only the ORIGIN-INDEPENDENT box geometry (top + height); the flame seat is
+  // derived at render time as top + h * skin.origin. That way a live skin switch (different origin)
+  // moves the anchor in the SAME render as the new skin, instead of showing the new scene against
+  // the old skin's seat for several frames until an async re-measure lands.
+  const [beaconAnchor, setBeaconAnchor] = useState({ x: 0, top: 0, h: 180, measured: false });
   const measureBeaconAnchor = useCallback(() => {
     const logs = logsRef.current;
     const page = pageRef.current;
@@ -216,7 +222,7 @@ export default function HomeScreen() {
           return;
         }
         page.measureInWindow((px, py) => {
-          setBeaconAnchor({ x: lx - px + lw / 2, y: ly - py + lh * originRef.current, measured: true });
+          setBeaconAnchor({ x: lx - px + lw / 2, top: ly - py, h: lh, measured: true });
         });
       });
     };
@@ -224,10 +230,12 @@ export default function HomeScreen() {
   }, [logsRef]);
   // Re-measure when the window changes (rotation, or the safe-area inset settling after first paint),
   // since the logs View's onLayout won't necessarily re-fire if only its window position shifts.
+  // Skin changes need no re-measure: origin is applied at render time and the box doesn't move.
   const { width: winW, height: winH } = useWindowDimensions();
   useEffect(() => {
     measureBeaconAnchor();
-  }, [winW, winH, measureBeaconAnchor, skinId]);
+  }, [winW, winH, measureBeaconAnchor]);
+  const anchorY = beaconAnchor.top + beaconAnchor.h * skin.origin;
 
   // Fire SFX (device-local "Fire sounds" pref, default off). ignite + haptic fire from the lit-edge
   // effect below (works for ALL skins, incl. the flameless photo-beacons); the crackle loop tracks the
@@ -357,6 +365,10 @@ export default function HomeScreen() {
   // Friend groups state for scheduler
   const [groups, setGroups] = useState<FriendGroup[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  // True while the tour is on the final guided-first-beacon step. On that step the group selection is
+  // FORCED to just the test group (so the "set to your test group" copy is true and the demo beacon
+  // notifies no one), so the live beacon snapshot below must not overwrite it with a beacon's groups.
+  const onFirstBeaconStepRef = useRef(false);
   const [loadingGroups, setLoadingGroups] = useState(false);
 
   // ---------- SUBSCRIBE: your beacon(s) (next 7 days) ----------
@@ -419,6 +431,9 @@ export default function HomeScreen() {
 
           const activeTime =
             typeof activeDoc.data?.timeHHmm === 'string' ? activeDoc.data.timeHHmm : null;
+          // Keep the persisted time tracking the lit beacon so it survives an on/off toggle
+          // (mirrors plannedMessage). Without this the time was wiped when the beacon turned off.
+          setPlannedTimeHHmm(activeTime);
           setMyActiveBeacon({
             id: activeDoc.id,
             ownerUid: user.uid,
@@ -435,7 +450,7 @@ export default function HomeScreen() {
           const gids: string[] = Array.isArray(activeDoc.data?.groupIds)
             ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
             : [];
-          setSelectedGroupIds(gids);
+          if (!onFirstBeaconStepRef.current) setSelectedGroupIds(gids); // final tour step forces test-only
         } else {
           setMyActiveBeacon(null);
           setIsLit(false);
@@ -458,10 +473,13 @@ export default function HomeScreen() {
           const gids: string[] = Array.isArray(plannedSoonest.data?.groupIds)
             ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
             : [];
-          setSelectedGroupIds(gids);
+          if (!onFirstBeaconStepRef.current) setSelectedGroupIds(gids); // final tour step forces test-only
         } else {
           setNextPlannedDate(null);
-          setPlannedTimeHHmm(null);
+          // Do NOT wipe the time here: when a beacon is lit (active but no separate scheduled doc)
+          // or just extinguished, this branch runs, and clearing it was what erased the time across
+          // an on/off toggle. The active branch above and the planned branch keep it current; it
+          // stays sticky like plannedMessage otherwise.
         }
       },
       (e) => {
@@ -486,11 +504,11 @@ export default function HomeScreen() {
       // If the user has since granted permission in Settings, this will update the token.
       syncPushTokenIfGranted();
     };
-    const appStateHandler = ({ type }: any) => {
-      if (type === 'active') onFocus();
-    };
-    const AppState = require('react-native').AppState;
-    const subState = AppState.addEventListener('change', appStateHandler);
+    // The 'change' event delivers the next state as a plain string, not an event object; the old
+    // `({ type })` destructuring made this handler never fire.
+    const subState = AppState.addEventListener('change', (state) => {
+      if (state === 'active') onFocus();
+    });
     return () => {
       subState.remove();
     };
@@ -622,7 +640,7 @@ export default function HomeScreen() {
     } else {
       setTimeHourInput('');
       setTimeMinuteInput('');
-      setTimeMeridiem('AM');
+      setTimeMeridiem('PM');
     }
 
     setOptionsOpen(true);
@@ -665,7 +683,7 @@ export default function HomeScreen() {
     setDayOffset(0);
     setTimeHourInput('');
     setTimeMinuteInput('');
-    setTimeMeridiem('AM');
+    setTimeMeridiem('PM');
     // Select the test group SYNCHRONOUSLY by its deterministic id so even an instant light/Save is
     // scoped to it (groupIds=[testId] → server notifies no one, even before the group doc loads, since
     // its members resolve to just the owner). ensureTestGroup() creates the doc in the background.
@@ -701,10 +719,9 @@ export default function HomeScreen() {
   // the earliest incomplete setup step.
   const pendingStartTargetRef = useRef<string | undefined>(undefined);
   // The built steps + whether the final step is the GATED guided-first-beacon variant, so the live
-  // effect below can refresh that one step (checklist + Done gate) via updateSteps without rebuilding
+  // effect below can refresh that one step (checklist + Done gate) via updateStepById without rebuilding
   // the whole array (which could shift indices if the add-brian step's presence changed mid-tour).
   const builtBeaconStepsRef = useRef<TourStep[] | null>(null);
-  const beaconTourActiveRef = useRef(false);
   // Sticky: latches true once the user has a username + a friend + a LIT beacon, all during this run.
   // Once true the final step shows the celebratory wrap-up with Done enabled, and STAYS there even if
   // the beacon is later put out.
@@ -755,6 +772,10 @@ export default function HomeScreen() {
       openFirstBeacon: () => openFirstBeaconCb.current(),
       hasFriends: hasFriendsRef.current,
       tapNoun: skin.tap.noun, // step 1 copy adapts to the current skin ("Tap the lighthouse …")
+      // Spotlight headroom over the structure box: the solid flame body tops out at roughly
+      // 170*flameScale px above the seat, which sits 180*origin below the box top; +12 covers the
+      // flickering tip. Flameless skins keep the original 70.
+      holePadTop: skin.fire === 'flame' ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 12) : 70,
       beaconLit: beaconLit0,
       usernameDone: uDone0,
       friendDone: fDone0,
@@ -767,7 +788,6 @@ export default function HomeScreen() {
     };
     const builtSteps = buildBeaconTour(tourCtx);
     builtBeaconStepsRef.current = builtSteps;
-    beaconTourActiveRef.current = true;
     reachedRef.current = uDone0 && fDone0 && beaconLit0; // start latched if already fully done
     lastGateSigRef.current = ''; // force the live effect to (re)apply for this run
     firstBeaconSeededRef.current = false; // re-seed the first-beacon sheet once for this run
@@ -780,6 +800,9 @@ export default function HomeScreen() {
     ensureTestGroup();
     startTour(builtSteps, {
       startAtTarget: opts?.startAtTarget,
+      // Replay if the tour has ended at least once before (finish or skip): the dismiss button then
+      // reads "Close" instead of "Skip tour". Captured now, before onClose flips the ref.
+      isReplay: firstTourDoneRef.current,
       onFinish: () => {
         didFinishTourRef.current = true;
         success();
@@ -790,7 +813,6 @@ export default function HomeScreen() {
       // first light right after the user skips. (onClose fires on both skip and finish.)
       onClose: () => {
         builtBeaconStepsRef.current = null;
-        beaconTourActiveRef.current = false;
         reachedRef.current = false;
         firstBeaconSeededRef.current = false;
         setSeen('beacon_chat');
@@ -819,12 +841,17 @@ export default function HomeScreen() {
   const obFriendDone = !!onboarding.steps.find((st) => st.key === 'friend')?.done;
 
   // Keep the gated final step live: as the user completes username/friend (earlier steps) and sets a
-  // beacon (during this step), refresh that one step's checklist + Done gate in place. Splices the
-  // existing array (stable length/index) rather than rebuilding via buildBeaconTour. A signature guard
-  // makes this a no-op unless the gate inputs actually changed, essential, since updateSteps→setSteps
-  // re-renders this screen and would otherwise loop.
+  // beacon (during this step), refresh that one step's checklist + Done gate in place. Drives off the
+  // PROVIDER (isActive + updateStepById), NOT home-local refs: the tour navigates to /friends +
+  // /settings, which REMOUNTS home and would reset the old home-local guard refs to their initial
+  // values, so the old guard silently killed this effect for the rest of the tour (the "Light your
+  // beacon" item never checked after visiting settings). updateStepById splices the provider's
+  // own steps by id, so it works regardless of remounts. A signature guard keeps it a no-op unless the
+  // gate inputs actually changed (updateStepById -> setSteps re-renders and would otherwise loop).
+  // reachedRef/lastGateSigRef reset on a home remount, which is fine: the effect just recomputes them
+  // from the live state on the next run and re-syncs the step.
   useEffect(() => {
-    if (!isActive || !beaconTourActiveRef.current || !builtBeaconStepsRef.current) return;
+    if (!isActive) return;
     const uDone = obUsernameDone;
     const fDone = obFriendDone;
     const beaconLit = !!isLit || !!myActiveBeacon;
@@ -833,18 +860,37 @@ export default function HomeScreen() {
     const sig = `${uDone}|${fDone}|${beaconLit}|${reached}`;
     if (sig === lastGateSigRef.current) return;
     lastGateSigRef.current = sig;
-    const arr = builtBeaconStepsRef.current;
-    const idx = arr.findIndex((st) => st.id === 'set-first-beacon');
-    if (idx < 0) return;
-    const next = arr.slice();
-    next[idx] = makeFirstBeaconStep(
-      { openFirstBeacon: () => openFirstBeaconCb.current(), onEnterDone: () => onEnterDoneCb.current() },
-      { usernameDone: uDone, friendDone: fDone, beaconLit, reached }
+    updateStepById(
+      'set-first-beacon',
+      makeFirstBeaconStep(
+        { openFirstBeacon: () => openFirstBeaconCb.current(), onEnterDone: () => onEnterDoneCb.current() },
+        { usernameDone: uDone, friendDone: fDone, beaconLit, reached }
+      )
     );
-    builtBeaconStepsRef.current = next;
-    updateSteps(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, obUsernameDone, obFriendDone, isLit, myActiveBeacon]);
+
+  // While the tour sits on the final guided-first-beacon step, force the group selection to just the
+  // test group (so the step's "set to your test group" copy is actually true and any beacon lit there
+  // notifies no one), and drop it again when the user leaves that step. Transition-gated so earlier
+  // steps keep the selection the tour started them with, and the snapshot guard above stops a beacon
+  // load from overwriting the forced value while we're on the step.
+  const prevOnFirstBeaconStepRef = useRef(false);
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    const testId = uid ? `${uid}__tutorial_test` : null;
+    const onStep = isActive && currentStepId === 'set-first-beacon';
+    const was = prevOnFirstBeaconStepRef.current;
+    prevOnFirstBeaconStepRef.current = onStep;
+    onFirstBeaconStepRef.current = onStep;
+    if (!testId) return;
+    if (onStep && !was) {
+      setSelectedGroupIds([testId]); // entered the step: test group only
+    } else if (!onStep && was) {
+      setSelectedGroupIds((prev) => prev.filter((id) => id !== testId)); // left it: drop the test group
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, currentStepId]);
 
   // The final tour step is ALWAYS shown and completes only when the user taps Done. It's a single live
   // step: gated until username + friend + a lit beacon (reached), then the celebratory "you're all set"
@@ -1074,6 +1120,11 @@ export default function HomeScreen() {
               allowedUids = Array.from(new Set(allowedUids));
 
               const ownerName = profile?.displayName || profile?.username || null;
+              // Carry the clock time through the tap-to-light path (like the message + day), so it
+              // persists across on/off and shows next to the date in the chat. Prefer a freshly
+              // typed time, else the persisted one from the beacon that was just extinguished.
+              const timeHHmm =
+                buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem) ?? plannedTimeHHmm ?? null;
               await addDoc(beaconsRef, {
                 ownerUid: user.uid,
                 ownerName,
@@ -1087,6 +1138,7 @@ export default function HomeScreen() {
                 expiresAt: Timestamp.fromDate(ed),
                 groupIds: selectedGroupIds,
                 allowedUids,
+                timeHHmm,
               });
 
               // First-time creator might not have notification permission yet,
@@ -1318,17 +1370,22 @@ export default function HomeScreen() {
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
         <View ref={pageRef} collapsable={false} style={styles.page}>
-          {/* SCENE, backmost layer: each skin's photographic backdrop (or the Lighthouse Skia sea)
-              under a scrim, plus animated accents (fireflies / beacon chain / wisps). pointerEvents none. */}
-          <BeaconScene skin={skin} active={!!isLit} focused={isFocused} />
+          {/* SCENE, backmost layer: each skin's bespoke procedural backdrop (components/scenes/*),
+              anchor-aware so scene geometry lines up with the structure. pointerEvents none. */}
+          <BeaconScene skin={skin} active={!!isLit} focused={isFocused} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} />
           {/* SMOKE, drifts up BEHIND the friend tiles (shown through the gaps; the tile list stays
-              in front and untouched). Rises from the measured structure anchor. The Smoke Signal renders
-              its hero column HERE too (behind the tiles), so friend info always reads over it. */}
-          {skin.structure === 'smokesignal' ? (
-            <BeaconSmokeSignal skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} focused={isFocused} />
-          ) : (
-            <BeaconSmoke skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} focused={isFocused} />
-          )}
+              in front and untouched). Rises from the measured structure anchor. Registry-driven:
+              skin.smokeKind picks the ambient smoke, the smoke-signal puff column, the fireworks
+              show, the sky-lantern field, or nothing. */}
+          {skin.smokeKind === 'signal' ? (
+            <BeaconSmokeSignal skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : skin.smokeKind === 'fireworks' ? (
+            <BeaconFireworks skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : skin.smokeKind === 'lanterns' ? (
+            <BeaconSkyLanterns skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : skin.smokeKind === 'ambient' ? (
+            <BeaconSmoke skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : null}
           <TutorialResumeBanner
             visible={onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart}
             doneCount={onboarding.doneCount}
@@ -1344,7 +1401,7 @@ export default function HomeScreen() {
             <View style={styles.myBeaconColumn}>
               <View ref={logsRef} collapsable={false} style={{ position: 'relative' }} onLayout={measureBeaconAnchor}>
                 <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
-                  <BeaconStructure skin={skin} size={180} lit={!!isLit} />
+                  <BeaconStructure skin={skin} size={180} lit={!!isLit} focused={isFocused} />
                 </TouchableOpacity>
 
                 {!isActive && (
@@ -1403,13 +1460,20 @@ export default function HomeScreen() {
           </View>
 
           {/* FIRE, last child, on TOP of the structure (pointerEvents none, taps reach the structure
-              + chat button below). The lighthouse renders its sweeping BEAM here instead of a flame.
-              Skins that OWN their fire render nothing here: the lantern tower lights its lanterns, the
-              bonfire photo brightens, and the campfire ('logs') is its own animated pixel firepit. */}
-          {skin.structure === 'lighthouse' ? (
-            <BeaconLighthouseBeam skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} focused={isFocused} />
-          ) : skin.structure !== 'tower' && skin.structure !== 'bonfire' && skin.structure !== 'logs' && skin.structure !== 'smokesignal' ? (
-            <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={beaconAnchor.y} measured={beaconAnchor.measured} focused={isFocused} />
+              + chat button below). Registry-driven: skin.fire picks the Skia flame, a sweeping beam
+              (routed by structure: lighthouse vs the premiere searchlight), the storm's short-lived
+              lightning strike, or nothing (skins whose structure owns its light: lanterns, rune
+              stone, sky-lantern stand). */}
+          {skin.fire === 'beam' ? (
+            skin.structure === 'searchlight' ? (
+              <BeaconSearchlightBeam skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            ) : (
+              <BeaconLighthouseBeam skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            )
+          ) : skin.fire === 'bolt' ? (
+            <BeaconStormBolt skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : skin.fire === 'flame' ? (
+            <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : null}
         </View>
 
@@ -1507,7 +1571,7 @@ export default function HomeScreen() {
                       style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
                       keyboardType="number-pad"
                       maxLength={2}
-                      placeholder="--"
+                      placeholder="00"
                       placeholderTextColor={colors.subtle}
                       value={timeMinuteInput}
                       onChangeText={(s) => setTimeMinuteInput(s.replace(/\D/g, '').slice(0, 2))}
@@ -1705,7 +1769,7 @@ export default function HomeScreen() {
             <Text style={[styles.helpTitle, { color: colors.text }]}>Get pinged about your beacon</Text>
 
             <Text style={[styles.helpBody, { color: colors.text }]}>
-              Now that you've lit a beacon, we can let you know when friends RSVP or comment so you don't have to keep checking the chat.
+              Now that you&apos;ve lit a beacon, we can let you know when friends RSVP or comment so you don&apos;t have to keep checking the chat.
             </Text>
 
             <Text style={[styles.helpBody, { color: colors.subtle }]}>

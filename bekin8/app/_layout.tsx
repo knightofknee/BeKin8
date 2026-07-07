@@ -11,6 +11,7 @@ import { NetworkProvider, useOnline } from "../providers/NetworkProvider";
 import { TourProvider } from "../providers/TourProvider";
 import { OnboardingProvider } from "../providers/OnboardingProvider";
 import OfflineBanner from "../components/OfflineBanner";
+import VerifyEmailGate from "../components/VerifyEmailGate";
 import {
   parseInviteCode,
   stashPendingInvite,
@@ -164,6 +165,9 @@ function Gate() {
       {/* contentStyle paints the screen container the theme bg, so a mounting/transitioning route
           never flashes the default WHITE before its own background paints (worst on first mount). */}
       <Stack screenOptions={{ headerShown: false, animation: 'none', contentStyle: { backgroundColor: colors.bg } }} />
+      {/* Deferred email-verification UX (email/password accounts created after the epoch):
+          grace-period banner, then a hard gate overlay that must cover the whole router stack. */}
+      <VerifyEmailGate />
       <OfflineBanner />
     </View>
   );

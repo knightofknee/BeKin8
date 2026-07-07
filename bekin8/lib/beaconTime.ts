@@ -3,15 +3,16 @@
 // Internal storage format: "HH:MM" in 24-hour time (e.g. "18:30").
 // UI format: 12-hour with AM/PM.
 
-// Returns null if the inputs don't form a complete, in-range 12-hour time.
+// Returns null only when the HOUR is missing or out of range. Minutes are optional: an empty
+// minute field defaults to :00 (a bare "7 PM" is a complete time).
 export function buildTimeHHmm(
   hourStr: string,
   minuteStr: string,
   meridiem: "AM" | "PM",
 ): string | null {
-  if (!hourStr || !minuteStr) return null;
+  if (!hourStr) return null;
   const h12 = parseInt(hourStr, 10);
-  const m = parseInt(minuteStr, 10);
+  const m = minuteStr ? parseInt(minuteStr, 10) : 0;
   if (!Number.isFinite(h12) || !Number.isFinite(m)) return null;
   if (h12 < 1 || h12 > 12) return null;
   if (m < 0 || m > 59) return null;
