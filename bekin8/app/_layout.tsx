@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, View } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
 import * as Linking from "expo-linking";
+import { StatusBar } from "expo-status-bar";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
 import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
 import { NetworkProvider, useOnline } from "../providers/NetworkProvider";
@@ -12,6 +13,7 @@ import { TourProvider } from "../providers/TourProvider";
 import { OnboardingProvider } from "../providers/OnboardingProvider";
 import OfflineBanner from "../components/OfflineBanner";
 import VerifyEmailGate from "../components/VerifyEmailGate";
+import ErrorBoundary, { logClientError } from "../components/ErrorBoundary";
 import {
   parseInviteCode,
   stashPendingInvite,
@@ -21,6 +23,23 @@ import {
 } from "../lib/inviteLink";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// Global uncaught-JS-error net. Installs once: logs to console + best-effort Firestore,
+// then chains to the previous handler so default red-box / crash behavior is preserved.
+declare const global: any;
+(function installGlobalErrorHandler() {
+  const g = global as any;
+  if (g.__BEKIN_GLOBAL_ERR_INSTALLED__) return;
+  const errorUtils = g.ErrorUtils;
+  if (!errorUtils?.setGlobalHandler || !errorUtils?.getGlobalHandler) return;
+  g.__BEKIN_GLOBAL_ERR_INSTALLED__ = true;
+  const previous = errorUtils.getGlobalHandler();
+  errorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
+    console.error("Uncaught JS error:", error, "isFatal:", isFatal);
+    void logClientError(error, isFatal ? "global-fatal" : "global");
+    if (typeof previous === "function") previous(error, isFatal);
+  });
+})();
 
 /** Routes that are accessible when NOT signed in */
 const PUBLIC_ROUTES = new Set<string>([
@@ -33,7 +52,7 @@ const PUBLIC_ROUTES = new Set<string>([
 
 function Gate() {
   const { user, initialized } = useAuth();
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const router = useRouter();
   const pathname = usePathname();
   const navState = useRootNavigationState(); // ✅ tells us when navigation is mounted
@@ -48,7 +67,9 @@ function Gate() {
         router.replace("/home");
       }
     } else {
-      if (!PUBLIC_ROUTES.has(pathname)) {
+      // /legal/privacy, /legal/terms, /legal/guidelines are the real routes, so any
+      // /legal/* path is public even though the set only lists the "/legal" base.
+      if (!PUBLIC_ROUTES.has(pathname) && !pathname.startsWith("/legal")) {
         router.replace("/");
       }
     }
@@ -86,6 +107,8 @@ function Gate() {
       } else if (t === "new_post" && data.postId) {
         const postId = enc(data.postId);
         router.replace(`/feed?scrollToPostId=${postId}`);
+      } else if (t === "friend_request") {
+        router.replace("/friends");
       }
     };
 
@@ -155,6 +178,8 @@ function Gate() {
   if (!initialized || !navState?.key) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg }}>
+        {/* StatusBar tracks the app theme app-wide, not just on the login screen. */}
+        <StatusBar style={isDark ? "light" : "dark"} />
         <ActivityIndicator color={colors.primary} />
       </View>
     );
@@ -162,13 +187,20 @@ function Gate() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      {/* contentStyle paints the screen container the theme bg, so a mounting/transitioning route
-          never flashes the default WHITE before its own background paints (worst on first mount). */}
-      <Stack screenOptions={{ headerShown: false, animation: 'none', contentStyle: { backgroundColor: colors.bg } }} />
-      {/* Deferred email-verification UX (email/password accounts created after the epoch):
-          grace-period banner, then a hard gate overlay that must cover the whole router stack. */}
-      <VerifyEmailGate />
-      <OfflineBanner />
+      {/* StatusBar tracks the app theme app-wide, so the in-app dark-mode toggle can't
+          leave the bar unreadable on non-login screens. */}
+      <StatusBar style={isDark ? "light" : "dark"} />
+      {/* ErrorBoundary is the white-screen-of-death guard: a render crash anywhere in the
+          router stack shows a friendly fallback instead of a blank screen. */}
+      <ErrorBoundary>
+        {/* contentStyle paints the screen container the theme bg, so a mounting/transitioning route
+            never flashes the default WHITE before its own background paints (worst on first mount). */}
+        <Stack screenOptions={{ headerShown: false, animation: 'none', contentStyle: { backgroundColor: colors.bg } }} />
+        {/* Deferred email-verification UX (email/password accounts created after the epoch):
+            grace-period banner, then a hard gate overlay that must cover the whole router stack. */}
+        <VerifyEmailGate />
+        <OfflineBanner />
+      </ErrorBoundary>
     </View>
   );
 }

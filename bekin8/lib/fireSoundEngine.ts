@@ -20,6 +20,13 @@ const SWITCH_FADE_MS = 320; // skin-switch blend: the old skin must cut off quic
 const STEP_MS = 50; // volume-ramp tick
 const TICK_MS = 160; // scheduler poll
 const REPLACE_LOAD_MS = 170; // grace after replace() before seek/play on the freshly-loaded clip
+// Cold-start play() retry: on a fresh app open the crackle players may not have finished loading
+// when start() fires, so play() no-ops. Keep retrying (backing off) until the player actually plays
+// or stop() lands, up to ~5s total, instead of giving up after a fixed count (the old 6 tries at
+// 200ms = ~1.2s expired before load on a cold start, so a beacon that was ALREADY LIT stayed silent).
+const KICK_MAX_MS = 5000; // total retry budget per kick loop
+const KICK_MIN_MS = 120; // first retry delay
+const KICK_MAX_STEP_MS = 400; // retry delay ceiling (backoff clamps here)
 
 type Src = number;
 
@@ -106,6 +113,11 @@ export class FireSoundEngine {
     } catch {
       return 0;
     }
+  }
+  /** Backoff delay for the Nth cold-start play() retry: ramps from KICK_MIN_MS toward
+   *  KICK_MAX_STEP_MS so early retries are snappy and later ones don't hammer. */
+  private kickDelay(attempt: number) {
+    return Math.min(KICK_MAX_STEP_MS, KICK_MIN_MS + attempt * 60);
   }
 
   /** Per-skin volume trims. Applied to future starts/ignites and, if the crackle is running, eased
@@ -217,8 +229,20 @@ export class FireSoundEngine {
       try {
         a.loop = true;
       } catch {}
-      const kick = (attempt: number) => {
+      // Retry until the player is actually playing OR stop() lands, up to KICK_MAX_MS: on a cold
+      // start the clip may still be loading, so play() no-ops on the early attempts.
+      const kick = (attempt: number, elapsed: number) => {
         if (!this.playing) return;
+        let playing = false;
+        try {
+          playing = a.playing;
+        } catch {}
+        if (playing) {
+          try {
+            a.volume = vol;
+          } catch {}
+          return;
+        }
         try {
           a.seekTo(0);
           a.volume = vol;
@@ -227,15 +251,16 @@ export class FireSoundEngine {
         try {
           this.cB.volume = 0;
         } catch {}
-        let playing = false;
         try {
           playing = a.playing;
         } catch {}
-        if (!playing && attempt < 6) setTimeout(() => kick(attempt + 1), 200);
+        const d = this.kickDelay(attempt);
+        if (!playing && elapsed + d <= KICK_MAX_MS)
+          setTimeout(() => kick(attempt + 1, elapsed + d), d);
       };
       // Give a fresh replace() its load grace before the first play attempt.
-      if (loadedA) setTimeout(() => kick(0), REPLACE_LOAD_MS);
-      else kick(0);
+      if (loadedA) setTimeout(() => kick(0, 0), REPLACE_LOAD_MS);
+      else kick(0, 0);
       this.clearTick(); // no segment scheduler in linear mode
       return;
     }
@@ -246,10 +271,17 @@ export class FireSoundEngine {
     } catch {}
     const off = this.safeOffset();
     this.segEndAt = off + this.rnd(SEG_MIN, SEG_MAX);
-    // On a COLD START the player may not have finished loading, so play() no-ops; retry a few times
-    // until it actually plays (this is why "no sound on open, sound after a toggle" happened).
-    const kick = (attempt: number) => {
+    // On a COLD START the player may not have finished loading, so play() no-ops; retry until it
+    // actually plays OR stop() lands (up to KICK_MAX_MS). The old fixed 6 tries (~1.2s) expired
+    // before the crackle finished loading on a cold open with a beacon already lit, so it stayed
+    // silent (the "no sound on open, sound after a toggle" bug).
+    const kick = (attempt: number, elapsed: number) => {
       if (!this.playing) return;
+      let playing = false;
+      try {
+        playing = a.playing;
+      } catch {}
+      if (playing) return; // already playing: leave the tick scheduler to run the crossfades
       try {
         a.seekTo(off);
         a.volume = vol;
@@ -258,13 +290,14 @@ export class FireSoundEngine {
       try {
         this.idle().volume = 0;
       } catch {}
-      let playing = false;
       try {
         playing = a.playing;
       } catch {}
-      if (!playing && attempt < 6) setTimeout(() => kick(attempt + 1), 200);
+      const d = this.kickDelay(attempt);
+      if (!playing && elapsed + d <= KICK_MAX_MS)
+        setTimeout(() => kick(attempt + 1, elapsed + d), d);
     };
-    kick(0);
+    kick(0, 0);
     this.clearTick();
     // Read the (possibly retrimmed) volume at tick time so a live skin switch eases the new skin's
     // trim in at the next crossfade instead of keeping the old level forever.
@@ -337,7 +370,7 @@ export class FireSoundEngine {
           // player (same as start()'s cold-start bug). If `to` never started, its currentTime is
           // frozen below segEndAt and no further crossfade ever triggers: silent for the rest of
           // the lit session. Kick it like start() does; guards let stop()/a newer crossfade win.
-          const kick = (attempt: number) => {
+          const kick = (attempt: number, elapsed: number) => {
             if (!this.playing || this.xfading || this.active !== to) return;
             let isPlaying = false;
             try {
@@ -349,9 +382,10 @@ export class FireSoundEngine {
               to.volume = vol;
               to.play();
             } catch {}
-            if (attempt < 6) setTimeout(() => kick(attempt + 1), 200);
+            const d = this.kickDelay(attempt);
+            if (elapsed + d <= KICK_MAX_MS) setTimeout(() => kick(attempt + 1, elapsed + d), d);
           };
-          setTimeout(() => kick(0), 0);
+          setTimeout(() => kick(0, 0), 0);
         }
       }, STEP_MS);
     };

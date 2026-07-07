@@ -10,13 +10,9 @@ export async function resolveDisplayName(uid: string): Promise<string> {
     if (display) return display;
 
     const unameProf = typeof prof.username === "string" ? prof.username.trim() : "";
-
-    const userSnap = await getDoc(doc(db, "users", uid));
-    const userDoc = userSnap.exists() ? (userSnap.data() as any) : {};
-    const unameUsers = typeof userDoc.username === "string" ? userDoc.username.trim() : "";
-
-    if (unameUsers) return unameUsers;
     if (unameProf)  return unameProf;
+    // No users/{uid} fallback: names live on the world-readable Profiles doc; the owner-only users
+    // doc isn't readable for OTHER people once the friend graph is locked (see firestore.rules).
 
     // local fallbacks (only valid for self)
     if (auth.currentUser?.uid === uid) {

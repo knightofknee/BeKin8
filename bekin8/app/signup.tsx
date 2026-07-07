@@ -1,5 +1,5 @@
 // app/signup.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -30,7 +30,7 @@ import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
 import PasswordInput, { type PasswordInputHandle } from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
-import { stashPendingInvite, coerceInviteCode } from "../lib/inviteLink";
+import { stashPendingInvite, coerceInviteCode, getPendingInvite } from "../lib/inviteLink";
 import { sendInitialVerification } from "../lib/emailVerification";
 
 const TOP_OFFSET = 64; // match login offset
@@ -67,26 +67,31 @@ export default function SignUp() {
   const stashInviteIfPresent = () => stashPendingInvite(inviteCodeInput);
 
   // Deferred attribution: a brand-new install opened from a smart link leaves the code on the
-  // clipboard (set by the waldgrave.com landing page). Check it ONCE per install and pre-fill the
-  // field so the user just confirms. Gated by a flag so we don't repeatedly trigger paste prompts.
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const CHECK_KEY = "@bekin_clipboard_invite_checked";
-        if (await AsyncStorage.getItem(CHECK_KEY)) return;
-        const text = await Clipboard.getStringAsync();
-        await AsyncStorage.setItem(CHECK_KEY, "1"); // burn the one-shot only after a successful read
-        const code = coerceInviteCode(text);
-        if (active && code) setInviteCodeInput(code);
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
+  // clipboard (set by the waldgrave.com landing page). We read the clipboard LAZILY (only when the
+  // user focuses the invite field) so the iOS "Allow Paste" system alert never fires unprompted on
+  // mount. Gated by a per-install flag so we don't repeatedly trigger paste prompts.
+  const clipboardChecked = useRef(false);
+  const maybeReadClipboardInvite = async () => {
+    if (clipboardChecked.current) return;
+    clipboardChecked.current = true;
+    const CHECK_KEY = "@bekin_clipboard_invite_checked";
+    try {
+      // Skip entirely if a deep-link already stashed a code, or the field is already filled:
+      // no reason to touch the clipboard (and no paste prompt) in either case. These paths do NOT
+      // burn the one-shot, so a real clipboard check can still happen later.
+      if (await AsyncStorage.getItem(CHECK_KEY)) return;
+      if (inviteCodeInput.trim()) return;
+      if (await getPendingInvite()) return;
+      const text = await Clipboard.getStringAsync();
+      const code = coerceInviteCode(text);
+      if (code) setInviteCodeInput(code);
+      // Burn the one-shot only AFTER an actual clipboard read (or denial), so a declined paste
+      // prompt isn't re-shown, but a skip-because-deep-link path leaves it available.
+      AsyncStorage.setItem(CHECK_KEY, "1").catch(() => {});
+    } catch {
+      AsyncStorage.setItem(CHECK_KEY, "1").catch(() => {}); // a denied read still burns the one-shot
+    }
+  };
 
 
   const [loading, setLoading] = useState(false);
@@ -373,6 +378,7 @@ export default function SignUp() {
                   maxLength={6}
                   value={inviteCodeInput}
                   onChangeText={(v) => setInviteCodeInput(v.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 6))}
+                  onFocus={maybeReadClipboardInvite}
                   editable={!anyLoading}
                 />
               </View>

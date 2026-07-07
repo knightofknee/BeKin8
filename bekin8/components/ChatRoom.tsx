@@ -77,12 +77,9 @@ async function resolveMyName(uid: string): Promise<string> {
     const display = typeof prof.displayName === 'string' ? prof.displayName.trim() : '';
     if (display.length > 0) return display;
 
-    // Fallbacks for username
-    const userSnap = await getDoc(doc(db, 'users', uid));
-    const userDoc = userSnap.exists() ? (userSnap.data() as any) : {};
+    // Username fallback from the world-readable Profiles doc (read above). No users/{uid} read:
+    // that owner-only doc isn't readable for other people once the friend graph is locked.
     const unameProfiles = typeof prof.username === 'string' ? prof.username.trim() : '';
-    const unameUsers    = typeof userDoc.username === 'string' ? userDoc.username.trim() : '';
-    if (unameUsers) return unameUsers;
     if (unameProfiles) return unameProfiles;
 
     const authName = (auth.currentUser?.displayName || '').toString().trim();
@@ -115,6 +112,8 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [startLabel, setStartLabel] = useState<string>('');
   const [timeLabel, setTimeLabel] = useState<string>('');
   const [ownerName, setOwnerName] = useState<string>('');
+  const [ownerUid, setOwnerUid] = useState<string>('');
+  const [attendeesOpen, setAttendeesOpen] = useState(false);
   const [beaconMessage, setBeaconMessage] = useState<string>('');
   const [msgExpanded, setMsgExpanded] = useState(false);
   const [msgTruncated, setMsgTruncated] = useState(false);
@@ -170,6 +169,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           setStartLabel('');
           setTimeLabel('');
           setOwnerName('');
+          setOwnerUid('');
           return;
         }
         const data: any = snap.data();
@@ -194,6 +194,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
         // Resolve owner display name
         const oUid = data?.ownerUid;
+        setOwnerUid(typeof oUid === 'string' ? oUid : '');
         if (typeof oUid === 'string' && oUid) {
           try {
             const profSnap = await getDoc(doc(db, 'Profiles', oUid));
@@ -215,7 +216,9 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   useEffect(() => {
     setMessagesLoaded(false);
     const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
-    const q = query(col, orderBy('createdAt', 'asc'), limit(300));
+    // Track the NEWEST 300 messages: query descending, then reverse to ascending
+    // for render, so a thread past 300 messages still shows new arrivals.
+    const q = query(col, orderBy('createdAt', 'desc'), limit(300));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -235,6 +238,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             actorName: data?.actorName ? String(data.actorName) : undefined,
           });
         });
+        arr.reverse();
         setMessages(arr);
         setMessagesLoaded(true);
       },
@@ -291,24 +295,44 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     return messages.some((m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid);
   }, [messages, me]);
 
+  // Roster derived from state: the beacon lighter counts as 1, plus each DISTINCT
+  // im-in actor (excluding the owner so they are never double-counted).
+  const attendees = useMemo(() => {
+    const byUid = new Map<string, string>();
+    for (const m of messages) {
+      if (m.type !== 'system' || m.subtype !== 'im-in') continue;
+      if (!m.actorUid || m.actorUid === ownerUid) continue;
+      if (!byUid.has(m.actorUid)) byUid.set(m.actorUid, (m.actorName || 'Someone').trim() || 'Someone');
+    }
+    const names = ownerName ? [ownerName] : [];
+    for (const n of byUid.values()) names.push(n);
+    return { count: 1 + byUid.size, names };
+  }, [messages, ownerUid, ownerName]);
+
   const canSendMsg = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
 
   const handleSend = async () => {
     press();
     if (!canSendMsg || !me) return;
+    const body = text.trim();
     try {
       setSending(true);
       const authorName = await resolveMyName(me.uid);
       const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
       const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
 
-      await addDoc(col, {
-        text: text.trim(),
+      // Do NOT await the server ack: offline it never resolves and would lock
+      // the composer + wipe the draft. Firestore queues the write offline and the
+      // local snapshot echo confirms delivery. Only surface hard failures.
+      addDoc(col, {
+        text: body,
         authorUid: me.uid,
         authorName,
         type: 'user',
         createdAt: serverTimestamp(),
         ...(expiresAt ? { expiresAt } : {}),
+      }).catch(() => {
+        Alert.alert('Send failed', 'Please try again.');
       });
 
       setText('');
@@ -468,11 +492,26 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
               {timeLabel}
             </Text>
           )}
+          <Pressable
+            onPress={() => { tap(); setAttendeesOpen(true); }}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.goingChip,
+              { backgroundColor: tc.inputBg, borderColor: tc.border },
+              pressed && { opacity: 0.85 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`${attendees.count} going, tap to see who`}
+          >
+            <Text style={[styles.goingText, { color: tc.text }]}>
+              {attendees.count} going
+            </Text>
+          </Pressable>
         </View>
 
         {iAmIn ? (
           <View style={[styles.imInChip, styles.imInChipDone]}>
-            <Text style={[styles.imInText, styles.imInTextDone]}>✓ I'm in</Text>
+            <Text style={[styles.imInText, styles.imInTextDone]}>✓ I&apos;m in</Text>
           </View>
         ) : (
           <Pressable
@@ -480,7 +519,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             style={({ pressed }) => [styles.imInChip, { backgroundColor: tc.primary }, pressed && { opacity: 0.9 }]}
             hitSlop={8}
           >
-            <Text style={styles.imInText}>I'm in</Text>
+            <Text style={styles.imInText}>I&apos;m in</Text>
           </Pressable>
         )}
       </View>
@@ -552,12 +591,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                 <ActivityIndicator />
               ) : (
                 <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                  Can't load messages. No internet connection.
+                  Can&apos;t load messages. No internet connection.
                 </Text>
               )
             ) : (
               <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                {online ? "No messages yet" : "Can't load messages. No internet connection."}
+                {online ? "No messages yet" : "Can&apos;t load messages. No internet connection."}
               </Text>
             )
           }
@@ -641,6 +680,30 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           </View>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={attendeesOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAttendeesOpen(false)}
+      >
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: tc.backdrop }]} onPress={() => setAttendeesOpen(false)}>
+          <View style={[styles.menuSheet, { backgroundColor: tc.card }]}>
+            <Text style={[styles.attendeesTitle, { color: tc.text }]}>
+              {attendees.count} going
+            </Text>
+            {attendees.names.map((n, i) => (
+              <Text key={`${n}-${i}`} style={[styles.attendeeName, { color: tc.subtle }]} numberOfLines={1}>
+                {n}
+              </Text>
+            ))}
+            <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
+            <Pressable style={styles.menuItem} onPress={() => setAttendeesOpen(false)}>
+              <Text style={[styles.menuText, { color: tc.text }]}>Close</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </>
   );
 
@@ -661,7 +724,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       <>
         <View style={[styles.modalShim, { backgroundColor: tc.backdrop }]}>
           {/* Backdrop tap closes */}
-          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close beacon chat"
+          />
 
           <View style={[styles.cardWrap, { backgroundColor: tc.card }]}>
             <View style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
@@ -759,6 +827,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     marginTop: 1,
+  },
+  goingChip: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  goingText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  attendeesTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    textAlign: 'center',
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  attendeeName: {
+    fontSize: 14,
+    textAlign: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 16,
   },
 
   imInChip: {

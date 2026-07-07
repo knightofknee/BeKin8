@@ -45,7 +45,7 @@ export default function Privacy() {
           where required to protect other users.
         </Text>
         <Text style={[s.p, { color: colors.text }]}>
-          For any questions or requests, contact support at support@yourdomain.com.
+          For any questions or requests, contact support at bricarlis@gmail.com.
         </Text>
       </ScrollView>
     </SafeAreaView>

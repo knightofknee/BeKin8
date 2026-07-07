@@ -1,4 +1,10 @@
 // functions/src/portAccount.ts
+//
+// DORMANT / NOT DEPLOYED. The client account-porting UI was removed, so portAccountData
+// must NOT be re-exported from functions/src/index.ts (only entry-point re-exports get
+// deployed). Leaving it deployable is a needless attack surface: it verifies a foreign
+// email/password against the Identity Toolkit and rewrites cross-account data. Do not
+// re-export it unless the porting UI returns and the flow is re-reviewed.
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';

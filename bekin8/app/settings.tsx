@@ -13,6 +13,7 @@ import { ensureNotifyPermission } from "../lib/notifyPermission";
 import { getFireSoundEnabled, setFireSoundEnabled, onFireSoundChange } from "../lib/fireSoundPref";
 import { useTourTarget } from "../providers/TourProvider";
 import { tap, selection } from '../utils/haptics';
+import { logout } from '../lib/logout';
 
 const colors = {
   primary: "#2F6FED",
@@ -187,13 +188,23 @@ export default function SettingsScreen() {
   return (
     <>
       <SafeAreaView style={[s.safe, { backgroundColor: tc.bg }]} edges={["top", "left", "right"]}>
-        {/* Header */}
+        {/* Header: Back on the LEFT, Settings title centered, Log out on the RIGHT. Left/right
+            slots are equal-width so the title stays optically centered. */}
         <View style={[s.header, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
-          <Pressable onPress={() => { tap(); router.back(); }} hitSlop={8}>
+          <Pressable onPress={() => { tap(); router.back(); }} hitSlop={8} style={s.headerSlotLeft}>
             <Text style={[s.back, { color: tc.primary }]}>{`← Back`}</Text>
           </Pressable>
           <Text style={[s.title, { color: tc.text }]}>Settings</Text>
-          <View style={{ width: 48 }} />
+          <Pressable
+            onPress={async () => { tap(); await logout(); }}
+            hitSlop={8}
+            style={s.headerSlotRight}
+            accessibilityRole="button"
+            accessibilityLabel="Log out"
+          >
+            <Ionicons name="log-out-outline" size={22} color={tc.danger} />
+            <Text style={[s.logoutTxt, { color: tc.danger }]}>Log out</Text>
+          </Pressable>
         </View>
 
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
@@ -231,7 +242,7 @@ export default function SettingsScreen() {
           <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={[s.link, { color: tc.primary }]}>RSVP beacon comment notifications</Text>
-              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on a beacon you've RSVP'd to</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on a beacon you&apos;ve RSVP&apos;d to</Text>
             </View>
             <Switch
               value={commentNotify}
@@ -261,7 +272,7 @@ export default function SettingsScreen() {
           <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={[s.link, { color: tc.primary }]}>Comments on comments</Text>
-              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on a post you've commented on</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Get notified when someone comments on a post you&apos;ve commented on</Text>
             </View>
             <Switch
               value={commentOnCommentNotify}
@@ -370,8 +381,13 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  back: { color: colors.primary, fontWeight: "800", fontSize: 16, width: 48 },
-  title: { color: colors.text, fontWeight: "800", fontSize: 18, textAlign: "center" },
+  back: { color: colors.primary, fontWeight: "800", fontSize: 16 },
+  title: { flex: 1, color: colors.text, fontWeight: "800", fontSize: 18, textAlign: "center" },
+  // Equal-width left/right slots keep the centered title optically centered. The right slot's
+  // logout control (icon + label) sets the width both slots share.
+  headerSlotLeft: { width: 92, alignItems: "flex-start" },
+  headerSlotRight: { width: 92, flexDirection: "row", alignItems: "center", justifyContent: "flex-end" },
+  logoutTxt: { color: colors.danger, fontWeight: "800", fontSize: 16, marginLeft: 4 },
 
   // The scroll area takes only its content's height (shrinking into a scrollable region when the
   // content overflows); the Advanced Settings footer below it flexes into ALL leftover space, so

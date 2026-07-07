@@ -77,7 +77,9 @@ export const darkColors: ThemeColors = {
   skeleton: "#2D3140",
   postBg: "#1A1D27",
   backdrop: "rgba(0,0,0,0.55)",
-  tabInactive: "#6B7280",
+  // Inactive tab label. #6B7280 on the dark card (#1A1D27) is only 3.48:1 and fails WCAG AA;
+  // #9CA3AF lifts it to roughly 6.6:1 so tab labels stay legible in dark mode.
+  tabInactive: "#9CA3AF",
   linkText: "#4B8BFF",
   tourSurface: "#222A45",
   tourBorder: "#4B8BFF",

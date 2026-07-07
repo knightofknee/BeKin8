@@ -101,6 +101,19 @@ export default function FriendsProfileAndInvite({
               {busyUsername ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
             </Pressable>
           </View>
+          {/* Render the save message HERE, inside the username block, when no username is set yet.
+              The copy at the bottom of the card sits under the tour's "friends-add" callout, so a
+              "username taken" error would be invisible during onboarding. This copy stays visible. */}
+          {message.type && (
+            <Text
+              style={[
+                styles.message,
+                message.type === "error" ? { color: colors.error } : { color: colors.success },
+              ]}
+            >
+              {message.text}
+            </Text>
+          )}
         </View>
       )}
 
@@ -163,7 +176,10 @@ export default function FriendsProfileAndInvite({
           </Pressable>
         </View>
 
-        {message.type && (
+        {/* Once a username exists, the username block above is gone, so this is the only place the
+            message renders. Before that, the copy inside the username block handles it (this one
+            sits under the tour callout during onboarding), so skip it here to avoid a duplicate. */}
+        {message.type && currentUsername && (
           <Text
             style={[
               styles.message,

@@ -1,0 +1,239 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // NOTE (2026-07-07): this file is now the source of truth for Firestore rules, deployed via
+    // `firebase deploy --only firestore:rules`. It was seeded from the live console ruleset and then
+    // hardened: the bottom catch-all's blanket `allow read: if true` was CLOSED. That blanket read
+    // was overriding EVERY per-collection restriction below (Firestore ORs matching rules), so the
+    // whole database, including the friend graph, was world-readable. Content that is meant to be
+    // public (Posts, Profiles, Beacons, ChatMessages, comments) keeps its own `allow read: if true`.
+
+    // -------- users subtree --------
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /friends/{friendId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      match /friendSubscriptions/{friendUid} {
+        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+      match /blocks/{blockedUid} {
+        // The blockee may READ the single doc that would block THEM (path-keyed, so it also works
+        // for a non-existent doc = "not blocked"), which the client uses to pre-check before sending
+        // a friend request. Only the owner may see the full list or mutate it.
+        allow read: if request.auth != null
+                    && (request.auth.uid == userId || request.auth.uid == blockedUid);
+        allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+      match /pushTokens/{docId} {
+        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // -------- Favorites --------
+    match /Favorites/{userId} {
+      allow read: if true;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // -------- Friends doc (array) --------
+    match /Friends/{userId} {
+      allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // -------- FriendEdges --------
+    match /FriendEdges/{edgeId} {
+      function authed()         { return request.auth != null; }
+      function isParticipant(d) {
+        return authed()
+               && d != null
+               && d.uids is list
+               && d.uids.size() == 2
+               && d.uids.hasAny([request.auth.uid]);
+      }
+      allow read: if isParticipant(resource.data);
+      allow create: if authed()
+                    && request.resource.data.uids is list
+                    && request.resource.data.uids.size() == 2
+                    && request.resource.data.uids.hasAny([request.auth.uid])
+                    && request.resource.data.uids[0] != request.resource.data.uids[1];
+      allow delete: if isParticipant(resource.data);
+      allow update: if false;
+    }
+
+    // -------- FriendRequests --------
+    match /FriendRequests/{requestId} {
+      function authed()        { return request.auth != null; }
+      function sender(d)       { return authed() && d.senderUid == request.auth.uid; }
+      function receiver(d)     { return authed() && d.receiverUid == request.auth.uid; }
+      function isParticipant(d){ return authed() && (sender(d) || receiver(d)); }
+
+      allow create: if authed()
+                    && request.resource.data.senderUid == request.auth.uid
+                    && request.resource.data.status == "pending";
+      // `resource == null` lets the client's get-by-id existence check (before sending a request)
+      // resolve a non-existent doc as "not found" instead of a permission error.
+      allow read: if resource == null || isParticipant(resource.data);
+      allow update: if authed() && (
+        (receiver(resource.data) && resource.data.status == "pending" &&
+          (request.resource.data.status == "accepted" || request.resource.data.status == "rejected"))
+        ||
+        (sender(resource.data) && resource.data.status == "pending" &&
+          request.resource.data.status == "cancelled")
+      );
+      allow delete: if isParticipant(resource.data) && resource.data.status != "pending";
+    }
+
+    // -------- Beacons + ChatMessages --------
+    match /Beacons/{beaconId} {
+      function authed()     { return request.auth != null; }
+      function isOwner()    { return authed() && resource.data.ownerUid == request.auth.uid; }
+      function isAllowed()  {
+        return authed()
+               && resource.data.allowedUids is list
+               && resource.data.allowedUids.hasAny([request.auth.uid]);
+      }
+      function currentInUids() {
+        return (resource.data.inUids is list) ? resource.data.inUids : [];
+      }
+
+      allow read: if true;
+      allow create: if authed()
+                    && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if authed() && (
+        isOwner() ||
+        (
+          isAllowed() &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['inUids','updatedAt']) &&
+          request.resource.data.inUids is list &&
+          request.resource.data.inUids.hasAll(currentInUids()) &&
+          request.resource.data.inUids.size() >= currentInUids().size()
+        )
+      );
+      allow delete: if isOwner();
+
+      match /ChatMessages/{msgId} {
+        allow read: if true;
+        allow create: if request.auth != null;
+        allow delete: if request.auth != null && resource.data.authorUid == request.auth.uid;
+        allow update: if false;
+      }
+    }
+
+    // -------- Profiles + lists subcollection --------
+    match /Profiles/{userId} {
+      allow read: if true;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+
+      match /lists/{listId} {
+        allow read: if true;
+        allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // -------- FriendGroups --------
+    match /FriendGroups/{groupId} {
+      function authed()     { return request.auth != null; }
+      function isOwner()    { return authed() && resource.data.ownerUid == request.auth.uid; }
+      function isMember()   { return authed() && resource.data.memberUids is list
+                                     && resource.data.memberUids.hasAny([request.auth.uid]); }
+      function ownerStable(){ return authed() && request.resource.data.ownerUid == request.auth.uid; }
+
+      // Owner reads their own groups; a MEMBER may read a group they belong to (the beacon list
+      // resolves a friend's group membership this way, but can no longer enumerate groups it is not
+      // in). `resource == null` keeps get-by-id existence checks working (e.g. the tutorial group).
+      allow read: if resource == null || isOwner() || isMember();
+      allow create: if ownerStable()
+                    && request.resource.data.name is string
+                    && request.resource.data.memberUids is list;
+      allow update: if isOwner()
+                    && request.resource.data.ownerUid == resource.data.ownerUid
+                    && request.resource.data.diff(resource.data).changedKeys()
+                         .hasOnly(['name','memberUids','updatedAt']);
+      allow delete: if isOwner();
+    }
+
+    // -------- Posts (top-level) + comments --------
+    match /Posts/{postId} {
+      allow read: if true;
+      allow create: if request.auth != null;
+
+      match /comments/{commentId} {
+        function authed()    { return request.auth != null; }
+        function isAuthor()  { return authed() && resource.data.authorUid == request.auth.uid; }
+        function createsAsSelf() {
+          return authed() && request.resource.data.authorUid == request.auth.uid;
+        }
+        allow read: if true;
+        allow create: if createsAsSelf();
+        allow update: if isAuthor();
+        allow delete: if isAuthor();
+      }
+    }
+
+    // -------- Reports (UGC moderation) --------
+    match /Reports/{reportId} {
+      allow create: if request.auth != null;
+      allow read, update, delete: if false;
+    }
+
+    // -------- Invites (code -> uid map) --------
+    // Locked: only the Admin SDK (redeem / ensureInviteCode) touches it, and the Admin SDK bypasses
+    // rules. Clients must never read it, or the code->uid map could be enumerated and used to
+    // force-friend arbitrary users.
+    match /Invites/{code} {
+      allow read, write: if false;
+    }
+
+    // -------- Usernames (uniqueness reservations) --------
+    // Never read by clients. The first writer creates the doc; a second racing claimer's write is an
+    // UPDATE, which no rule allows, so uniqueness holds. Owners may delete their own reservation to
+    // release a name on rename.
+    match /Usernames/{name} {
+      allow read: if false;
+      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // -------- ClientErrors (crash / error logs) --------
+    // Write-only for authed clients; readable only in the console / via the Admin SDK.
+    match /ClientErrors/{docId} {
+      allow create: if request.auth != null;
+      allow read, update, delete: if false;
+    }
+
+    // -------- PushTokens --------
+    match /PushTokens/{uid} {
+      allow read, create, update, delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // -------- Vacation Days (habit-tracking breaks) --------
+    // Doc id: `${userId}_${date}`. Each doc stores userId for queries.
+    match /vacationDays/{docId} {
+      function authed()    { return request.auth != null; }
+      function isOwner()   { return authed() && resource.data.userId == request.auth.uid; }
+      function ownsNew()   { return authed() && request.resource.data.userId == request.auth.uid; }
+
+      allow read: if isOwner();
+      allow create: if ownsNew();
+      allow update: if isOwner()
+                    && request.resource.data.userId == resource.data.userId;
+      allow delete: if isOwner();
+    }
+
+    // -------- Catch-all --------
+    // read CLOSED (was `if true`, which made the whole DB world-readable and overrode every rule
+    // above). Unlisted collections now deny reads by default; explicitly public collections keep
+    // their own `allow read: if true`. Create stays open to authed users (ClientErrors/Usernames
+    // rely on it); update/delete stay author-guarded.
+    match /{document=**} {
+      allow read: if false;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.author;
+    }
+  }
+}

@@ -4,6 +4,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useTheme } from "../providers/ThemeProvider";
 import { ensureNotifyPermission } from "../lib/notifyPermission";
+import { auth, db } from "../firebase.config";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { tap, press } from "../utils/haptics";
 
 export default function NotificationsPermission() {
@@ -20,6 +22,21 @@ export default function NotificationsPermission() {
         "We use notifications to let you know when friends light beacons, RSVP or chat on yours, and send requests."
       );
       if (granted) {
+        // Opt into friend-beacon pushes so the promised "a friend lit a beacon" alert actually
+        // arrives. This is the flag the server's recipientWantsNotify checks. Non-fatal on failure:
+        // permission is granted and the master toggle can still be set in Friends/Settings.
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          try {
+            await setDoc(
+              doc(db, "Profiles", uid),
+              { notifyAllBeacons: true, updatedAt: serverTimestamp() },
+              { merge: true }
+            );
+          } catch {
+            /* ignore */
+          }
+        }
         Alert.alert("You're all set", "We'll let you know the moment a friend lights a beacon.");
         if (router.canGoBack()) router.back();
       }

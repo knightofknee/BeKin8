@@ -1,7 +1,10 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, Pressable, StyleSheet, Platform, Keyboard } from "react-native";
 import { usePathname, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { auth, db } from "../firebase.config";
 import { useTheme } from "../providers/ThemeProvider";
 import { tap } from "../utils/haptics";
 
@@ -29,6 +32,7 @@ export default function BottomBar() {
   const { colors } = useTheme();
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
 
   const activeKey: TabKey | null = useMemo(() => {
     if (pathname?.startsWith("/home"))         return "home";
@@ -39,31 +43,80 @@ export default function BottomBar() {
     return null;
   }, [pathname]);
 
-  const onNav = (href: `/${string}`) => {
+  // Pending incoming friend-request count -> badge on the Friends tab. Mirrors the exact query
+  // app/friends.tsx uses for its incoming list: FriendRequests where receiverUid == me AND
+  // status == "pending". Surfaces requests that otherwise have no push + no badge.
+  const [pendingRequests, setPendingRequests] = useState(0);
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setPendingRequests(0);
+      return;
+    }
+    const qIn = query(
+      collection(db, "FriendRequests"),
+      where("receiverUid", "==", uid),
+      where("status", "==", "pending")
+    );
+    const unsub = onSnapshot(
+      qIn,
+      (snap) => setPendingRequests(snap.size),
+      () => setPendingRequests(0)
+    );
+    return unsub;
+  }, [pathname]);
+
+  const onNav = (href: `/${string}`, isActive: boolean) => {
     tap();
     Keyboard.dismiss();
-    router.push(href as any);
+    // Already on this tab: do nothing. router.push would stack a duplicate mounted instance
+    // (extra Firestore listeners, audio, Skia; broken Android back). navigate dedupes to the
+    // existing route rather than pushing a new one.
+    if (isActive) return;
+    router.navigate(href as any);
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.card, borderTopColor: colors.border, paddingBottom: Math.max(insets.bottom, 8) },
+      ]}
+    >
       <View style={styles.row}>
         {TABS.map((tab) => {
           const active = activeKey === tab.key;
+          const showBadge = tab.key === "friends" && pendingRequests > 0;
           return (
             <Pressable
               key={tab.key}
-              onPress={() => onNav(tab.href)}
+              onPress={() => onNav(tab.href, active)}
               style={({ pressed }) => [styles.tab, pressed && { opacity: 0.85 }]}
               android_ripple={{ color: colors.border, borderless: true }}
               hitSlop={6}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={
+                showBadge
+                  ? `${tab.label}, ${pendingRequests} pending friend request${pendingRequests === 1 ? "" : "s"}`
+                  : tab.label
+              }
             >
-              <Ionicons
-                name={active ? tab.iconActive : tab.icon}
-                size={24}
-                color={tab.color}
-                style={[styles.icon, !active && styles.iconInactive]}
-              />
+              <View>
+                <Ionicons
+                  name={active ? tab.iconActive : tab.icon}
+                  size={24}
+                  color={tab.color}
+                  style={[styles.icon, !active && styles.iconInactive]}
+                />
+                {showBadge ? (
+                  <View style={[styles.badge, { backgroundColor: colors.danger, borderColor: colors.card }]}>
+                    <Text style={styles.badgeText} numberOfLines={1} maxFontSizeMultiplier={1.4}>
+                      {pendingRequests > 9 ? "9+" : pendingRequests}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
               <Text
                 style={[
                   styles.label,
@@ -71,6 +124,7 @@ export default function BottomBar() {
                   active && { color: tab.color },
                 ]}
                 numberOfLines={1}
+                maxFontSizeMultiplier={1.4}
               >
                 {tab.label}
               </Text>
@@ -79,7 +133,6 @@ export default function BottomBar() {
           );
         })}
       </View>
-      <View style={styles.bottomInset} />
     </View>
   );
 }
@@ -109,5 +162,17 @@ const styles = StyleSheet.create({
   iconInactive: { opacity: 0.55 },
   label: { fontSize: 11, fontWeight: "700" },
   activePill: { position: "absolute", bottom: 2, width: 26, height: 3, borderRadius: 999 },
-  bottomInset: { height: Platform.select({ ios: 8, android: 0 }) },
+  badge: {
+    position: "absolute",
+    top: -5,
+    right: -9,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    paddingHorizontal: 3,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgeText: { color: "#fff", fontSize: 10, fontWeight: "800", lineHeight: 13 },
 });

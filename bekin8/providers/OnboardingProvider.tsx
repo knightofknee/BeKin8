@@ -52,6 +52,10 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   const [hasFriend, setHasFriend] = useState(false);
   const [friendLoaded, setFriendLoaded] = useState(false);
   const [notifGranted, setNotifGranted] = useState(false);
+  // True when the OS permission is permanently denied (denied AND can no longer prompt). We treat
+  // this as "resolved" so the setup banner can complete instead of dead-ending in an OS-Settings
+  // alert the user has already refused.
+  const [notifBlocked, setNotifBlocked] = useState(false);
   const [notifChecked, setNotifChecked] = useState(false);
 
   // Friend count from accepted FriendEdges, the same canonical source the Friends screen and the
@@ -89,6 +93,7 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
     try {
       const perm = await Notifications.getPermissionsAsync();
       setNotifGranted(!!perm.granted);
+      setNotifBlocked(!perm.granted && !perm.canAskAgain);
     } catch {
       /* leave previous value */
     } finally {
@@ -115,7 +120,7 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   const steps: OnboardingStep[] = [
     { key: "username", label: "Pick a username", done: hasUsername, target: "friends-username" },
     { key: "friend", label: "Add a friend", done: hasFriend, target: "friends-requests" },
-    { key: "notifications", label: "Turn on notifications", done: notifGranted, target: "settings-notifications" },
+    { key: "notifications", label: "Turn on notifications", done: notifGranted || notifBlocked, target: "settings-notifications" },
   ];
   const doneCount = steps.filter((s) => s.done).length;
   const firstIncomplete = steps.find((s) => !s.done) ?? null;

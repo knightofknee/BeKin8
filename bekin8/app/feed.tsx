@@ -12,6 +12,7 @@ import {
   Alert,
   Animated,
   TextInput,
+  RefreshControl,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
@@ -63,6 +64,17 @@ interface Post {
 }
 
 const prefKey = () => `feed_showMine:${auth.currentUser?.uid ?? 'anon'}`;
+
+// Author label + commentsEnabled cache, hoisted to module scope so a remount
+// (navigating away and back) reuses resolved Profiles instead of re-reading them.
+const moduleAuthorCache: Record<string, { label: string; username: string; commentsEnabled: boolean }> = {};
+
+// Firestore 'in' queries cap at 10 values, chunk author uids into groups of 10.
+function chunk10<T>(arr: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += 10) out.push(arr.slice(i, i + 10));
+  return out;
+}
 
 // ── Skeleton loader ────────────────────────────────────────────────────────
 function SkeletonBlock({ width, height, style, color, shimmer }: { width: number | string; height: number; style?: any; color?: string; shimmer?: string }) {
@@ -153,7 +165,8 @@ export default function Feed() {
   const [silencedPostIds, setSilencedPostIds] = useState<Set<string>>(new Set());
 
   // cache: uid → { label (display name), username (slug for profile route), commentsEnabled }
-  const authorCache = useRef<Record<string, { label: string; username: string; commentsEnabled: boolean }>>({});
+  // Backed by module scope so it survives remounts.
+  const authorCache = useRef(moduleAuthorCache);
   // friend uid set
   const friendUids = useRef<Set<string>>(new Set());
   // friends-of-friends uid set (session cache, kept separate from friends)
@@ -162,6 +175,10 @@ export default function Feed() {
   const prevFofFlagRef = useRef<boolean | null>(null);
   // oldest timestamp loaded so far (for pagination cursor)
   const oldestTs = useRef<number>(Date.now());
+  // ids already shown, so the '<=' cursor boundary doesn't re-add or skip equal-ts posts
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  // pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
 
   // my global comments setting, from cached profile, no extra read
   const myGlobalCommentsEnabled = profile?.commentsEnabled ?? false;
@@ -271,36 +288,56 @@ export default function Feed() {
   }, []);
 
   // ── load one page of posts ──────────────────────────────────────────────────
-  // olderThan: unix ms, load posts with timestamp < olderThan
-  const loadPage = useCallback(async (uids: string[], olderThan: number): Promise<Post[]> => {
-    if (!uids.length) return [];
+  // Batched: authors are grouped into chunks of 10 and queried with where('author','in', chunk)
+  // + orderBy('timestamp','desc') + limit(PAGE_SIZE), so cost is ceil(N/10) reads not N.
+  // Returns the merged page plus a next cursor that is guaranteed not to skip any
+  // post newer than it. A chunk that returns exactly PAGE_SIZE docs is "truncated":
+  // there may be more posts in it older than the last returned doc but newer than the
+  // global page slice, so the cursor must not advance past that chunk's oldest returned
+  // timestamp. seenIds carries de-dupe state across pages so equal-timestamp posts at a
+  // '<=' boundary aren't lost or duplicated.
+  const loadPage = useCallback(async (
+    uids: string[],
+    olderThanOrEq: number,
+    seenIds: Set<string>,
+  ): Promise<{ posts: Post[]; nextCursor: number; exhausted: boolean }> => {
+    if (!uids.length) return { posts: [], nextCursor: 0, exhausted: true };
 
-    // Fire one query per author (Firestore limitation, no OR on different fields)
-    // Each returns up to PAGE_SIZE, we then merge and take the top PAGE_SIZE globally
-    const perAuthorLimit = Math.max(3, Math.ceil(PAGE_SIZE / uids.length) + 2);
-
+    const chunks = chunk10(uids);
     const results = await Promise.allSettled(
-      uids.map((uid) =>
+      chunks.map((group) =>
         getDocs(
           query(
             collection(db, 'Posts'),
-            where('author', '==', uid),
+            where('author', 'in', group),
             orderBy('timestamp', 'desc'),
-            where('timestamp', '<', olderThan),
-            limit(perAuthorLimit)
+            where('timestamp', '<=', olderThanOrEq),
+            limit(PAGE_SIZE)
           )
         )
       )
     );
 
     const collected: Post[] = [];
-    results.forEach((res, idx) => {
+    // Oldest returned timestamp among chunks that came back FULL (truncated). The cursor
+    // may never advance past the newest such boundary, or we'd skip that chunk's posts.
+    let truncatedFloor = -Infinity;
+    let anyFulfilled = false;
+
+    results.forEach((res) => {
       if (res.status !== 'fulfilled') return;
-      const uid = uids[idx];
-      const author = authorCache.current[uid] ?? { label: 'Friend', username: '', commentsEnabled: false };
-      res.value.docs.forEach((d) => {
+      anyFulfilled = true;
+      const docs = res.value.docs;
+      docs.forEach((d) => {
         const data = d.data() as any;
-        const rawTs = data.timestamp ?? data.createdAt;
+        const uid = String(data.author ?? '');
+        const author = authorCache.current[uid] ?? { label: 'Friend', username: '', commentsEnabled: false };
+        // The query orders + cursors on the numeric `timestamp` field, so _timestamp
+        // (used for sort AND the next cursor) MUST come from that same field or the
+        // '<=' boundary would skip/duplicate. timestampServer is only a display fallback
+        // for createdAt (authoritative wall-clock, immune to client skew).
+        const cursorTs = toTimestamp(data.timestamp ?? data.createdAt);
+        const displayTs = data.timestampServer ?? data.timestamp ?? data.createdAt;
         collected.push({
           id: d.id,
           authorUid: uid,
@@ -308,31 +345,70 @@ export default function Feed() {
           authorUsernameSlug: author.username,
           content: data.content ?? '',
           title: data.title ?? '',
-          createdAt: toDate(rawTs),
+          createdAt: toDate(displayTs),
           url: data.url ?? data.link ?? data.href ?? undefined,
           commentsEnabled: data.commentsEnabled !== false,
           authorCommentsEnabled: author.commentsEnabled,
-          _timestamp: toTimestamp(rawTs),
+          _timestamp: cursorTs,
         });
       });
+      if (docs.length === PAGE_SIZE) {
+        const lastData = docs[docs.length - 1].data() as any;
+        const oldest = toTimestamp(lastData.timestamp ?? lastData.createdAt);
+        if (oldest > truncatedFloor) truncatedFloor = oldest;
+      }
     });
 
-    // sort desc, take page
-    collected.sort((a, b) => b._timestamp - a._timestamp);
-    return collected.slice(0, PAGE_SIZE);
+    // De-dupe against posts already shown (across pages), then sort newest-first.
+    const deduped = collected.filter((p) => !seenIds.has(p.id));
+    deduped.sort((a, b) => b._timestamp - a._timestamp);
+    const pageSlice = deduped.slice(0, PAGE_SIZE);
+    pageSlice.forEach((p) => seenIds.add(p.id));
+
+    // Cursor: advance to the oldest post we're actually showing this page, but never
+    // past any truncated chunk's oldest returned ts (or we'd skip that chunk's newer
+    // posts forever). Use '<=' next time + seenIds de-dupe to keep the boundary safe.
+    const sliceOldest = pageSlice.length ? pageSlice[pageSlice.length - 1]._timestamp : olderThanOrEq;
+    let nextCursor: number;
+    if (truncatedFloor > -Infinity) {
+      // max(sliceOldest, truncatedFloor): don't move past a chunk that still has posts.
+      nextCursor = Math.max(sliceOldest, truncatedFloor);
+    } else {
+      nextCursor = sliceOldest;
+    }
+
+    // Exhausted only when no chunk was truncated AND we didn't fill a page, i.e. there is
+    // provably nothing older left to fetch.
+    const exhausted = anyFulfilled && truncatedFloor === -Infinity && deduped.length < PAGE_SIZE;
+
+    return { posts: pageSlice, nextCursor, exhausted };
   }, []);
+
+  // ── patch already-built posts with freshly resolved author labels ──────────
+  // loadPage builds posts from whatever author cache exists; after resolving the
+  // DISTINCT authors actually present we re-apply their labels so nothing renders
+  // as a stale "Friend" placeholder.
+  const applyAuthorLabels = useCallback((page: Post[]): Post[] =>
+    page.map((p) => {
+      const a = authorCache.current[p.authorUid];
+      return a ? { ...p, authorUsername: a.label, authorUsernameSlug: a.username, authorCommentsEnabled: a.commentsEnabled } : p;
+    })
+  , []);
 
   // ── initial load ────────────────────────────────────────────────────────────
   const initialLoad = useCallback(async () => {
     setLoading(true);
     try {
+      seenIdsRef.current = new Set();
       const uids = Array.from(await loadFriends());
-      await resolveAuthors(uids);
-      const page = await loadPage(uids, Date.now() + 1000);
-      oldestTs.current = page.length ? page[page.length - 1]._timestamp : 0;
-      setHasMore(page.length >= PAGE_SIZE);
+      // '<=' with a far-future cursor so the newest post is included.
+      const { posts: rawPage, nextCursor, exhausted } = await loadPage(uids, Date.now() + 1000, seenIdsRef.current);
+      // Resolve Profiles only for the distinct authors actually present in this page.
+      await resolveAuthors(Array.from(new Set(rawPage.map((p) => p.authorUid).filter(Boolean))));
+      const page = applyAuthorLabels(rawPage);
+      oldestTs.current = nextCursor;
+      setHasMore(!exhausted && page.length > 0);
 
-      // dedupe by id
       const seen = new Map<string, Post>();
       page.forEach((p) => seen.set(p.id, p));
       setPosts(Array.from(seen.values()));
@@ -341,19 +417,27 @@ export default function Feed() {
     } finally {
       setLoading(false);
     }
-  }, [loadFriends, resolveAuthors, loadPage]);
+  }, [loadFriends, resolveAuthors, loadPage, applyAuthorLabels]);
 
   // ── load more (pagination) ──────────────────────────────────────────────────
   const loadMore = useCallback(async () => {
     press();
-    if (loadingMore || !hasMore || !oldestTs.current) return;
+    // Never paginate while a pull-to-refresh is resetting the cursor + seenIds, or the two
+    // races clobber oldestTs and re-merge onto a freshly-replaced list.
+    if (loadingMore || refreshing || !hasMore || !oldestTs.current) return;
     setLoadingMore(true);
     try {
       const uids = Array.from(new Set([...Array.from(friendUids.current), ...Array.from(fofUids.current)]));
-      const page = await loadPage(uids, oldestTs.current);
-      if (page.length < PAGE_SIZE) setHasMore(false);
+      const prevCursor = oldestTs.current;
+      const { posts: rawPage, nextCursor, exhausted } = await loadPage(uids, prevCursor, seenIdsRef.current);
+      await resolveAuthors(Array.from(new Set(rawPage.map((p) => p.authorUid).filter(Boolean))));
+      const page = applyAuthorLabels(rawPage);
+      // Advance cursor even on an empty slice so a truncated-but-all-seen page keeps moving.
+      oldestTs.current = nextCursor;
+      // Stall guard: an all-seen page that can't move the cursor would loop forever.
+      // If we added nothing new and the cursor didn't advance, we're done.
+      if (exhausted || (!page.length && nextCursor >= prevCursor)) setHasMore(false);
       if (!page.length) return;
-      oldestTs.current = page[page.length - 1]._timestamp;
 
       setPosts((prev) => {
         const seen = new Map<string, Post>(prev.map((p) => [p.id, p]));
@@ -365,7 +449,24 @@ export default function Feed() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, loadPage]);
+  }, [loadingMore, refreshing, hasMore, loadPage, resolveAuthors, applyAuthorLabels]);
+
+  // ── pull-to-refresh ──────────────────────────────────────────────────────────
+  // Resets the cursor + hasMore and re-runs the initial load (mirrors the
+  // friend-change refresh path). Uses `refreshing` so the spinner shows in the
+  // pull control rather than swapping the list for the skeleton.
+  const onRefresh = useCallback(async () => {
+    if (loadingMore) return; // don't start a refresh on top of an in-flight pagination
+    tap();
+    setRefreshing(true);
+    oldestTs.current = Date.now() + 1000;
+    setHasMore(true);
+    try {
+      await initialLoad();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [initialLoad, loadingMore]);
 
   useEffect(() => { initialLoad(); }, [initialLoad]);
 
@@ -445,18 +546,23 @@ export default function Feed() {
         const snap = await getDoc(doc(db, 'Posts', pid));
         if (cancelled || !snap.exists()) return;
         const d: any = snap.data();
-        const ts = d?.createdAt?.toMillis?.() || d?.createdAt?.seconds * 1000 || Date.now();
+        // Posts are written with author/timestamp/link/authorName (see create-post.tsx),
+        // NOT authorUid/createdAt/url/authorUsername. Map the real field names, else
+        // authorUid is '' and PostComments throws on doc(db,'Profiles','').
+        const authorUid = d?.author ?? d?.authorUid ?? '';
+        const ts = toTimestamp(d?.timestampServer ?? d?.timestamp ?? d?.createdAt) || Date.now();
+        const cached = authorUid ? authorCache.current[authorUid] : undefined;
         setSelectedPost({
           id: pid,
-          authorUid: d?.authorUid || '',
-          authorUsername: d?.authorUsername || '',
-          authorUsernameSlug: d?.authorUsernameSlug || d?.authorUsername || '',
+          authorUid,
+          authorUsername: cached?.label ?? d?.authorName ?? d?.authorUsername ?? '',
+          authorUsernameSlug: cached?.username ?? d?.authorName ?? d?.authorUsername ?? '',
           content: d?.content || '',
           title: d?.title,
           createdAt: new Date(ts),
-          url: d?.url,
+          url: d?.url ?? d?.link,
           commentsEnabled: d?.commentsEnabled,
-          authorCommentsEnabled: d?.authorCommentsEnabled,
+          authorCommentsEnabled: cached?.commentsEnabled,
           _timestamp: ts,
         });
         setTargetCommentId(cid);
@@ -606,7 +712,7 @@ export default function Feed() {
   }, [editingPost, editTitle, editContent, editUrl]);
 
   // ── render ──────────────────────────────────────────────────────────────────
-  if (loading) {
+  if (loading && !refreshing) {
     return (
       <>
         <SafeAreaView style={{ flex: 1, backgroundColor: tc.bg }} edges={['top', 'left', 'right']}>
@@ -635,6 +741,9 @@ export default function Feed() {
           style={{ flex: 1, backgroundColor: tc.bg }}
           data={displayedPosts}
           keyExtractor={(item) => item.id}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={tc.primary} colors={[tc.primary]} />
+          }
           contentContainerStyle={[styles.list, { paddingBottom: 100, flexGrow: 1, backgroundColor: tc.bg }]}
           onScrollToIndexFailed={(info) => {
             // Item not yet measured (off-screen). Estimate offset, then retry.
@@ -675,7 +784,7 @@ export default function Feed() {
                 <Text style={styles.emptyIcon}>📡</Text>
                 <Text style={[styles.emptyTitle, { color: tc.text }]}>No internet connection</Text>
                 <Text style={[styles.emptyBody, { color: tc.subtle }]}>
-                  Can't load your feed right now. Check your connection and try again.
+                  Can{'’'}t load your feed right now. Check your connection and try again.
                 </Text>
               </View>
             )
@@ -693,7 +802,14 @@ export default function Feed() {
                       {item.authorUsername}
                     </Text>
                   </Pressable>
-                  <Pressable onPress={() => { tap(); setMenuFor(item); }} hitSlop={10} style={styles.menuBtn}>
+                  <Pressable
+                    onPress={() => { tap(); setMenuFor(item); }}
+                    hitSlop={10}
+                    style={styles.menuBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Post options"
+                    accessibilityHint="Report, block, or manage this post"
+                  >
                     <Text style={[styles.menuDots, { color: tc.subtle }]}>⋯</Text>
                   </Pressable>
                 </View>
@@ -734,7 +850,7 @@ export default function Feed() {
                 }
               </Pressable>
             ) : (
-              <Text style={[styles.endTxt, { color: tc.subtle }]}>You're all caught up</Text>
+              <Text style={[styles.endTxt, { color: tc.subtle }]}>You{'’'}re all caught up</Text>
             )
           }
         />

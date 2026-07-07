@@ -66,7 +66,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { syncPushTokenIfGranted, ensurePushPermissionsAndToken } from '../lib/push';
 import * as Notifications from 'expo-notifications';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
-import { buildTimeHHmm, parseTimeHHmm } from '../lib/beaconTime';
+import { buildTimeHHmm, parseTimeHHmm, formatTimeHHmmDisplay } from '../lib/beaconTime';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
@@ -107,6 +107,26 @@ function getMillis(v: any): number {
   if (typeof v.seconds === 'number')
     return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
   return 0;
+}
+
+// Compute the calendar-day anchors together (today's start, the 7-day window end, and the day chips)
+// so they always agree and can be refreshed atomically when the day rolls over. `dayKey` is a stable
+// yyyymmdd string used to detect an actual day change (vs. any AppState 'active' on the same day).
+function computeDayAnchor() {
+  const base = startOfDay(new Date());
+  const windowEnd = endOfDay(new Date(base));
+  windowEnd.setDate(windowEnd.getDate() + 6);
+  const next7Days = Array.from({ length: 7 }).map((_, i) => {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    const label =
+      i === 0
+        ? 'Today'
+        : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    return { date: d, label, offset: i };
+  });
+  const dayKey = `${base.getFullYear()}${base.getMonth() + 1}${base.getDate()}`;
+  return { todayStart: base, windowEnd, next7Days, dayKey };
 }
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
@@ -314,6 +334,9 @@ export default function HomeScreen() {
   // show the beacon-specific onboarding modal. Called from both beacon-creation
   // paths (toggleBeacon's "Light" branch and saveBeaconOptions).
   const maybePromptForBeaconNotifications = async () => {
+    // Never pop over the tour: the tour's own scripted light/save calls this, and its notifications
+    // step already handles permission. The modal would otherwise cover the coach-mark.
+    if (isActive) return;
     try {
       const perm = await Notifications.getPermissionsAsync();
       // 'granted' is true on iOS once allowed. On Android the boolean is the
@@ -342,6 +365,7 @@ export default function HomeScreen() {
         const snap = await getDoc(doc(db, 'Beacons', bid));
         if (!snap.exists()) {
           if (__DEV__) console.warn('Beacon deep link: doc not found', bid);
+          Alert.alert('Beacon unavailable', 'This beacon is no longer active.');
           return;
         }
         const d: any = snap.data();
@@ -358,6 +382,7 @@ export default function HomeScreen() {
         setSelectedBeaconMessageId(mid);
       } catch (err) {
         if (__DEV__) console.warn('Beacon deep link: fetch failed', bid, err);
+        Alert.alert('Beacon unavailable', 'This beacon is no longer active.');
       }
     })();
   }, [params.beaconId, params.messageId]);
@@ -372,12 +397,48 @@ export default function HomeScreen() {
   const [loadingGroups, setLoadingGroups] = useState(false);
 
   // ---------- SUBSCRIBE: your beacon(s) (next 7 days) ----------
-  const todayStart = useMemo(() => startOfDay(new Date()), []);
-  const windowEnd = useMemo(() => {
-    const end = endOfDay(new Date(todayStart));
-    end.setDate(end.getDate() + 6);
-    return end;
-  }, [todayStart]);
+  // Day anchors are STATE, not one-shot useMemo: Home stays mounted overnight, so after midnight the
+  // beacon query window, the day chips, and the relight dates all go a day stale. We recompute them
+  // when the calendar day actually changes: on every AppState 'active' (returning to the app), and via
+  // a timer armed for the next local 00:00 (re-armed each time it fires). All dependent effects key off
+  // these values and resubscribe when they change.
+  const [dayAnchor, setDayAnchor] = useState(() => computeDayAnchor());
+  const { todayStart, windowEnd, next7Days } = dayAnchor;
+  const dayKeyRef = useRef(dayAnchor.dayKey);
+  dayKeyRef.current = dayAnchor.dayKey;
+  useEffect(() => {
+    // Refresh anchors only when the local calendar day has actually rolled over (cheap no-op otherwise,
+    // so an AppState 'active' on the same day never resubscribes every query).
+    const refreshIfDayChanged = () => {
+      const next = computeDayAnchor();
+      if (next.dayKey !== dayKeyRef.current) setDayAnchor(next);
+    };
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const armMidnight = () => {
+      if (timer) clearTimeout(timer);
+      const now = new Date();
+      const nextMidnight = startOfDay(new Date());
+      nextMidnight.setDate(nextMidnight.getDate() + 1);
+      // +1s cushion so we're safely past 00:00 when it fires, capped so a large clock jump/DST can't
+      // overflow setTimeout's 32-bit delay (falls back to a re-check within ~24h).
+      const ms = Math.min(Math.max(nextMidnight.getTime() - now.getTime() + 1000, 1000), 24 * 3600 * 1000);
+      timer = setTimeout(() => {
+        refreshIfDayChanged();
+        armMidnight(); // re-arm for the following midnight
+      }, ms);
+    };
+    armMidnight();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        refreshIfDayChanged();
+        armMidnight(); // the timer may have been throttled while backgrounded; re-arm from now
+      }
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      sub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     const user = auth.currentUser;
@@ -447,9 +508,12 @@ export default function HomeScreen() {
           });
           setIsLit(true);
           setPlannedMessage(msg);
-          const gids: string[] = Array.isArray(activeDoc.data?.groupIds)
-            ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
-            : [];
+          const testId = `${user.uid}__tutorial_test`;
+          const gids: string[] = (
+            Array.isArray(activeDoc.data?.groupIds)
+              ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
+              : []
+          ).filter((id: string) => id !== testId); // never re-select the tutorial test group from a doc
           if (!onFirstBeaconStepRef.current) setSelectedGroupIds(gids); // final tour step forces test-only
         } else {
           setMyActiveBeacon(null);
@@ -470,9 +534,12 @@ export default function HomeScreen() {
             typeof plannedSoonest.data?.timeHHmm === 'string' ? plannedSoonest.data.timeHHmm : null,
           );
 
-          const gids: string[] = Array.isArray(plannedSoonest.data?.groupIds)
-            ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
-            : [];
+          const testId = `${user.uid}__tutorial_test`;
+          const gids: string[] = (
+            Array.isArray(plannedSoonest.data?.groupIds)
+              ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
+              : []
+          ).filter((id: string) => id !== testId); // never re-select the tutorial test group from a doc
           if (!onFirstBeaconStepRef.current) setSelectedGroupIds(gids); // final tour step forces test-only
         } else {
           setNextPlannedDate(null);
@@ -544,23 +611,8 @@ export default function HomeScreen() {
     return () => unsub();
   }, [selectedBeacon?.id]);
 
-  // Chips for the next 7 days (for Options Modal)
-  const next7Days = useMemo(() => {
-    const base = startOfDay(new Date());
-    return Array.from({ length: 7 }).map((_, i) => {
-      const d = new Date(base);
-      d.setDate(base.getDate() + i);
-      const label =
-        i === 0
-          ? 'Today'
-          : d.toLocaleDateString(undefined, {
-              weekday: 'short',
-              month: 'short',
-              day: 'numeric',
-            });
-      return { date: d, label, offset: i };
-    });
-  }, []);
+  // Chips for the next 7 days (for Options Modal) come from dayAnchor.next7Days so they refresh at
+  // midnight alongside the query window (see the day-anchor state above).
 
   // Load friend groups, **skip unnamed groups** (no "Untit empty Group" fallback)
   useEffect(() => {
@@ -815,6 +867,14 @@ export default function HomeScreen() {
         builtBeaconStepsRef.current = null;
         reachedRef.current = false;
         firstBeaconSeededRef.current = false;
+        // Drop the tutorial test group the tour selected for the WHOLE run. The on-step effect only
+        // clears it when the user reaches the final step, so skipping earlier (or a replay Close) left
+        // real beacons scoped to the empty test group = reaches nobody. Unconditionally filter it out.
+        const closeUid = auth.currentUser?.uid;
+        if (closeUid) {
+          const testId = `${closeUid}__tutorial_test`;
+          setSelectedGroupIds((prev) => prev.filter((id) => id !== testId));
+        }
         setSeen('beacon_chat');
         // Arm the one-time "who will see this" confirm for the first beacon lit AFTER this tour (the
         // tour ending, by finish OR skip, is what arms it, so even users who skip get warned once).
@@ -1067,12 +1127,24 @@ export default function HomeScreen() {
     };
   };
 
+  // Re-entrancy guard: without it, a queued double-confirm (two rapid Light taps) ran the write twice
+  // and could create two active beacons. Set at the top, cleared in finally; the structure onPress and
+  // the confirm handlers ignore re-entrant calls while it's set. A ref (read/set synchronously within a
+  // single tap) plus mirrored state so the structure button can disable itself.
+  const toggleBusyRef = useRef(false);
+  const [toggleBusy, setToggleBusy] = useState(false);
+
   // The actual write (light or extinguish), run after whichever confirmation the user sees.
   const performBeaconToggle = async () => {
+          if (toggleBusyRef.current) return; // ignore re-entrant double-confirms
+          toggleBusyRef.current = true;
+          setToggleBusy(true);
           press();
           const user = auth.currentUser;
           if (!user) {
             Alert.alert('Error', 'User not authenticated');
+            toggleBusyRef.current = false;
+            setToggleBusy(false);
             return;
           }
 
@@ -1099,47 +1171,51 @@ export default function HomeScreen() {
               setIsLit(false);
               setMyActiveBeacon(null);
             } else {
+              // Tap-to-light must IGNORE any transient (possibly cancelled) sheet inputs: a user who
+              // opened the sheet, changed the day/time, then hit Cancel/X/backdrop expects those edits
+              // discarded. Use the planned beacon's date if one exists, else today; and the PERSISTED
+              // planned time, never the raw sheet time fields. (Message already reads plannedMessage.)
               const base = startOfDay(new Date());
-              const chosen = nextPlannedDate
-                ? startOfDay(nextPlannedDate)
-                : (() => {
-                    const d = new Date(base);
-                    d.setDate(base.getDate() + dayOffset);
-                    return startOfDay(d);
-                  })();
+              const chosen = nextPlannedDate ? startOfDay(nextPlannedDate) : base;
               const sd = startOfDay(chosen);
               const ed = endOfDay(chosen);
 
-              const meUid = user.uid;
-              let allowedUids: string[] = [meUid];
-              groups
-                .filter((g) => selectedGroupIds.includes(g.id))
-                .forEach((g) => {
-                  allowedUids.push(...g.memberUids);
-                });
-              allowedUids = Array.from(new Set(allowedUids));
-
               const ownerName = profile?.displayName || profile?.username || null;
               // Carry the clock time through the tap-to-light path (like the message + day), so it
-              // persists across on/off and shows next to the date in the chat. Prefer a freshly
-              // typed time, else the persisted one from the beacon that was just extinguished.
-              const timeHHmm =
-                buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem) ?? plannedTimeHHmm ?? null;
-              await addDoc(beaconsRef, {
-                ownerUid: user.uid,
-                ownerName,
-                message: plannedMessage || DEFAULT_BEACON_MESSAGE,
-                details: plannedMessage || DEFAULT_BEACON_MESSAGE,
-                active: true,
-                scheduled: true,
-                createdAt: Timestamp.now(),
-                updatedAt: serverTimestamp(),
-                startAt: Timestamp.fromDate(sd),
-                expiresAt: Timestamp.fromDate(ed),
-                groupIds: selectedGroupIds,
-                allowedUids,
-                timeHHmm,
-              });
+              // persists across on/off and shows next to the date in the chat. Use only the PERSISTED
+              // planned time, never the raw sheet inputs (which may be abandoned/cancelled edits).
+              const timeHHmm = plannedTimeHHmm ?? null;
+
+              // Reuse the SAME-DAY doc instead of addDoc'ing a fresh random-id beacon: the deterministic
+              // `${uid}_${yyyymmdd}` id is what the sheet-save path writes, so relighting after an
+              // extinguish lands on the SAME document. That keeps the day's chat history + "I'm in" RSVPs
+              // intact across an off/on toggle and does not strand them under an orphaned doc.
+              const yyyy = sd.getFullYear();
+              const mm = String(sd.getMonth() + 1).padStart(2, '0');
+              const dd = String(sd.getDate()).padStart(2, '0');
+              const deterministicId = `${user.uid}_${yyyy}${mm}${dd}`;
+
+              await setDoc(
+                doc(db, 'Beacons', deterministicId),
+                {
+                  ownerUid: user.uid,
+                  ownerName,
+                  message: plannedMessage || DEFAULT_BEACON_MESSAGE,
+                  details: plannedMessage || DEFAULT_BEACON_MESSAGE,
+                  active: true,
+                  scheduled: true,
+                  createdAt: Timestamp.now(),
+                  updatedAt: serverTimestamp(),
+                  startAt: Timestamp.fromDate(sd),
+                  expiresAt: Timestamp.fromDate(ed),
+                  groupIds: selectedGroupIds,
+                  // NOTE: allowedUids is intentionally NOT written. It used to embed the owner's
+                  // friend uids in this world-readable doc (a friend-graph leak). The server now
+                  // resolves the notification audience from groupIds + the private FriendGroups.
+                  timeHHmm,
+                },
+                { merge: true }
+              );
 
               // First-time creator might not have notification permission yet,
               // prompt them so they actually receive friend RSVPs and comments.
@@ -1154,7 +1230,7 @@ export default function HomeScreen() {
               const snapDay = await getDocs(qDay);
               await Promise.all(
                 snapDay.docs
-                  .filter((b) => b.data()?.active !== true)
+                  .filter((b) => b.id !== deterministicId && b.data()?.active !== true)
                   .map((b) =>
                     updateDoc(b.ref, {
                       scheduled: false,
@@ -1166,10 +1242,20 @@ export default function HomeScreen() {
           } catch (err) {
             if (__DEV__) console.error('Error toggling beacon:', err);
             Alert.alert('Error', 'Failed to update beacon.');
+          } finally {
+            toggleBusyRef.current = false;
+            setToggleBusy(false);
           }
   };
 
   const toggleBeacon = () => {
+    if (toggleBusyRef.current) return; // an in-flight toggle: ignore rapid re-taps
+    // During the tour, the scripted light must NOT stack a confirm on top of the coach-mark: light
+    // straight through (the tour's own copy explains the demo beacon is scoped to the test group).
+    if (isActive) {
+      performBeaconToggle();
+      return;
+    }
     if (isLit) {
       Alert.alert('Extinguish Beacon', 'Are you sure you want to extinguish your beacon?', [
         { text: 'Cancel', style: 'cancel' },
@@ -1177,9 +1263,9 @@ export default function HomeScreen() {
       ]);
       return;
     }
-    // First beacon lit AFTER the first tour (and NOT during a tour): confirm who will see it, once. This
-    // is what warns a user who skipped or rushed the tour before any real beacon reaches their friends.
-    if (!isActive && firstTourDoneRef.current && !audienceSeenRef.current) {
+    // First beacon lit AFTER the first tour: confirm who will see it, once. This is what warns a user
+    // who skipped or rushed the tour before any real beacon reaches their friends.
+    if (firstTourDoneRef.current && !audienceSeenRef.current) {
       const a = describeAudience();
       Alert.alert(a.title, a.message, [
         { text: 'Cancel', style: 'cancel' },
@@ -1194,9 +1280,12 @@ export default function HomeScreen() {
       ]);
       return;
     }
-    Alert.alert('Light Beacon', 'Are you sure you want to light your beacon?', [
+    // Standard light confirm: reuse describeAudience() so it always shows WHO will see the beacon (not
+    // just a static "Are you sure"), every time, not only on the one-time post-tour warning.
+    const a = describeAudience();
+    Alert.alert(a.title, a.message, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Light', onPress: performBeaconToggle },
+      { text: 'Light beacon', onPress: performBeaconToggle },
     ]);
   };
 
@@ -1227,15 +1316,8 @@ export default function HomeScreen() {
 
       const timeHHmm = buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem);
 
-      const meUid = user.uid;
-      let allowedUids: string[] = [meUid];
-      groups
-        .filter((g) => selectedGroupIds.includes(g.id))
-        .forEach((g) => {
-          allowedUids.push(...g.memberUids);
-        });
-      allowedUids = Array.from(new Set(allowedUids));
-
+      // allowedUids is intentionally NOT written (see the tap-to-light path): it embedded the owner's
+      // friend uids in a world-readable doc. The server resolves the audience from groupIds now.
       if (isLit && myActiveBeacon) {
         await updateDoc(doc(db, 'Beacons', myActiveBeacon.id), {
           ownerName,
@@ -1246,7 +1328,6 @@ export default function HomeScreen() {
           scheduled: true,
           updatedAt: serverTimestamp(),
           groupIds: selectedGroupIds,
-          allowedUids,
           timeHHmm,
         });
       } else {
@@ -1269,7 +1350,6 @@ export default function HomeScreen() {
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
             groupIds: selectedGroupIds,
-            allowedUids,
             timeHHmm,
           },
           { merge: true }
@@ -1366,6 +1446,19 @@ export default function HomeScreen() {
     ? 'today'
     : scheduledDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
 
+  // Caption under an UNLIT beacon. If a beacon is scheduled (saved while unlit) nothing actually lights
+  // it yet, so instead of the misleading "Tap to light" we surface the plan honestly: the day, the
+  // optional time, and that tapping still lights it. Otherwise the plain tap-to-light prompt.
+  const unlitCaption = (() => {
+    if (!nextPlannedDate) return `Tap the ${skin.tap.noun} to light your Beacon`;
+    const dayLabel = sameDay(nextPlannedDate, new Date())
+      ? 'today'
+      : nextPlannedDate.toLocaleDateString(undefined, { weekday: 'long' }).toLowerCase();
+    const timeLabel = formatTimeHHmmDisplay(plannedTimeHHmm);
+    const when = timeLabel ? `${dayLabel} at ${timeLabel}` : dayLabel;
+    return `Planned for ${when}. Tap the ${skin.tap.noun} to light it`;
+  })();
+
   return (
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
@@ -1400,7 +1493,7 @@ export default function HomeScreen() {
           <View style={styles.controls}>
             <View style={styles.myBeaconColumn}>
               <View ref={logsRef} collapsable={false} style={{ position: 'relative' }} onLayout={measureBeaconAnchor}>
-                <TouchableOpacity onPress={toggleBeacon} activeOpacity={0.7} style={styles.beaconContainer}>
+                <TouchableOpacity onPress={toggleBeacon} disabled={toggleBusy} activeOpacity={0.7} style={styles.beaconContainer}>
                   <BeaconStructure skin={skin} size={180} lit={!!isLit} focused={isFocused} />
                 </TouchableOpacity>
 
@@ -1435,7 +1528,7 @@ export default function HomeScreen() {
                     <Text style={[styles.myChatBtnTxt, { color: '#fff' }]}>Open beacon chat</Text>
                   </TouchableOpacity>
                 ) : (
-                  <Text style={[styles.logHint, { color: skin.tap.tint }]}>{`Tap the ${skin.tap.noun} to light your Beacon`}</Text>
+                  <Text style={[styles.logHint, { color: skin.tap.tint }]}>{unlitCaption}</Text>
                 )}
               </View>
             </View>
@@ -1783,7 +1876,24 @@ export default function HomeScreen() {
                   setBeaconNotifBusy(true);
                   const { granted } = await ensurePushPermissionsAndToken();
                   setShowBeaconNotifOnboarding(false);
-                  if (granted) onboarding.refresh(); // keep the setup banner in sync
+                  if (granted) {
+                    onboarding.refresh(); // keep the setup banner in sync
+                    // Opt into friend-beacon pushes so they actually start arriving (the NOTIFY FLAG
+                    // the server's recipientWantsNotify checks). Non-fatal if the write fails: OS
+                    // permission is already granted and the master toggle can be set in Settings.
+                    const uid = auth.currentUser?.uid;
+                    if (uid) {
+                      try {
+                        await setDoc(
+                          doc(db, 'Profiles', uid),
+                          { notifyAllBeacons: true, updatedAt: serverTimestamp() },
+                          { merge: true }
+                        );
+                      } catch {
+                        // swallow: permission is granted regardless
+                      }
+                    }
+                  }
                   if (!granted) {
                     Alert.alert(
                       "Permission declined",

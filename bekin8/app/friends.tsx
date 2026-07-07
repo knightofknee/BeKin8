@@ -13,7 +13,6 @@ import {
   Switch,
   Share,
 } from "react-native";
-import { signOut } from "firebase/auth";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -58,7 +57,6 @@ import {
   subscribeToFriendNotifications,
   unsubscribeFromFriendNotifications,
   syncPushTokenIfGranted,
-  removePushTokenForThisDevice,
 } from "../lib/push";
 
 const edgeId = (a: string, b: string) => [a, b].sort().join("_");
@@ -107,23 +105,25 @@ export default function FriendsScreen() {
   // Profile color cache
   const colorCacheRef = useRef<Record<string, string>>({});
 
-  // Logout state
-  const [loggingOut, setLoggingOut] = useState(false);
-
   // NEW: my blocked users set
   const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
 
-  // Ensure this user has a permanent invite code (server issues one once they have a username).
+  // My invite code, sourced from the ensureInviteCode callable's RETURN rather than a Firestore field:
+  // the code no longer lives on the world-readable Profiles doc (it was a public force-friend token).
+  // The callable owns it (users/{uid}, owner-only) and hands it back to us here.
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
   useEffect(() => {
-    if (!profileLoaded || profile?.inviteCode || !currentUsername?.trim()) return;
+    if (!profileLoaded || inviteCode || !currentUsername?.trim()) return;
     (async () => {
       try {
-        await httpsCallable(getFunctions(), "ensureInviteCode")({});
+        const res = await httpsCallable(getFunctions(), "ensureInviteCode")({});
+        const code = (res?.data as any)?.code;
+        if (code) setInviteCode(String(code));
       } catch {
         // best-effort; the Share button stays disabled until a username + code exist
       }
     })();
-  }, [profileLoaded, profile?.inviteCode, currentUsername]);
+  }, [profileLoaded, inviteCode, currentUsername]);
 
   // Coach-mark tour targets on this screen.
   const { isActive: tourActive, currentStepTarget, measureTarget } = useTour();
@@ -160,7 +160,7 @@ export default function FriendsScreen() {
   }, [currentStepTarget, measureTarget]);
 
   const handleShareInvite = async () => {
-    const code = profile?.inviteCode;
+    const code = inviteCode ?? profile?.inviteCode; // state first; profile fallback during migration
     if (!code) return;
     const url = buildInviteUrl(code);
     const blurb =
@@ -501,11 +501,33 @@ export default function FriendsScreen() {
         return showMessage("That username is already taken.", "error");
       }
 
+      // Write the username to the Profiles doc (the source of truth the app reads). This must NOT
+      // be coupled to the Usernames reservation below: the deployed rules are default-deny and no
+      // rule establishes the Usernames collection, so an atomic batch that includes it would reject
+      // the whole commit and make usernames impossible to set. So commit Profiles on its own first.
       await setDoc(
         doc(db, "Profiles", user.uid),
         { username: desired, usernameLower: desiredLower },
         { merge: true }
       );
+
+      // Best-effort uniqueness reservation, entirely separate so a rule denial can never block the
+      // username itself. Only prevents true races once the deployed rules enforce create-if-absent
+      // on the Usernames collection (a console-only rules change, see report); until then it is a
+      // no-op that fails silently.
+      const prevLower = currentUsername?.trim().toLowerCase();
+      try {
+        await setDoc(
+          doc(db, "Usernames", desiredLower),
+          { uid: user.uid, username: desired, createdAt: serverTimestamp() },
+          { merge: true }
+        );
+        if (prevLower && prevLower !== desiredLower) {
+          await deleteDoc(doc(db, "Usernames", prevLower));
+        }
+      } catch (claimErr: any) {
+        if (__DEV__) console.warn("username reservation (non-blocking) failed", claimErr);
+      }
 
       setCurrentUsername(desired);
       nameCacheRef.current[user.uid] = desired;
@@ -744,18 +766,32 @@ export default function FriendsScreen() {
     try {
       setBusy(true);
 
-      // 1) Delete canonical FriendEdge
+      // Optimistically drop the friend from the local list so the UI updates
+      // instantly, even before the edge-delete round-trips.
+      setFriends((prev) => prev.filter((f) => f.uid !== otherUid));
+      setSubFriends((prev) => prev.filter((f) => f.uid !== otherUid));
+      setLegacyFriends((prev) => prev.filter((f) => f.uid !== otherUid));
+      setEdges((prev) => prev.filter((e) => e.id !== eid));
+
+      // 1) Delete the canonical FriendEdge. This is the AUTHORITATIVE action:
+      // the server's onDocumentDeleted('FriendEdges/{id}') trigger two-sided-cleans
+      // BOTH users' users/{x}/friends/{y} docs and Friends/{x} array entries. The
+      // client cannot write the other user's docs, so we never attempt to.
       await deleteDoc(doc(db, "FriendEdges", eid));
 
-      // 2) Remove my denorm subcollection doc
-      await deleteDoc(doc(db, "users", me.uid, "friends", otherUid));
-
-      // 3) Remove from Friends/{me} array (rewrite safely)
-      const fDoc = await getDoc(doc(db, "Friends", me.uid));
-      if (fDoc.exists()) {
-        const arr: any[] = Array.isArray((fDoc.data() as any).friends) ? (fDoc.data() as any).friends : [];
-        const filtered = arr.filter((x) => String(x?.uid) !== otherUid);
-        await setDoc(doc(db, "Friends", me.uid), { friends: filtered }, { merge: true });
+      // 2) Best-effort local denorm cleanup for MY side only, so the list reflects
+      // the removal even if the server trigger is briefly delayed / undeployed. A
+      // failure here must not mask the authoritative edge delete above.
+      try {
+        await deleteDoc(doc(db, "users", me.uid, "friends", otherUid));
+        const fDoc = await getDoc(doc(db, "Friends", me.uid));
+        if (fDoc.exists()) {
+          const arr: any[] = Array.isArray((fDoc.data() as any).friends) ? (fDoc.data() as any).friends : [];
+          const filtered = arr.filter((x) => String(x?.uid) !== otherUid);
+          await setDoc(doc(db, "Friends", me.uid), { friends: filtered }, { merge: true });
+        }
+      } catch (denormErr) {
+        if (__DEV__) console.warn("removeFriend local denorm cleanup failed (best-effort)", denormErr);
       }
 
       showMessage(`Removed ${friend.username}.`, "success");
@@ -803,28 +839,6 @@ export default function FriendsScreen() {
         { text: "Block", style: "destructive", onPress: () => blockFriend(friend) },
       ]
     );
-  };
-
-  // --- Logout handler (footer button) ---
-  const handleLogout = async () => {
-    if (loggingOut) return;
-    try {
-      setLoggingOut(true);
-      // Release the push token for this device BEFORE signing out, so the
-      // server stops targeting this device with notifications for this account.
-      // Best-effort: failure here shouldn't block the sign-out itself.
-      try {
-        const uid = auth.currentUser?.uid;
-        if (uid) await removePushTokenForThisDevice(uid);
-      } catch (tokErr) {
-        if (__DEV__) console.warn("removePushTokenForThisDevice failed on logout", tokErr);
-      }
-      await signOut(auth); // _layout.tsx will see user=null and route to "/"
-      // No manual routing needed; component will unmount shortly.
-    } catch (e) {
-      setLoggingOut(false);
-      Alert.alert("Error", "Failed to log out. Please try again.");
-    }
   };
 
   // NEW: filter out blocked users from the displayed list
@@ -876,54 +890,33 @@ export default function FriendsScreen() {
       });
       if (alreadyFriends) return showMessage("Already friends with Brian!", "success");
 
-      const myProfileSnap = await getDoc(doc(db, "Profiles", meUid));
-      const myUsername = (myProfileSnap.data() as any)?.username || "";
-
-      // Auto-accept: create the friendship immediately instead of a pending request
-      const eid = edgeId(meUid, targetUid);
-      await setDoc(
-        doc(db, "FriendEdges", eid),
-        {
-          uids: [meUid, targetUid],
-          state: "accepted",
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // Denorm subcollection for current user
-      await setDoc(
-        doc(db, "users", meUid, "friends", targetUid),
-        { uid: targetUid, username: targetUsername, status: "accepted", acceptedAt: serverTimestamp() },
-        { merge: true }
-      );
-
-      // Denorm subcollection for Brian
-      await setDoc(
-        doc(db, "users", targetUid, "friends", meUid),
-        { uid: meUid, username: myUsername, status: "accepted", acceptedAt: serverTimestamp() },
-        { merge: true }
-      );
-
-      // Legacy Friends arrays
-      await setDoc(
-        doc(db, "Friends", meUid),
-        { friends: arrayUnion({ uid: targetUid, username: targetUsername }) },
-        { merge: true }
-      );
-      await setDoc(
-        doc(db, "Friends", targetUid),
-        { friends: arrayUnion({ uid: meUid, username: myUsername }) },
-        { merge: true }
-      );
+      // Create the mutual friendship server-side. A client can't write Brian's
+      // owner-only collections (users/{brian}/friends, Friends/{brian}), so we
+      // call the Admin-SDK callable which creates the accepted edge + BOTH sides'
+      // denorms after a bidirectional block check. The callable RESOLVES (does not
+      // throw) with { ok:false } for its guard cases, so inspect the result and
+      // never claim success on a soft failure.
+      const res = await httpsCallable(getFunctions(), "addFriendMutual")({ targetUid });
+      const data = (res?.data ?? {}) as { ok?: boolean; already?: boolean; error?: string };
+      if (!data.ok) {
+        if (data.error === "BLOCKED") {
+          return showMessage("You've blocked Brian. Unblock to add them.", "error");
+        }
+        return showMessage("Couldn't add Brian. Please try again.", "error");
+      }
 
       nameCacheRef.current[targetUid] = targetUsername;
 
       showMessage("You and Brian are now friends!", "success");
-    } catch (e) {
+    } catch (e: any) {
       if (__DEV__) console.error("handleAddBrian error", e);
-      showMessage("Failed to send request.", "error");
+      // Fail soft when the callable isn't deployed yet (or otherwise errors), so
+      // the app never crashes and we never claim success on a real failure.
+      if (e?.code === "functions/not-found" || e?.code === "not-found") {
+        showMessage("Couldn't add Brian yet. Please try again later.", "error");
+      } else {
+        showMessage("Failed to add Brian.", "error");
+      }
     } finally {
       setAddingBrian(false);
     }
@@ -1156,7 +1149,7 @@ export default function FriendsScreen() {
               hasProfileUsername={!!currentUsername?.trim()}
               onSendRequest={handleAddFriend}
               busySend={busy}
-              inviteCode={profile?.inviteCode ?? null}
+              inviteCode={inviteCode ?? profile?.inviteCode ?? null}
               onShareInvite={handleShareInvite}
               message={message}
             />
@@ -1257,7 +1250,7 @@ export default function FriendsScreen() {
                   </>
                 ) : (
                   <Text style={[styles.subtle, { color: tc.subtle }]}>
-                    Can't load friends. No internet connection.
+                    Can&apos;t load friends. No internet connection.
                   </Text>
                 )
               )}
@@ -1265,25 +1258,11 @@ export default function FriendsScreen() {
             </View>
           </View>
         }
-        ListFooterComponent={
-          <View style={{ paddingTop: 16, paddingBottom: 32, alignItems: "center" }}>
-            <Pressable
-              onPress={handleLogout}
-              disabled={loggingOut}
-              style={[styles.logoutBtn, { backgroundColor: tc.danger }, loggingOut && { opacity: 0.6 }]}
-            >
-              {loggingOut ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.logoutBtnText}>Log out</Text>
-              )}
-            </Pressable>
-          </View>
-        }
+        ListFooterComponent={<View style={{ paddingBottom: 16 }} />}
         contentContainerStyle={{
           padding: SCREEN_PAD,
           paddingTop: 70,
-          paddingBottom: BOTTOM_BAR_SPACE, // ✅ ensures logout clears BottomBar
+          paddingBottom: BOTTOM_BAR_SPACE, // ✅ ensures the last row clears BottomBar
           rowGap: 14,
         }}
         style={{ flex: 1 }}
@@ -1407,14 +1386,4 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
-
-  // Logout button
-  logoutBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 12,
-    minWidth: 160,
-    alignItems: "center",
-  },
-  logoutBtnText: { color: "#fff", fontWeight: "800" },
 });

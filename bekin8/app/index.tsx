@@ -386,6 +386,15 @@ export default function Index() {
                     )}
                   </Pressable>
                 </View>
+
+                {/* Terms / Privacy notice */}
+                <View style={styles.termsRow}>
+                  <Text style={[styles.termsText, { color: colors.subtle }]}>By continuing you agree to our </Text>
+                  <Link href="/legal/terms" style={[styles.link, { color: colors.primary }]}>Terms</Link>
+                  <Text style={[styles.termsText, { color: colors.subtle }]}> and </Text>
+                  <Link href="/legal/privacy" style={[styles.link, { color: colors.primary }]}>Privacy Policy</Link>
+                  <Text style={[styles.termsText, { color: colors.subtle }]}>.</Text>
+                </View>
               </View>
             </Animated.View>
           </TouchableWithoutFeedback>
@@ -440,6 +449,15 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
 
   topRow: { flexDirection: "row", gap: 6, justifyContent: "center", marginBottom: 14 },
+
+  termsRow: {
+    marginTop: 10,
+    marginBottom: 6,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  termsText: { fontSize: 12 },
 
   link: { fontWeight: "700" },
 

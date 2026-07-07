@@ -19,7 +19,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
-import { collection, addDoc, doc, onSnapshot } from 'firebase/firestore';
+import { collection, addDoc, doc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import BottomBar from '@/components/BottomBar';
 import { SCREEN_PAD } from '@/components/ui/layout';
@@ -273,7 +273,11 @@ export default function CreatePostScreen() {
       content: trimmedContent,
       author: user.uid,
       authorName: profile?.username || null,
+      // Client clock can be skewed, which hides or misorders posts in the feed.
+      // timestampServer is authoritative, numeric timestamp stays as a fallback for
+      // old docs and for optimistic ordering before the server value resolves.
       timestamp: Date.now(),
+      timestampServer: serverTimestamp(),
       tags,
     });
     await AsyncStorage.removeItem(DRAFT_KEY);
@@ -326,12 +330,18 @@ export default function CreatePostScreen() {
           Alert.alert('No bonus posts', 'You have no bonus posts remaining.');
         } else if (data.reason === 'daily_cap') {
           Alert.alert('Daily limit reached', 'You can post up to 5 times per day.');
+        } else if (data.reason === 'rate_limited') {
+          Alert.alert('Not available yet', 'Your next free post isn’t available yet.');
+        } else {
+          Alert.alert('Could not post', 'Please try again in a moment.');
         }
         return;
       }
+      // The bonus is consumed server-side by the check above. If the write now fails,
+      // do NOT fall through silently, tell the user their draft was kept so they can retry.
       await writePost();
     } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'Could not create post.');
+      Alert.alert('Post not saved', (e?.message ?? 'Could not create post.') + ' Your draft is still here, please try again.');
     } finally {
       setSubmitting(false);
     }

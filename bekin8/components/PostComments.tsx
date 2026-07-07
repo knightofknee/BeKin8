@@ -78,10 +78,8 @@ async function resolveMyName(uid: string): Promise<string> {
     if (display) return display;
     const unameProfile = typeof prof.username === 'string' ? prof.username.trim() : '';
     if (unameProfile) return unameProfile;
-    const userSnap = await getDoc(doc(db, 'users', uid));
-    const userDoc: any = userSnap.exists() ? userSnap.data() : {};
-    const unameUsers = typeof userDoc.username === 'string' ? userDoc.username.trim() : '';
-    if (unameUsers) return unameUsers;
+    // No users/{uid} fallback: that owner-only doc isn't readable for other people once the friend
+    // graph is locked (names live on the world-readable Profiles doc, read above).
     if (auth.currentUser?.uid === uid) {
       const authName = (auth.currentUser.displayName || '').trim();
       if (authName) return authName;
@@ -106,9 +104,28 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
   const [postAuthorName, setPostAuthorName] = useState<string>(post.authorUsername);
   const [postAuthorColor, setPostAuthorColor] = useState<string>('#2F6FED');
   const [authorCommentsEnabled, setAuthorCommentsEnabled] = useState<boolean | null>(null);
+  const [blockedUids, setBlockedUids] = useState<Set<string>>(new Set());
+
+  // ── viewer's block list, so blocked users' comments stay hidden here too ─────
+  useEffect(() => {
+    const myUid = me?.uid;
+    if (!myUid) return;
+    return onSnapshot(collection(db, 'users', myUid, 'blocks'), (snap) => {
+      const s = new Set<string>();
+      snap.forEach((d) => s.add(d.id));
+      setBlockedUids(s);
+    }, () => {});
+  }, [me?.uid]);
 
   useEffect(() => {
     let alive = true;
+    // Guard: a missing authorUid (e.g. a deep-link fallback that couldn't resolve the
+    // author) would make doc(db,'Profiles','') throw. Skip the reads and treat comments
+    // as enabled by default so the thread still opens.
+    if (!post.authorUid) {
+      setAuthorCommentsEnabled(true);
+      return () => { alive = false; };
+    }
     resolveMyName(post.authorUid).then((n) => { if (alive) setPostAuthorName(n); }).catch(() => {});
     // Fetch the post author's global comments setting + profile color from their Profile
     getDoc(doc(db, 'Profiles', post.authorUid)).then((snap) => {
@@ -157,14 +174,20 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
     return () => unsub();
   }, [post.id]);
 
+  // Hide comments from users the viewer has blocked (their own deleted comments still show).
+  const visibleComments = useMemo(
+    () => (blockedUids.size ? comments.filter((c) => !blockedUids.has(c.authorUid)) : comments),
+    [comments, blockedUids]
+  );
+
   // Initial scroll on load (to targetCommentId or end), and re-scroll if a follow-up
   // notification changes targetCommentId while the modal is already open.
   useEffect(() => {
-    if (comments.length === 0) return;
+    if (visibleComments.length === 0) return;
 
     if (!didInitialScrollRef.current) {
       const targetIdx = targetCommentId
-        ? comments.findIndex((c) => c.id === targetCommentId)
+        ? visibleComments.findIndex((c) => c.id === targetCommentId)
         : -1;
       requestAnimationFrame(() => {
         if (targetIdx >= 0) {
@@ -179,7 +202,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
     }
 
     if (targetCommentId && targetCommentId !== lastScrolledTargetRef.current) {
-      const idx = comments.findIndex((c) => c.id === targetCommentId);
+      const idx = visibleComments.findIndex((c) => c.id === targetCommentId);
       if (idx >= 0) {
         requestAnimationFrame(() => {
           listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
@@ -195,7 +218,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
         pendingScrollRef.current = false;
       });
     }
-  }, [comments, targetCommentId]);
+  }, [visibleComments, targetCommentId]);
 
   const onContentSizeChange = (_w: number, h: number) => {
     setContentHeight(h);
@@ -212,18 +235,23 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
   const handleSend = async () => {
     press();
     if (!canSend || !me) return;
+    const body = text.trim();
     try {
       setSending(true);
       const authorName = await resolveMyName(me.uid);
       await addDoc(collection(db, 'Posts', post.id, 'comments'), {
-        text: text.trim(),
+        text: body,
         authorUid: me.uid,
         authorName,
         createdAt: serverTimestamp(),
         deleted: false,
       });
+      // Clear only after a confirmed write, so a failure never loses the draft.
       setText('');
       pendingScrollRef.current = true;
+    } catch (e: any) {
+      // Preserve the typed text and tell the user, instead of a silent forever-spin.
+      Alert.alert('Comment failed', e?.message ?? 'Could not send your comment. Please try again.');
     } finally {
       setSending(false);
     }
@@ -339,7 +367,13 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
               <Text style={[styles.headerAuthor, { color: tc.text }]} numberOfLines={1}>{postAuthorName}</Text>
             </View>
           </View>
-          <Pressable hitSlop={12} onPress={() => { tap(); onClose(); }} style={styles.closeBtn}>
+          <Pressable
+            hitSlop={12}
+            onPress={() => { tap(); onClose(); }}
+            style={styles.closeBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Close comments"
+          >
             <Text style={[styles.closeIcon, { color: tc.subtle }]}>✕</Text>
           </Pressable>
         </View>
@@ -364,7 +398,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                       <Text style={styles.scrollTopIcon}>↑</Text>
                     </Pressable>
                   )}
-                  {comments.length === 0 && (
+                  {visibleComments.length === 0 && (
                     <View style={styles.emptyWrap}>
                       <Text style={[styles.emptyText, { color: tc.subtle }]}>
                         {online ? "No comments yet. Be the first!" : "Can't load comments. No internet connection."}
@@ -373,7 +407,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                   )}
                   <FlatList
                     ref={listRef}
-                    data={comments}
+                    data={visibleComments}
                     keyExtractor={(c) => c.id}
                     style={{ flex: 1 }}
                     contentContainerStyle={{ padding: 12, gap: 8, paddingBottom: 8 }}
@@ -399,6 +433,9 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                               onPress={() => requestMenu(item)}
                               hitSlop={8}
                               style={[styles.dotsOutside, { marginRight: 6 }]}
+                              accessibilityRole="button"
+                              accessibilityLabel="Comment options"
+                              accessibilityHint="Report this comment"
                             >
                               <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
                             </Pressable>
@@ -423,6 +460,9 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                               onPress={() => requestMenu(item)}
                               hitSlop={8}
                               style={[styles.dotsOutside, { marginLeft: 6 }]}
+                              accessibilityRole="button"
+                              accessibilityLabel="Comment options"
+                              accessibilityHint="Delete or report this comment"
                             >
                               <Text style={[styles.dots, { color: tc.subtle }]}>⋯</Text>
                             </Pressable>

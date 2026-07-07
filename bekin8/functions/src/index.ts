@@ -1,7 +1,8 @@
 // functions/src/index.ts
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentUpdated, onDocumentDeleted } from 'firebase-functions/v2/firestore';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions';
 import {
@@ -30,6 +31,9 @@ type Beacon = {
 // ===== Expo client & constants =====
 const expo = new Expo();
 const TICKET_TTL_HOURS = 48;
+// Rapid off/on toggles of the same beacon shouldn't re-notify. If the last activation
+// push for a beacon went out within this window, skip re-fanout.
+const BEACON_NOTIFY_COOLDOWN_MS = 3 * 60 * 1000;
 
 // ===== Helpers: content =====
 function summarize(beacon: Beacon): string {
@@ -79,10 +83,27 @@ async function recipientWantsNotify(recipientUid: string, ownerUid: string): Pro
   return all || a || b;
 }
 
-/** All friend UIDs for an owner (from FriendEdges, regardless of state). */
+/**
+ * True if EITHER user has blocked the other (users/{a}/blocks/{b} OR users/{b}/blocks/{a}).
+ * A block in either direction suppresses notifications between the pair.
+ */
+async function eitherBlocked(a: string, b: string): Promise<boolean> {
+  const [aBlocksB, bBlocksA] = await db.getAll(
+    db.collection('users').doc(a).collection('blocks').doc(b),
+    db.collection('users').doc(b).collection('blocks').doc(a)
+  );
+  return aBlocksB.exists || bBlocksA.exists;
+}
+
+/**
+ * All ACCEPTED friend UIDs for an owner (from FriendEdges).
+ * Mirrors acceptedFriendUidsOf in friendsOfFriends.ts: notifications must not reach
+ * pending/blocked/legacy edges. We query by membership only (no state filter, to avoid
+ * a required composite index) and treat a MISSING state field as accepted for backward
+ * compat with legacy edges that predate the `state` field. Edges with an explicit
+ * non-accepted state are dropped.
+ */
 async function friendUidsOf(ownerUid: string): Promise<string[]> {
-  // Some documents use `state: 'accepted'`, others have no state at all.
-  // Query only by membership and validate client-side.
   const qs = await db
     .collection('FriendEdges')
     .where('uids', 'array-contains', ownerUid)
@@ -91,6 +112,9 @@ async function friendUidsOf(ownerUid: string): Promise<string[]> {
   const out = new Set<string>();
   qs.forEach((doc) => {
     const data = doc.data() as any;
+    const state = data?.state;
+    // Missing state => legacy edge, treat as accepted. Present state must equal 'accepted'.
+    if (state !== undefined && state !== 'accepted') return;
     const uids: string[] = Array.isArray(data?.uids) ? data.uids : [];
     if (uids.length !== 2) return;
     const other = uids[0] === ownerUid ? uids[1] : uids[0];
@@ -100,8 +124,36 @@ async function friendUidsOf(ownerUid: string): Promise<string[]> {
   return Array.from(out);
 }
 
-/** 
- * Eligible = (allowedUids OR all accepted friends if none provided)
+/** Resolve the member uids of the owner's OWN groups, server-side (Admin SDK). This is what lets the
+ *  client stop publishing the friend uid list (allowedUids) into the world-readable Beacon doc: the
+ *  audience is derived here from the private FriendGroups instead. Only the owner's own groups count,
+ *  and the owner is never a recipient. An empty/missing group (e.g. the tutorial test group) yields
+ *  no one. */
+async function membersOfGroups(ownerUid: string, groupIds: string[]): Promise<string[]> {
+  const out = new Set<string>();
+  await Promise.all(
+    groupIds.map(async (gid) => {
+      if (!gid) return;
+      try {
+        const snap = await db.collection('FriendGroups').doc(gid).get();
+        if (!snap.exists) return;
+        const data = snap.data() as any;
+        if (data?.ownerUid !== ownerUid) return; // never let another owner's group widen the audience
+        const members: any[] = Array.isArray(data?.memberUids) ? data.memberUids : [];
+        members.forEach((u) => {
+          const s = String(u || '');
+          if (s && s !== ownerUid) out.add(s);
+        });
+      } catch (e) {
+        logger.warn('membersOfGroups: failed reading group', { gid, e });
+      }
+    })
+  );
+  return Array.from(out);
+}
+
+/**
+ * Eligible = (group members resolved server-side, OR all accepted friends if unscoped)
  *            ∩ users who opted in (new subdoc OR legacy notify flag)
  *            − ownerUid
  */
@@ -110,17 +162,23 @@ async function eligibleRecipients(
   ownerUid: string,
   groupIds?: string[]
 ): Promise<string[]> {
-  // Normalize allowed list (remove falsy, remove owner)
+  // Normalize any legacy client-written allowed list (remove falsy, remove owner). New beacons no
+  // longer write allowedUids (it leaked the friend graph in a world-readable doc), so this is only a
+  // back-compat path for beacon docs written before the switch.
   const normalizedAllowed: string[] = Array.isArray(allowed)
     ? allowed.filter((u): u is string => !!u).filter((u) => u !== ownerUid)
     : [];
 
-  // A beacon with groupIds is SCOPED to exactly those groups, so honor allowedUids verbatim: an empty
-  // audience (e.g. the "test" group with no members, which resolves to just the owner) notifies NO ONE.
-  // Only an UNSCOPED beacon (no groups selected = "all friends") falls back to the full friend list.
+  // A beacon with groupIds is SCOPED to exactly those groups. Resolve the audience from the owner's
+  // FriendGroups here (private) rather than trusting a client-published uid list, so an empty group
+  // (e.g. the "test" group with no members) notifies NO ONE. Only an UNSCOPED beacon (no groups =
+  // "all friends") falls back to the full friend list. Legacy docs that still carry allowedUids are
+  // honored verbatim.
   const scoped = Array.isArray(groupIds) && groupIds.length > 0;
   const base: string[] = scoped
-    ? normalizedAllowed
+    ? normalizedAllowed.length > 0
+      ? normalizedAllowed
+      : await membersOfGroups(ownerUid, groupIds as string[])
     : normalizedAllowed.length > 0
     ? normalizedAllowed
     : await friendUidsOf(ownerUid);
@@ -248,6 +306,29 @@ function chunk<T>(arr: T[], size: number): T[][] {
 async function fanOutForBeacon(beaconId: string, b: Beacon) {
   const ownerUid = b.ownerUid;
   if (!ownerUid) return;
+
+  // Cooldown: skip if this beacon already fanned out within the window (guards against
+  // rapid off/on toggles re-notifying everyone). Read lastNotifiedAt fresh, then stamp it
+  // before sending so concurrent/immediate re-triggers see it.
+  const beaconRef = db.collection('Beacons').doc(beaconId);
+  try {
+    const snap = await beaconRef.get();
+    const last = snap.exists ? (snap.data() as any)?.lastNotifiedAt : undefined;
+    const lastMs =
+      last && typeof last.toMillis === 'function' ? last.toMillis() : 0;
+    if (lastMs && Date.now() - lastMs < BEACON_NOTIFY_COOLDOWN_MS) {
+      logger.info('fanOut skipped by cooldown', { beaconId, ownerUid });
+      return;
+    }
+  } catch (err) {
+    logger.warn('fanOut cooldown read failed, proceeding', { beaconId, err });
+  }
+  // Stamp before sending so a near-simultaneous re-activation is suppressed.
+  try {
+    await beaconRef.set({ lastNotifiedAt: FieldValue.serverTimestamp() }, { merge: true });
+  } catch (err) {
+    logger.warn('fanOut cooldown stamp failed, proceeding', { beaconId, err });
+  }
 
   const recipients = await eligibleRecipients(b.allowedUids, ownerUid, b.groupIds);
   logger.info('fanOut recipients', {
@@ -521,6 +602,15 @@ export const onBeaconCommentNotify = onDocumentCreated(
 
     if (recipients.length === 0) return;
 
+    // Drop any recipient who has blocked the sender or is blocked by them (either direction).
+    const blockChecked = await Promise.all(
+      recipients.map(async (uid) => ((await eitherBlocked(uid, senderUid)) ? null : uid))
+    );
+    const finalRecipients = blockChecked.filter((u): u is string => !!u);
+    if (finalRecipients.length === 0) return;
+    recipients.length = 0;
+    recipients.push(...finalRecipients);
+
     logger.info('beaconChat fanOut', {
       beaconId,
       kind: isRsvp ? 'rsvp' : 'comment',
@@ -603,6 +693,20 @@ export const onPostCommentNotify = onDocumentCreated(
     const postData = postSnap.data() as any;
     const ownerUid: string | undefined = postData?.author || postData?.authorUid;
 
+    // Honor the post owner's global comments switch: if the owner's Profile explicitly
+    // has commentsEnabled === false, comments are off for their posts, so suppress the
+    // comment-notification fanout entirely. (Missing/true => allowed.)
+    if (ownerUid) {
+      try {
+        const ownerProf = await db.collection('Profiles').doc(ownerUid).get();
+        if (ownerProf.exists && (ownerProf.data() as any)?.commentsEnabled === false) {
+          return;
+        }
+      } catch {
+        // best-effort, proceed on read failure
+      }
+    }
+
     const recipients: string[] = [];
 
     // 1) Post owner, uses postCommentNotify pref
@@ -624,6 +728,15 @@ export const onPostCommentNotify = onDocumentCreated(
     );
 
     if (recipients.length === 0) return;
+
+    // Drop any recipient blocked in either direction relative to the comment author.
+    const blockChecked = await Promise.all(
+      recipients.map(async (uid) => ((await eitherBlocked(uid, authorUid)) ? null : uid))
+    );
+    const finalRecipients = blockChecked.filter((u): u is string => !!u);
+    if (finalRecipients.length === 0) return;
+    recipients.length = 0;
+    recipients.push(...finalRecipients);
 
     logger.info('postCommentNotify fanOut', {
       postId,
@@ -862,10 +975,200 @@ export const onUserBlocked = onDocumentCreated(
   }
 );
 
+// ===== 8) New friend request -> push the receiver =====
+//
+// FriendRequests docs are created client-side (app/friends.tsx) with:
+//   { senderUid, receiverUid, status: 'pending', senderUsername, receiverUsername, ... }
+// and a deterministic id `${senderUid}_${receiverUid}`. Only fire on a genuinely new
+// pending request. Requests are low-volume, so we always send (no per-user opt-in gate),
+// but we still respect blocks and never notify a self-request.
+
+export const onFriendRequestCreated = onDocumentCreated(
+  'FriendRequests/{requestId}',
+  async (event) => {
+    const data = (event.data?.data() as any) ?? undefined;
+    if (!data) return;
+    if (data.status && data.status !== 'pending') return;
+
+    const senderUid: string | undefined =
+      typeof data.senderUid === 'string' ? data.senderUid : undefined;
+    const receiverUid: string | undefined =
+      typeof data.receiverUid === 'string' ? data.receiverUid : undefined;
+    if (!senderUid || !receiverUid) return;
+    if (senderUid === receiverUid) return; // guard against self
+
+    // Respect blocks in either direction.
+    if (await eitherBlocked(receiverUid, senderUid)) return;
+
+    // Resolve a friendly sender name (prefer stamped username, fall back to Profile).
+    let senderName = (data.senderUsername || '').toString().trim();
+    if (!senderName) {
+      try {
+        const prof = await db.collection('Profiles').doc(senderUid).get();
+        const dn =
+          (prof.exists && ((prof.data() as any)?.displayName || (prof.data() as any)?.username)) ||
+          '';
+        if (typeof dn === 'string' && dn.trim()) senderName = dn.trim();
+      } catch {}
+    }
+    if (!senderName) senderName = 'Someone';
+
+    const tokens = await getAllExpoTokens(receiverUid);
+    if (tokens.length === 0) return;
+
+    const title = 'New friend request';
+    const body = `${senderName} wants to be friends`;
+
+    logger.info('friendRequest notify', { senderUid, receiverUid });
+
+    for (const token of tokens) {
+      try {
+        const tickets = await expo.sendPushNotificationsAsync([{
+          to: token,
+          title,
+          body,
+          sound: 'default',
+          priority: 'high',
+          channelId: 'default',
+          data: { type: 'friend_request', senderUid },
+        }]);
+        await saveTickets(tickets, {
+          subscriberUid: receiverUid,
+          friendUid: senderUid,
+          token,
+          beaconId: event.params.requestId as string, // reusing field for requestId
+        });
+      } catch (err) {
+        logger.error('Friend request notify send error', { senderUid, receiverUid, token, err });
+      }
+    }
+  }
+);
+
+// ===== 9) FriendEdge deleted -> two-sided denorm cleanup =====
+//
+// When a FriendEdge is removed (client removeFriend deletes only the edge + its own
+// denorms), clean BOTH users' denorm sources so neither side is left with a stale friend:
+//   users/{a}/friends/{b} and users/{b}/friends/{a}
+//   Friends/{a}.friends arrayRemove b, Friends/{b}.friends arrayRemove a
+// Mirrors onUserBlocked's two-sided cleanup.
+
+export const onFriendEdgeDeleted = onDocumentDeleted(
+  'FriendEdges/{edgeId}',
+  async (event) => {
+    const data = (event.data?.data() as any) ?? undefined;
+    const uids: string[] = Array.isArray(data?.uids) ? data.uids : [];
+    if (uids.length !== 2) return;
+    const [a, b] = uids;
+    if (!a || !b || a === b) return;
+
+    try {
+      const batch = db.batch();
+      batch.delete(db.collection('users').doc(a).collection('friends').doc(b));
+      batch.delete(db.collection('users').doc(b).collection('friends').doc(a));
+      await batch.commit();
+
+      // Friends/{uid}.friends arrays are read-modify-write, so run them after the batch.
+      await Promise.all([
+        removeUidFromFriendsArray(a, b),
+        removeUidFromFriendsArray(b, a),
+      ]);
+
+      logger.info('onFriendEdgeDeleted: cleanup complete', { a, b });
+    } catch (err) {
+      logger.error('onFriendEdgeDeleted: cleanup failed', { a, b, err });
+    }
+  }
+);
+
+// ===== 10) addFriendMutual callable =====
+//
+// Server-side mutual-friend creation (used by the Add-Brian path). Mirrors redeemInvite's
+// write shape: accepted FriendEdge + both users/{x}/friends/{y} docs + both Friends/{x}
+// arrayUnion entries. Idempotent (safe to call when already friends) and rejects self.
+// Blocks in EITHER direction abort the whole thing.
+
+const mutualEdgeId = (a: string, b: string) => [a, b].sort().join('_');
+const cleanUsername = (v: any): string => (typeof v === 'string' ? v.trim() : '');
+
+export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) => {
+  const meUid = req.auth?.uid;
+  if (!meUid) throw new HttpsError('unauthenticated', 'Sign in required.');
+
+  const targetUid = String((req.data as any)?.targetUid ?? '').trim();
+  if (!targetUid) return { ok: false, error: 'BAD_TARGET' };
+  if (targetUid === meUid) return { ok: false, error: 'SELF' };
+
+  const edgeRef = db.collection('FriendEdges').doc(mutualEdgeId(meUid, targetUid));
+  const now = FieldValue.serverTimestamp();
+
+  const meProfRef = db.collection('Profiles').doc(meUid);
+  const meUserRef = db.collection('users').doc(meUid);
+  const tgtProfRef = db.collection('Profiles').doc(targetUid);
+  const tgtUserRef = db.collection('users').doc(targetUid);
+  const meBlockRef = db.collection('users').doc(meUid).collection('blocks').doc(targetUid);
+  const tgtBlockRef = db.collection('users').doc(targetUid).collection('blocks').doc(meUid);
+
+  const outcome = await db.runTransaction(async (tx) => {
+    // All reads before writes.
+    const edgeSnap = await tx.get(edgeRef);
+    if (edgeSnap.exists && (edgeSnap.data() as any)?.state === 'accepted') {
+      return { status: 'already' as const };
+    }
+    const [meBlock, tgtBlock] = await Promise.all([
+      tx.get(meBlockRef),
+      tx.get(tgtBlockRef),
+    ]);
+    if (meBlock.exists || tgtBlock.exists) {
+      return { status: 'blocked' as const };
+    }
+    const [meP, meU, tgtP, tgtU] = await Promise.all([
+      tx.get(meProfRef),
+      tx.get(meUserRef),
+      tx.get(tgtProfRef),
+      tx.get(tgtUserRef),
+    ]);
+    const myUsername =
+      cleanUsername((meP.data() as any)?.username) || cleanUsername((meU.data() as any)?.username);
+    const targetUsername =
+      cleanUsername((tgtP.data() as any)?.username) || cleanUsername((tgtU.data() as any)?.username);
+
+    tx.set(edgeRef, { uids: [meUid, targetUid], state: 'accepted', createdAt: now, updatedAt: now }, { merge: true });
+    tx.set(
+      db.collection('users').doc(meUid).collection('friends').doc(targetUid),
+      { uid: targetUid, username: targetUsername, status: 'accepted', acceptedAt: now },
+      { merge: true }
+    );
+    tx.set(
+      db.collection('users').doc(targetUid).collection('friends').doc(meUid),
+      { uid: meUid, username: myUsername, status: 'accepted', acceptedAt: now },
+      { merge: true }
+    );
+    tx.set(
+      db.collection('Friends').doc(meUid),
+      { friends: FieldValue.arrayUnion({ uid: targetUid, username: targetUsername }) },
+      { merge: true }
+    );
+    tx.set(
+      db.collection('Friends').doc(targetUid),
+      { friends: FieldValue.arrayUnion({ uid: meUid, username: myUsername }) },
+      { merge: true }
+    );
+    return { status: 'created' as const };
+  });
+
+  if (outcome.status === 'blocked') return { ok: false, error: 'BLOCKED' };
+  if (outcome.status === 'already') return { ok: true, already: true, targetUid };
+  logger.info('addFriendMutual: friendship created', { meUid, targetUid });
+  return { ok: true, targetUid };
+});
+
 // Keep callable exports (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';
 export { checkPostAllowed } from './checkPostAllowed.js';
 export { dailyBonusAccrual } from './dailyBonusAccrual.js';
-export { portAccountData } from './portAccount.js';
+// portAccountData is intentionally NOT exported: the client porting UI was removed, so
+// leaving it deployed is a needless attack surface. Re-add this export only if that UI
+// returns. (See functions/src/portAccount.ts, kept dormant.)
 export { ensureInviteCode, redeemInvite } from './redeemInvite.js';
 export { getFriendsOfFriends } from './friendsOfFriends.js';
