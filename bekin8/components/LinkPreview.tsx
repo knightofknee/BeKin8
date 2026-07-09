@@ -12,6 +12,7 @@ import {
   Platform,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { useTheme } from "../providers/ThemeProvider";
 import { tap } from "../utils/haptics";
 
@@ -21,24 +22,10 @@ interface OGData {
   image?: string;
 }
 
-function extractMeta(html: string): OGData {
-  const get = (property: string): string | undefined => {
-    // match <meta property="og:X" content="…"> or <meta content="…" property="og:X">
-    const re = new RegExp(
-      `<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']+)["']` +
-        `|<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${property}["']`,
-      "i"
-    );
-    const m = html.match(re);
-    return m ? m[1] || m[2] : undefined;
-  };
-
-  return {
-    title: get("og:title") || get("twitter:title"),
-    description: get("og:description") || get("twitter:description"),
-    image: get("og:image") || get("twitter:image"),
-  };
-}
+// Module-scoped cache so each URL's preview is fetched from the server at most once per
+// session (mirrors lib/prefetchBeaconMessages dedup). 'error' is a sentinel so a failed
+// lookup falls back to a plain link without re-calling the function.
+const previewCache = new Map<string, OGData | "error">();
 
 function domain(url: string): string {
   try {
@@ -78,76 +65,60 @@ function Shimmer({ width, height, colors: c }: { width: number | `${number}%`; h
 // ── Main component ───────────────────────────────────────────────────
 export default function LinkPreview({ url }: { url: string }) {
   const { colors } = useTheme();
-  const [og, setOg] = useState<OGData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  // Seed from the module cache so an already-resolved URL renders its card immediately.
+  const [og, setOg] = useState<OGData | null>(() => {
+    const c = previewCache.get(url);
+    return c && c !== "error" ? c : null;
+  });
+  const [loading, setLoading] = useState(() => previewCache.get(url) === undefined);
+  const [error, setError] = useState(() => previewCache.get(url) === "error");
 
   useEffect(() => {
     let cancelled = false;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
 
-    const tryFetch = async (target: string): Promise<OGData | null> => {
-      const res = await fetch(target, {
-        signal: controller.signal,
-        redirect: "follow",
-        headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
-      });
-      const html = await res.text();
-      const data = extractMeta(html);
-      if (data.title) return data;
+    // Cache hit: apply the stored result (or the error sentinel) without a network call.
+    const cached = previewCache.get(url);
+    if (cached !== undefined) {
+      if (cached === "error") { setOg(null); setError(true); }
+      else { setOg(cached); setError(false); }
+      setLoading(false);
+      return;
+    }
 
-      // Some shortlinks use JS/meta-refresh redirects, try to follow them
-      const refresh = html.match(
-        /<meta[^>]+http-equiv=["']refresh["'][^>]+content=["']\d+;\s*url=([^"']+)["']/i
-      );
-      if (refresh?.[1]) {
-        const r2 = await fetch(refresh[1], {
-          signal: controller.signal,
-          redirect: "follow",
-          headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
-        });
-        const h2 = await r2.text();
-        const d2 = extractMeta(h2);
-        if (d2.title) return d2;
-      }
+    setLoading(true);
+    setError(false);
+    setOg(null);
 
-      // If redirect was followed, res.url may differ, re-fetch the final destination
-      if (res.url && res.url !== target) {
-        const r3 = await fetch(res.url, {
-          signal: controller.signal,
-          redirect: "follow",
-          headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
-        });
-        const h3 = await r3.text();
-        const d3 = extractMeta(h3);
-        if (d3.title) return d3;
-      }
-
-      return null;
-    };
+    // Fetch the preview server-side so the author's chosen host never sees the viewer's IP,
+    // and the HTML is fetched once (server) instead of up to 3x per row on-device.
+    const fetchLinkPreview = httpsCallable<
+      { url: string },
+      { ok: boolean; title?: string; description?: string; image?: string; siteName?: string; url?: string }
+    >(getFunctions(), "fetchLinkPreview");
 
     (async () => {
       try {
-        const data = await tryFetch(normaliseUrl(url));
-        if (!cancelled) {
-          if (data) {
-            setOg(data);
-          } else {
-            setError(true);
-          }
+        const res = await fetchLinkPreview({ url: normaliseUrl(url) });
+        const data = res.data;
+        if (data?.ok && data.title) {
+          const result: OGData = { title: data.title, description: data.description, image: data.image };
+          previewCache.set(url, result);
+          if (!cancelled) setOg(result);
+        } else {
+          previewCache.set(url, "error");
+          if (!cancelled) setError(true);
         }
       } catch {
+        // Callable errored or isn't deployed yet: fail soft to a plain tappable link.
+        previewCache.set(url, "error");
         if (!cancelled) setError(true);
       } finally {
-        clearTimeout(timer);
         if (!cancelled) setLoading(false);
       }
     })();
 
     return () => {
       cancelled = true;
-      controller.abort();
     };
   }, [url]);
 

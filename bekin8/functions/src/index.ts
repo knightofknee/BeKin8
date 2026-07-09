@@ -301,6 +301,39 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+/**
+ * Write Expo push tickets in chunked batches (<=500 writes per commit) instead of one
+ * commit per ticket. Callers pass pre-filtered success entries (only success tickets carry
+ * an id). Document shape matches saveTickets() exactly.
+ */
+async function saveTicketsBatched(
+  items: { id: string; subscriberUid: string; token: string }[],
+  friendUid: string,
+  beaconId: string
+) {
+  if (items.length === 0) return;
+  const now = FieldValue.serverTimestamp();
+  for (const group of chunk(items, 500)) {
+    const batch = db.batch();
+    for (const it of group) {
+      batch.set(
+        db.collection('expoPushTickets').doc(it.id),
+        {
+          createdAt: now,
+          updatedAt: now,
+          status: 'pending',
+          subscriberUid: it.subscriberUid,
+          friendUid,
+          beaconId,
+          token: it.token,
+        },
+        { merge: true }
+      );
+    }
+    await batch.commit();
+  }
+}
+
 // ===== Core sender =====
 
 async function fanOutForBeacon(beaconId: string, b: Beacon) {
@@ -350,33 +383,55 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   } catch {}
   const title = ownerDisplay ? `${ownerDisplay} lit a beacon` : "A friend lit a beacon";
 
+  // Build one flat message list across every recipient/token, then send + write tickets in
+  // batches. This packs up to 100 messages per Expo HTTP round trip (via chunkPushNotifications)
+  // instead of one round trip per token, and commits tickets in <=500-op batches instead of one
+  // commit per ticket. It does NOT change who receives, only how the sends are packed.
+  const messages: ExpoPushMessage[] = [];
+  const messageSubscriber: string[] = []; // parallel to messages: subscriberUid per message
+
   for (const recipientUid of recipients) {
     const tokens = await getAllExpoTokens(recipientUid);
-    if (tokens.length === 0) continue;
-
-    // Send to each token individually so one bad token can't block others
     for (const token of tokens) {
-      try {
-        const tickets = await expo.sendPushNotificationsAsync([{
-          to: token,
-          title,
-          body,
-          sound: 'default',
-          priority: 'high',
-          channelId: 'default',
-          data: { type: 'beacon', beaconId, ownerUid },
-        }]);
-        await saveTickets(tickets, {
-          subscriberUid: recipientUid,
-          friendUid: ownerUid,
-          token,
-          beaconId,
-        });
-      } catch (err) {
-        logger.error('Expo send error', { recipientUid, ownerUid, beaconId, token, err });
-      }
+      messages.push({
+        to: token,
+        title,
+        body,
+        sound: 'default',
+        priority: 'high',
+        channelId: 'default',
+        data: { type: 'beacon', beaconId, ownerUid },
+      });
+      messageSubscriber.push(recipientUid);
     }
   }
+
+  if (messages.length === 0) return;
+
+  // chunkPushNotifications preserves message order, so a running index maps each returned
+  // ticket back to the subscriber/token that produced it.
+  const sent: { id: string; subscriberUid: string; token: string }[] = [];
+  let sentIndex = 0;
+  for (const msgChunk of expo.chunkPushNotifications(messages)) {
+    try {
+      const tickets = await expo.sendPushNotificationsAsync(msgChunk);
+      for (let i = 0; i < msgChunk.length; i++) {
+        const t = tickets[i];
+        if (t && isSuccessTicket(t)) {
+          sent.push({
+            id: t.id,
+            subscriberUid: messageSubscriber[sentIndex + i],
+            token: msgChunk[i].to as string,
+          });
+        }
+      }
+    } catch (err) {
+      logger.error('Expo send error', { ownerUid, beaconId, err });
+    }
+    sentIndex += msgChunk.length;
+  }
+
+  await saveTicketsBatched(sent, ownerUid, beaconId);
 }
 
 // ===== Triggers (v2) =====
@@ -482,6 +537,8 @@ type ChatMessage = {
   // RSVP system messages ('im-in') carry the actor instead of an author.
   actorUid?: string;
   actorName?: string;
+  // GIF messages carry no text; the push body is generated from the kind.
+  kind?: 'text' | 'gif';
 };
 
 /** RSVP comment notify: users/{uid}.commentNotify */
@@ -623,6 +680,8 @@ export const onBeaconCommentNotify = onDocumentCreated(
       : `${senderName} commented on a beacon`;
     const body = isRsvp
       ? `Tap to see who's coming.`
+      : msg.kind === 'gif'
+      ? '🎬 GIF'
       : ((msg.text || '').toString().slice(0, 200) || 'New comment');
 
     for (const recipientUid of recipients) {
@@ -1172,3 +1231,4 @@ export { dailyBonusAccrual } from './dailyBonusAccrual.js';
 // returns. (See functions/src/portAccount.ts, kept dormant.)
 export { ensureInviteCode, redeemInvite } from './redeemInvite.js';
 export { getFriendsOfFriends } from './friendsOfFriends.js';
+export { fetchLinkPreview } from './fetchLinkPreview.js';

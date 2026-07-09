@@ -45,6 +45,7 @@ import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
 import { buildInviteUrl } from "../lib/inviteLink";
 import TutorialResumeBanner from "@/components/tutorial/TutorialResumeBanner";
+import FriendsSetupCard from "@/components/tutorial/FriendsSetupCard";
 import { useTour, useTourTarget } from "../providers/TourProvider";
 import { useOnboarding } from "../providers/OnboardingProvider";
 import { emitNotifyPermissionChange } from "../lib/notifyPermission";
@@ -70,6 +71,14 @@ export default function FriendsScreen() {
   const [notifyAllBeacons, setNotifyAllBeacons] = useState(false);
   const [notifyAllBusy, setNotifyAllBusy] = useState(false);
   const router = useRouter();
+  // Non-blocking "add your first friend" card. Shown to ANY user with no friend yet whenever they are
+  // on this screen (dismissable for the session, so it returns on the next visit). It locks nothing;
+  // "Next" hands off to the final tour step (checklist / celebration).
+  const [setupCardDismissed, setSetupCardDismissed] = useState(false);
+  const setupHelpNext = useCallback(() => {
+    setSetupCardDismissed(true);
+    router.navigate({ pathname: "/home", params: { tutorial: "1", tourStepId: "set-first-beacon" } });
+  }, [router]);
 
   // Username state, seeded from cached profile, editable locally
   const [usernameInput, setUsernameInput] = useState("");
@@ -601,21 +610,23 @@ export default function FriendsScreen() {
       });
       if (alreadyFriends) return showMessage("Already friends.", "success");
 
-      // Prevent duplicates in requests
+      // Prevent duplicates in requests. The FriendRequests read rule (query-safe) denies a get on a
+      // NON-existent request, so a missing request throws permission-denied; treat that as "no such
+      // request" and proceed. An existing request I participate in reads fine.
       const outId = requestIdFor(meUid, targetUid);
       const inId = requestIdFor(targetUid, meUid);
-      const existingOut = await getDoc(doc(db, "FriendRequests", outId));
-      const existingIn = await getDoc(doc(db, "FriendRequests", inId));
+      const existingOut = await getDoc(doc(db, "FriendRequests", outId)).catch(() => null);
+      const existingIn = await getDoc(doc(db, "FriendRequests", inId)).catch(() => null);
 
-      if (existingOut.exists() && (existingOut.data() as any).status === "pending") {
+      if (existingOut?.exists() && (existingOut.data() as any).status === "pending") {
         return showMessage("Request already sent.", "error");
       }
-      if (existingIn.exists() && (existingIn.data() as any).status === "pending") {
+      if (existingIn?.exists() && (existingIn.data() as any).status === "pending") {
         return showMessage("They already requested you. Check requests above.", "success");
       }
       if (
-        (existingOut.exists() && (existingOut.data() as any).status === "accepted") ||
-        (existingIn.exists() && (existingIn.data() as any).status === "accepted")
+        (existingOut?.exists() && (existingOut.data() as any).status === "accepted") ||
+        (existingIn?.exists() && (existingIn.data() as any).status === "accepted")
       ) {
         return showMessage("Already friends.", "success");
       }
@@ -1083,6 +1094,10 @@ export default function FriendsScreen() {
     }
   };
 
+  // Show the "add your first friend" card to anyone with no friend yet (until dismissed this session).
+  const friendStepDone = !!onboarding.steps.find((s) => s.key === "friend")?.done;
+  const showSetupCard = onboarding.loaded && !friendStepDone && !setupCardDismissed;
+
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
   if (!profileLoaded) {
     return (
@@ -1119,19 +1134,23 @@ export default function FriendsScreen() {
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
-            <TutorialResumeBanner
-              visible={onboarding.loaded && !onboarding.allDone && !tourActive}
-              doneCount={onboarding.doneCount}
-              total={onboarding.total}
-              nextLabel={onboarding.firstIncomplete?.label}
-              onPress={() =>
-                router.push(
-                  onboarding.firstIncomplete
-                    ? `/home?tutorial=1&tourTarget=${onboarding.firstIncomplete.target}`
-                    : "/home?tutorial=1"
-                )
-              }
-            />
+            {showSetupCard ? (
+              <FriendsSetupCard onNext={setupHelpNext} onDismiss={() => setSetupCardDismissed(true)} />
+            ) : (
+              <TutorialResumeBanner
+                visible={onboarding.loaded && !onboarding.allDone && !tourActive}
+                doneCount={onboarding.doneCount}
+                total={onboarding.total}
+                nextLabel={onboarding.firstIncomplete?.label}
+                onPress={() => {
+                  const inc = onboarding.firstIncomplete;
+                  // Already on Friends: the "add a friend" step re-opens the (dismissed) help card in
+                  // place rather than bouncing through a locked coach-mark.
+                  if (inc?.key === "friend") { setSetupCardDismissed(false); return; }
+                  router.push(inc ? `/home?tutorial=1&tourTarget=${inc.target}` : "/home?tutorial=1");
+                }}
+              />
+            )}
             <Text style={[styles.header, { color: tc.text }]}>Friends</Text>
 
             {/* Username + Invite. Its tour targets (friends-username / friends-profile / friends-add)

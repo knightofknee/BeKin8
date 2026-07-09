@@ -45,7 +45,6 @@ import { useIsFocused } from '@react-navigation/native';
 import { auth, db } from '../firebase.config';
 import {
   addDoc,
-  arrayUnion,
   collection,
   doc,
   getDoc,
@@ -79,6 +78,7 @@ import { getSeen, setSeen } from '../lib/tutorialFlags';
 import { ensureNotifyPermission } from '../lib/notifyPermission';
 import { useFireSound } from '../lib/useFireSound';
 import { getFireSoundEnabled, setFireSoundEnabled, onFireSoundChange } from '../lib/fireSoundPref';
+import { needsVerification } from '../lib/emailVerification';
 
 // --- date helpers ---
 function startOfDay(d: Date) {
@@ -145,7 +145,7 @@ type FriendGroup = {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string; tutorial?: string; tourTarget?: string }>();
+  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string; tutorial?: string; tourTarget?: string; tourStepId?: string }>();
   const { profile, user } = useAuth();
   const { colors } = useTheme();
   const online = useOnline();
@@ -709,8 +709,17 @@ export default function HomeScreen() {
     const id = `${uid}__tutorial_test`;
     try {
       const ref = doc(db, 'FriendGroups', id);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) {
+      // The FriendGroups read rule (query-safe) denies a get on a NON-existent group, so treat a
+      // failed/denied read as "does not exist" and create it. An existing group owned by me reads
+      // fine (owner branch), so this only creates when genuinely missing; the group is always
+      // memberless so a redundant write is harmless.
+      let exists = false;
+      try {
+        exists = (await getDoc(ref)).exists();
+      } catch {
+        exists = false;
+      }
+      if (!exists) {
         await setDoc(ref, {
           ownerUid: uid, name: 'test', memberUids: [], createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         });
@@ -770,6 +779,7 @@ export default function HomeScreen() {
   // Start (or replay) the beacon coach-mark tour. `startAtTarget` lets the resume banner jump to
   // the earliest incomplete setup step.
   const pendingStartTargetRef = useRef<string | undefined>(undefined);
+  const pendingStartStepIdRef = useRef<string | undefined>(undefined);
   // The built steps + whether the final step is the GATED guided-first-beacon variant, so the live
   // effect below can refresh that one step (checklist + Done gate) via updateStepById without rebuilding
   // the whole array (which could shift indices if the add-brian step's presence changed mid-tour).
@@ -801,13 +811,14 @@ export default function HomeScreen() {
   // Celebratory final step's onEnter: just go home and close the sheet (don't seed a new beacon).
   const onEnterDoneCb = useRef(() => { router.navigate('/home'); setOptionsOpen(false); });
   onEnterDoneCb.current = () => { router.navigate('/home'); setOptionsOpen(false); };
-  const startBeaconTour = (opts?: { startAtTarget?: string }) => {
+  const startBeaconTour = (opts?: { startAtTarget?: string; startAtStepId?: string }) => {
     // Never build the tour before the friend count is known, otherwise the add-brian step can be
     // wrongly kept (the auto-start/resume/banner/help entry points all funnel through here). Defer
     // via the pendingAutoStart machinery, which re-fires this once isLit + friendsLoaded are ready
     // (remembering the requested jump target across the defer).
     if (!friendsLoaded) {
       pendingStartTargetRef.current = opts?.startAtTarget;
+      pendingStartStepIdRef.current = opts?.startAtStepId;
       setPendingAutoStart(true);
       return;
     }
@@ -852,6 +863,7 @@ export default function HomeScreen() {
     ensureTestGroup();
     startTour(builtSteps, {
       startAtTarget: opts?.startAtTarget,
+      startAtStepId: opts?.startAtStepId,
       // Replay if the tour has ended at least once before (finish or skip): the dismiss button then
       // reads "Close" instead of "Skip tour". Captured now, before onClose flips the ref.
       isReplay: firstTourDoneRef.current,
@@ -1036,19 +1048,23 @@ export default function HomeScreen() {
     if (pendingAutoStart && isLit !== null && friendsLoaded) {
       setPendingAutoStart(false);
       const t = pendingStartTargetRef.current;
+      const sid = pendingStartStepIdRef.current;
       pendingStartTargetRef.current = undefined;
-      startBeaconTour(t ? { startAtTarget: t } : undefined);
+      pendingStartStepIdRef.current = undefined;
+      startBeaconTour(sid ? { startAtStepId: sid } : t ? { startAtTarget: t } : undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAutoStart, isLit, friendsLoaded]);
 
   // Resume the tutorial when navigated here from the resume banner on another screen, optionally
-  // jumping to the first incomplete step (?tourTarget=...).
+  // jumping to the first incomplete step (?tourTarget=...) or straight to the final step by id
+  // (?tourStepId=set-first-beacon, used by the Friends "add a friend" help card's Next).
   useEffect(() => {
     if (params.tutorial === '1') {
       const t = typeof params.tourTarget === 'string' ? params.tourTarget : undefined;
-      startBeaconTour(t ? { startAtTarget: t } : undefined);
-      router.setParams({ tutorial: undefined as any, tourTarget: undefined as any });
+      const sid = typeof params.tourStepId === 'string' ? params.tourStepId : undefined;
+      startBeaconTour(sid ? { startAtStepId: sid } : t ? { startAtTarget: t } : undefined);
+      router.setParams({ tutorial: undefined as any, tourTarget: undefined as any, tourStepId: undefined as any });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.tutorial]);
@@ -1405,33 +1421,6 @@ export default function HomeScreen() {
     else setOptionsOpen(false);
   };
 
-  // "I'm in" handler
-  const handleImIn = async () => {
-    const user = auth.currentUser;
-    const b = selectedBeacon;
-    if (!user || !b) return;
-
-    try {
-      await updateDoc(doc(db, 'Beacons', b.id), {
-        inUids: arrayUnion(user.uid),
-        updatedAt: serverTimestamp(),
-      });
-
-      const name = profile?.displayName || profile?.username || 'Someone';
-      await addDoc(collection(db, 'Beacons', b.id, 'ChatMessages'), {
-        type: 'system',
-        subtype: 'im-in',
-        actorUid: user.uid,
-        actorName: name,
-        text: `${name} is in`,
-        createdAt: serverTimestamp(),
-      });
-    } catch (e) {
-      if (__DEV__) console.warn('im-in failed', e);
-      Alert.alert('Error', 'Could not mark you as in. Try again.');
-    }
-  };
-
   // Loading baseline
   if (isLit === null) {
     return (
@@ -1479,13 +1468,35 @@ export default function HomeScreen() {
           ) : skin.smokeKind === 'ambient' ? (
             <BeaconSmoke skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : null}
-          <TutorialResumeBanner
-            visible={onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart}
-            doneCount={onboarding.doneCount}
-            total={onboarding.total}
-            nextLabel={onboarding.firstIncomplete?.label}
-            onPress={() => startBeaconTour({ startAtTarget: onboarding.firstIncomplete?.target })}
-          />
+          {(() => {
+            const resumeVisible = onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart;
+            const banner = (
+              <TutorialResumeBanner
+                visible={resumeVisible}
+                doneCount={onboarding.doneCount}
+                total={onboarding.total}
+                nextLabel={onboarding.firstIncomplete?.label}
+                onPress={() => {
+                  const inc = onboarding.firstIncomplete;
+                  // "Add a friend" is not a locked coach-mark anymore: send the user to Friends, where
+                  // a non-blocking help card shows for anyone with no friend yet. Other steps still use
+                  // the coach-mark jump.
+                  if (inc?.key === 'friend') {
+                    router.navigate('/friends');
+                  } else {
+                    startBeaconTour(inc?.target ? { startAtTarget: inc.target } : undefined);
+                  }
+                }}
+              />
+            );
+            // The email-verify banner (VerifyEmailGate, floats at the very top for pending email/
+            // password signups) shares this top area. When it's showing, nudge the resume banner down
+            // so the two don't overlap. Only wrap when both are actually visible, so an empty wrapper
+            // never adds a stray flex gap otherwise.
+            return resumeVisible && needsVerification(user)
+              ? <View style={styles.resumeBannerVerifyOffset}>{banner}</View>
+              : banner;
+          })()}
           <View style={styles.beaconsWrap}>
             <FriendsBeaconsList onSelect={setSelectedBeacon} showExampleWhenEmpty />
           </View>
@@ -1953,6 +1964,9 @@ const styles = StyleSheet.create({
     paddingTop: 4, // was styles.page.paddingTop; kept here so tiles don't shift up
     paddingHorizontal: 0,
   },
+  // Clears the floating email-verify banner (VerifyEmailGate) above the resume banner so they
+  // don't overlap for pending email/password signups. Sized to clear its one/two-line height.
+  resumeBannerVerifyOffset: { paddingTop: 56 },
 
   controls: {
     // Transparent (not colors.bg) so the smoke layer behind shows through the controls region and

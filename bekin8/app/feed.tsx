@@ -13,6 +13,8 @@ import {
   Animated,
   TextInput,
   RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
@@ -149,6 +151,10 @@ export default function Feed() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [showMine, setShowMine] = useState(false);
+  // Transient, session-only override that reveals the user's own posts right after they create one
+  // (arriving with scrollToPostId). Kept SEPARATE from showMine so it never persists or silently
+  // changes the saved "show my posts" preference.
+  const [forceShowMine, setForceShowMine] = useState(false);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [targetCommentId, setTargetCommentId] = useState<string | undefined>(undefined);
   const listRef = useRef<FlatList<Post>>(null);
@@ -186,12 +192,23 @@ export default function Feed() {
   // ── persist show-mine toggle ────────────────────────────────────────────────
   useEffect(() => {
     AsyncStorage.getItem(prefKey())
-      .then((v) => { if (v != null) setShowMine(v === '1'); })
+      .then((v) => {
+        if (v != null) setShowMine(v === '1');
+      })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     AsyncStorage.setItem(prefKey(), showMine ? '1' : '0').catch(() => {});
   }, [showMine]);
+
+  // Reveal the user's own new post when they land here with a scrollToPostId (e.g. just created a
+  // post), so it isn't hidden by the default "hide my posts" filter. This is a SESSION-ONLY latch,
+  // NOT a preference change: the saved showMine value is untouched, so a later cold launch still
+  // respects what the user actually chose.
+  useEffect(() => {
+    if (params.scrollToPostId) setForceShowMine(true);
+  }, [params.scrollToPostId]);
 
   // ── block list ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -504,12 +521,15 @@ export default function Feed() {
     return () => { clearTimeout(debounce); unsubA(); unsubB(); unsubC(); };
   }, [initialLoad]);
 
+  // Effective "show mine" = the saved preference OR the transient post-creation latch.
+  const effectiveShowMine = showMine || forceShowMine;
+
   // ── filter ──────────────────────────────────────────────────────────────────
   const displayedPosts = useMemo(() => {
     const me = auth.currentUser?.uid;
-    const base = showMine || !me ? posts : posts.filter((p) => p.authorUid !== me);
+    const base = effectiveShowMine || !me ? posts : posts.filter((p) => p.authorUid !== me);
     return blockedUids.size ? base.filter((p) => !blockedUids.has(p.authorUid)) : base;
-  }, [posts, showMine, blockedUids]);
+  }, [posts, effectiveShowMine, blockedUids]);
 
   // ── deep link: post comment notification ────────────────────────────────────
   // Opens the comments modal for the target post, scrolls feed to it, and
@@ -757,10 +777,16 @@ export default function Feed() {
             <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
               <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
               <Pressable
-                onPress={() => { tap(); setShowMine((s) => !s); }}
+                onPress={() => {
+                  tap();
+                  // Toggle the DISPLAYED state. Hiding also clears the transient latch so a post
+                  // just created can be hidden; the saved preference tracks the user's real choice.
+                  if (effectiveShowMine) { setShowMine(false); setForceShowMine(false); }
+                  else setShowMine(true);
+                }}
                 style={({ pressed }) => [styles.toggleBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
               >
-                <Text style={styles.toggleBtnText}>{showMine ? 'Hide my posts' : 'Show my posts'}</Text>
+                <Text style={styles.toggleBtnText}>{effectiveShowMine ? 'Hide my posts' : 'Show my posts'}</Text>
               </Pressable>
             </View>
           }
@@ -913,7 +939,10 @@ export default function Feed() {
 
       {/* Edit Post Modal */}
       <Modal visible={!!editingPost} animationType="slide" transparent onRequestClose={() => setEditingPost(null)}>
-        <View style={[styles.editBackdrop, { backgroundColor: tc.backdrop }]}>
+        <KeyboardAvoidingView
+          style={[styles.editBackdrop, { backgroundColor: tc.backdrop }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={[styles.editCard, { backgroundColor: tc.card }]}>
             <Text style={[styles.editModalTitle, { color: tc.text }]}>Edit Post</Text>
             <TextInput
@@ -952,7 +981,7 @@ export default function Feed() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </>
   );

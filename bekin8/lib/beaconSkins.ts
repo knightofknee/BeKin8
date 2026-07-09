@@ -317,7 +317,9 @@ const SKY_LANTERNS: BeaconSkin = {
   glow: { center: '#FFD89A', edge: '#FF9A3C', cy: -64, rx: 52, ry: 80 },
   ignition: { damping: 16, stiffness: 140, shake: false, shockwave: false },
   smoke: { tintLow: '#FFD9A0', tintHigh: '#FFC97E', opacity: 0.5, plumes: 0, rise: 1.0, drift: 12 },
-  sound: { ignite: require('../assets/sounds/skylantern-ignite.m4a'), crackle: require('../assets/sounds/skylantern-crackle.m4a') },
+  // HIDDEN: point at the already-shipped campfire clips so the bespoke skylantern m4a drops out of
+  // the bundle while this skin is withdrawn. Restore the skylantern-*.m4a requires when it is revived.
+  sound: { ignite: require('../assets/sounds/campfire-ignite.m4a'), crackle: require('../assets/sounds/campfire-crackle.m4a') },
   tap: { noun: 'lantern', tint: '#FFE9C4' },
 };
 
@@ -338,7 +340,9 @@ const SEARCHLIGHT: BeaconSkin = {
   glow: { center: '#EAF4FF', edge: '#9FC8F0', cy: -64, rx: 52, ry: 80 },
   ignition: { damping: 15, stiffness: 140, shake: false, shockwave: false },
   smoke: { tintLow: '#AEB6C4', tintHigh: '#AEB6C4', opacity: 0, plumes: 0, rise: 1.0, drift: 12 },
-  sound: { ignite: require('../assets/sounds/searchlight-ignite.m4a'), crackle: require('../assets/sounds/searchlight-crackle.m4a') },
+  // HIDDEN: point at the already-shipped campfire clips so the bespoke searchlight m4a drops out of
+  // the bundle while this skin is withdrawn. Restore the searchlight-*.m4a requires when it is revived.
+  sound: { ignite: require('../assets/sounds/campfire-ignite.m4a'), crackle: require('../assets/sounds/campfire-crackle.m4a') },
   tap: { noun: 'searchlight', tint: '#E7F1FF' },
 };
 
@@ -359,7 +363,9 @@ const STORM: BeaconSkin = {
   glow: { center: '#CFC4FF', edge: '#8F7BFF', cy: -64, rx: 52, ry: 80 },
   ignition: { damping: 14, stiffness: 150, shake: false, shockwave: false },
   smoke: { tintLow: '#AEB6C4', tintHigh: '#AEB6C4', opacity: 0, plumes: 0, rise: 1.0, drift: 12 },
-  sound: { ignite: require('../assets/sounds/storm-ignite.m4a'), crackle: require('../assets/sounds/storm-crackle.m4a') },
+  // HIDDEN: point at the already-shipped campfire clips so the bespoke storm m4a drops out of the
+  // bundle while this skin is withdrawn. Restore the storm-*.m4a requires when it is revived.
+  sound: { ignite: require('../assets/sounds/campfire-ignite.m4a'), crackle: require('../assets/sounds/campfire-crackle.m4a') },
   tap: { noun: 'storm rod', tint: '#DCE4F7' },
 };
 

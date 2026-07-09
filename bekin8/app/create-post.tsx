@@ -267,7 +267,7 @@ export default function CreatePostScreen() {
     // Trim content so whitespace-only padding doesn't end up persisted.
     const trimmedContent = content.trim();
     const tags = (trimmedContent.match(/#\w+/g) || []).map((t) => t.slice(0, 50));
-    await addDoc(collection(db, 'Posts'), {
+    const ref = await addDoc(collection(db, 'Posts'), {
       title: title.trim(),
       link: link.trim() || null,
       content: trimmedContent,
@@ -285,7 +285,9 @@ export default function CreatePostScreen() {
     setLink('');
     setContent('');
     Alert.alert('Posted!', 'Your post is live.');
-    router.push('/feed');
+    // Land on the feed scrolled to the just-created post. The feed reads scrollToPostId
+    // and forces "show mine" on, so the user's own post isn't hidden by the default filter.
+    router.push({ pathname: '/feed', params: { scrollToPostId: ref.id } });
   };
 
   // ── Normal submit ─────────────────────────────────────────────────────────

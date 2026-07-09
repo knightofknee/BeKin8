@@ -58,8 +58,11 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   const [notifBlocked, setNotifBlocked] = useState(false);
   const [notifChecked, setNotifChecked] = useState(false);
 
-  // Friend count from accepted FriendEdges, the same canonical source the Friends screen and the
-  // tour's add-brian gate use (symmetric: both parties appear in `uids`). Errors resolve to "none".
+  // "Has a friend" from the SAME two sources the friends list unions in, so an existing user with
+  // friends never reads as friendless: FriendEdges (participant) AND the denormalized
+  // users/{me}/friends subcollection. A MISSING `state` on an edge = a legacy edge, treated as
+  // accepted (matching the server's friendUidsOf); requiring state=='accepted' in the query used to
+  // miss those and left real users stuck on "Add a friend". Errors resolve to "none".
   useEffect(() => {
     const uid = user?.uid;
     if (!uid) {
@@ -67,23 +70,50 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
       setFriendLoaded(false);
       return;
     }
-    const qEdges = query(
-      collection(db, "FriendEdges"),
-      where("uids", "array-contains", uid),
-      where("state", "==", "accepted")
-    );
-    const unsub = onSnapshot(
-      qEdges,
+    let edgeCount = 0;
+    let subCount = 0;
+    let edgeReady = false;
+    let subReady = false;
+    const apply = () => {
+      setHasFriend(edgeCount > 0 || subCount > 0);
+      if (edgeReady && subReady) setFriendLoaded(true);
+    };
+    // array-contains only (no state filter, so no composite index and legacy edges count).
+    const unsubEdges = onSnapshot(
+      query(collection(db, "FriendEdges"), where("uids", "array-contains", uid)),
       (snap) => {
-        setHasFriend(snap.size > 0);
-        setFriendLoaded(true);
+        let c = 0;
+        snap.forEach((d) => {
+          const st = (d.data() as any)?.state;
+          if (st === "accepted" || st == null) c += 1;
+        });
+        edgeCount = c;
+        edgeReady = true;
+        apply();
       },
       () => {
-        setHasFriend(false);
-        setFriendLoaded(true);
+        edgeCount = 0;
+        edgeReady = true;
+        apply();
       }
     );
-    return () => unsub();
+    const unsubSub = onSnapshot(
+      collection(db, "users", uid, "friends"),
+      (snap) => {
+        subCount = snap.size;
+        subReady = true;
+        apply();
+      },
+      () => {
+        subCount = 0;
+        subReady = true;
+        apply();
+      }
+    );
+    return () => {
+      unsubEdges();
+      unsubSub();
+    };
   }, [user?.uid]);
 
   // OS notification permission, re-checked on mount, on user change, and whenever the app returns

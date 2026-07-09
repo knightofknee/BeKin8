@@ -3,7 +3,7 @@
 // useTourTarget(key); any screen can startTour(steps). The SpotlightTour overlay is rendered
 // here, at the root, so it sits above the navigator AND the tab bar.
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { View } from "react-native";
+import { View, BackHandler } from "react-native";
 import SpotlightTour, { type Rect, type TourStep } from "../components/tutorial/SpotlightTour";
 
 export type { TourStep } from "../components/tutorial/SpotlightTour";
@@ -15,7 +15,7 @@ type TourCtx = {
   measureTarget: (key: string) => Promise<Rect | null>;
   startTour: (
     steps: TourStep[],
-    opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; isReplay?: boolean }
+    opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; startAtStepId?: string; isReplay?: boolean }
   ) => void;
   /**
    * Replace a SINGLE step (matched by id) in the active tour, splicing the provider's OWN current
@@ -104,7 +104,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const startTour = useCallback(
     (
       s: TourStep[],
-      opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; isReplay?: boolean }
+      opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; startAtStepId?: string; isReplay?: boolean }
     ) => {
       if (activeRef.current) return; // a tour is already running, don't clobber it
       activeRef.current = true;
@@ -116,7 +116,12 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       // Optionally start mid-flow (e.g. the resume banner jumping to the first incomplete step).
       // History stays empty so Back is hidden until the user moves forward from here.
       let start = 0;
-      if (opts?.startAtTarget) {
+      if (opts?.startAtStepId) {
+        // Jump to a step by id (used to land on the final free step, which has no spotlight target).
+        const i = s.findIndex((st) => st.id === opts.startAtStepId);
+        if (i >= 0) start = i;
+        else if (__DEV__) console.warn(`startTour: startAtStepId "${opts.startAtStepId}" not found; starting at 0`);
+      } else if (opts?.startAtTarget) {
         const i = s.findIndex((st) => st.target === opts.startAtTarget);
         if (i >= 0) start = i;
         else if (__DEV__) console.warn(`startTour: startAtTarget "${opts.startAtTarget}" not found; starting at 0`);
@@ -198,6 +203,19 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   const onSkip = useCallback(() => endTour(false), [endTour]);
 
+  // Android hardware back: while a tour is up, map Back to the tour's OWN Back (step back through the
+  // visited path) when there is history, else dismiss the tour. Returning true stops the OS from popping
+  // the screen under the overlay or exiting the app. Registered only while a tour is running.
+  useEffect(() => {
+    if (!steps) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (history.current.length > 0) onPrev();
+      else onSkip();
+      return true;
+    });
+    return () => sub.remove();
+  }, [steps, onPrev, onSkip]);
+
   const goToTarget = useCallback(
     (key: string, opts?: { pushHistory?: boolean }) => {
       setNavDir("jump");
@@ -216,6 +234,9 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   const currentStepId = steps?.[index]?.id;
   const currentStepTarget = steps?.[index]?.target;
+  // Interactive steps let the user touch/edit the highlighted element, so the app subtree must stay
+  // reachable by VoiceOver/TalkBack on those (see the app-hide wrapper below).
+  const currentStepInteractive = !!steps?.[index]?.interactive;
 
   return (
     <Ctx.Provider
@@ -235,12 +256,14 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         isActive: !!steps,
       }}
     >
-      {/* Hide the whole app from assistive tech while a tour is active so VoiceOver focus stays
-          in the coach-mark callout (which is accessibilityViewIsModal). */}
+      {/* Hide the app from assistive tech on NON-interactive steps so VoiceOver focus stays in the
+          coach-mark callout (which is accessibilityViewIsModal). On interactive steps the app subtree
+          stays reachable, so screen-reader users can touch/edit the highlighted element and complete
+          the gated Done. */}
       <View
         style={{ flex: 1 }}
-        accessibilityElementsHidden={!!steps}
-        importantForAccessibility={steps ? "no-hide-descendants" : "auto"}
+        accessibilityElementsHidden={!!steps && !currentStepInteractive}
+        importantForAccessibility={steps && !currentStepInteractive ? "no-hide-descendants" : "auto"}
       >
         {children}
       </View>

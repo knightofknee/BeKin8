@@ -11,7 +11,6 @@ import {
   Platform,
   Alert,
   Modal,
-  ActionSheetIOS,
   NativeSyntheticEvent,
   NativeScrollEvent,
   StyleProp,
@@ -33,11 +32,25 @@ import {
   query,
   serverTimestamp,
   Timestamp,
+  updateDoc,
 } from 'firebase/firestore';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { formatTimeHHmmDisplay } from '../lib/beaconTime';
-import { tap, press, warning } from '../utils/haptics';
+import { tap, press, warning, selection } from '../utils/haptics';
+import { Image } from 'expo-image';
+import { Ionicons } from '@expo/vector-icons';
+import GifPicker, { PickedGif } from './GifPicker';
+import * as Clipboard from 'expo-clipboard';
+
+type MediaAttachment = {
+  provider: 'giphy';
+  id: string;
+  url: string;        // animated webp shown in the thread
+  previewUrl?: string;
+  w: number;
+  h: number;
+};
 
 type ChatMessage = {
   id: string;
@@ -49,6 +62,9 @@ type ChatMessage = {
   subtype?: 'im-in' | string;
   actorUid?: string;
   actorName?: string;
+  kind?: 'text' | 'gif';
+  media?: MediaAttachment;
+  reactions?: Record<string, string[]>;
 };
 
 type ChatRoomProps = {
@@ -67,6 +83,46 @@ function getMillis(v: any): number {
   if (typeof v.toDate === 'function') return v.toDate().getTime();
   if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
   return 0;
+}
+
+function formatMsgTime(d: Date): string {
+  const now = new Date();
+  const isToday =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (isToday) return time;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
+}
+
+// Fit a GIF into the thread: clamp width, preserve aspect ratio, cap height.
+function gifDims(m: { w: number; h: number }): { w: number; h: number } {
+  const MAX_W = 220, MAX_H = 260, MIN_W = 120;
+  const srcW = m.w > 0 ? m.w : 200;
+  const srcH = m.h > 0 ? m.h : 200;
+  const ratio = srcH / srcW;
+  let w = Math.min(MAX_W, Math.max(MIN_W, srcW));
+  let h = w * ratio;
+  if (h > MAX_H) { h = MAX_H; w = h / ratio; }
+  return { w: Math.round(w), h: Math.round(h) };
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function formatDayLabel(d: Date): string {
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameDay(d, now)) return 'Today';
+  if (isSameDay(d, yesterday)) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 async function resolveMyName(uid: string): Promise<string> {
@@ -94,7 +150,8 @@ async function resolveMyName(uid: string): Promise<string> {
 }
 
 const CHAT_ACCESSORY_ID = 'chatroom-accessory';
-const CHAT_MESSAGE_MAX = 1000;
+const CHAT_MESSAGE_MAX = 500;
+const REACTION_EMOJIS = ['🔥', '❤️', '😂', '👍', '🎉', '😮'];
 
 export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId }: ChatRoomProps) {
   const { colors: tc } = useTheme();
@@ -106,6 +163,8 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [gifOpen, setGifOpen] = useState(false);
+  const [gifViewer, setGifViewer] = useState<string | null>(null);
 
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
 
@@ -127,13 +186,16 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   // Scroll-to-top arrow (only when list is scrollable and user has scrolled down)
   const [listViewportH, setListViewportH] = useState(0);
   const [listContentH, setListContentH] = useState(0);
-  const [scrollY, setScrollY] = useState(0);
+  const [showJump, setShowJump] = useState(false);
 
   const isListScrollable = listContentH > listViewportH + 24;
   const hasRealMessages = useMemo(() => messages.some((m) => m.type !== 'system'), [messages]);
 
   const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    setScrollY(e.nativeEvent.contentOffset.y);
+    // Store only the derived boolean, not the raw offset, so the message list
+    // doesn't re-render on every scroll frame. Bail when it hasn't changed.
+    const next = e.nativeEvent.contentOffset.y > 24;
+    setShowJump((prev) => (prev === next ? prev : next));
   };
 
   const scrollToTop = () => {
@@ -143,7 +205,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
   // Reset per-room scroll state so it doesn't carry over between different beacons
   useEffect(() => {
-    setScrollY(0);
+    setShowJump(false);
     setListViewportH(0);
     setListContentH(0);
     pendingScrollRef.current = false;
@@ -224,8 +286,11 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       (snap) => {
         const arr: ChatMessage[] = [];
         snap.forEach((d) => {
-          const data: any = d.data();
-          const createdAtMs = getMillis(data?.createdAt) || 0;
+          // serverTimestamps: 'estimate' gives a just-sent message a local-time
+          // estimate instead of null, so a pending write never renders as 1969.
+          const data: any = d.data({ serverTimestamps: 'estimate' });
+          const createdAtMs =
+            getMillis(data?.createdAt) || (d.metadata.hasPendingWrites ? Date.now() : 0);
           arr.push({
             id: d.id,
             text: (data?.text || '').toString(),
@@ -236,6 +301,26 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             subtype: data?.subtype ? String(data.subtype) : undefined,
             actorUid: data?.actorUid ? String(data.actorUid) : undefined,
             actorName: data?.actorName ? String(data.actorName) : undefined,
+            kind: data?.kind === 'gif' ? 'gif' : 'text',
+            media:
+              data?.media && typeof data.media?.url === 'string'
+                ? {
+                    provider: 'giphy' as const,
+                    id: String(data.media.id || ''),
+                    url: String(data.media.url),
+                    previewUrl: data.media.previewUrl ? String(data.media.previewUrl) : undefined,
+                    w: Number(data.media.w) || 0,
+                    h: Number(data.media.h) || 0,
+                  }
+                : undefined,
+            reactions:
+              data?.reactions && typeof data.reactions === 'object'
+                ? Object.fromEntries(
+                    Object.entries(data.reactions)
+                      .filter(([, v]) => Array.isArray(v))
+                      .map(([k, v]) => [k, (v as any[]).map(String)])
+                  )
+                : undefined,
           });
         });
         arr.reverse();
@@ -344,6 +429,43 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     }
   };
 
+  const handleSendGif = (gif: PickedGif) => {
+    setGifOpen(false);
+    if (!me) return;
+    selection();
+    (async () => {
+      try {
+        const authorName = await resolveMyName(me.uid);
+        const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
+        const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
+
+        // Fire-and-forget, same as handleSend: offline the ack never resolves.
+        // authorUid is set so the sender can delete their own GIF (delete rule keys off it).
+        addDoc(col, {
+          type: 'user',
+          kind: 'gif',
+          authorUid: me.uid,
+          authorName,
+          text: '',
+          media: {
+            provider: 'giphy',
+            id: gif.id,
+            url: gif.url,
+            previewUrl: gif.previewUrl ?? null,
+            w: gif.w,
+            h: gif.h,
+          },
+          createdAt: serverTimestamp(),
+          ...(expiresAt ? { expiresAt } : {}),
+        }).catch(() => Alert.alert('Send failed', 'Please try again.'));
+
+        pendingScrollRef.current = true;
+      } catch {
+        Alert.alert('Send failed', 'Please try again.');
+      }
+    })();
+  };
+
   const handleImIn = async () => {
     if (!me || iAmIn) return;
     try {
@@ -356,6 +478,10 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         subtype: 'im-in',
         actorUid: me.uid,
         actorName,
+        // authorUid mirrors actorUid so the owner can delete their own RSVP:
+        // the ChatMessages delete rule keys off authorUid. It's inert everywhere
+        // else (roster, notifications, and the account sweep all read actorUid).
+        authorUid: me.uid,
         text: `${actorName} is in`,
         createdAt: serverTimestamp(),
         ...(expiresAt ? { expiresAt } : {}),
@@ -367,28 +493,31 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     }
   };
 
+  const handleUndoImIn = async () => {
+    if (!me || !iAmIn) return;
+    tap();
+    // The "going" count, the roster, and the button state all derive from the
+    // im-in system messages, so removing mine reverts all three at once. Delete
+    // every match in case an offline retry ever left a duplicate behind.
+    const mine = messages.filter(
+      (m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid
+    );
+    if (mine.length === 0) return;
+    try {
+      await Promise.all(
+        mine.map((m) => deleteDoc(doc(db, 'Beacons', beaconId, 'ChatMessages', m.id)))
+      );
+    } catch {
+      Alert.alert("Couldn't undo", 'Please try again.');
+    }
+  };
+
   const openMenu = (msg: ChatMessage) => {
     if (msg.type === 'system') return;
-    if (Platform.OS === 'ios' && ActionSheetIOS) {
-      const isMine = !!me && msg.authorUid === me.uid;
-      const options = ['Cancel', 'Report'];
-      const cancelButtonIndex = 0;
-      let destructiveButtonIndex: number | undefined = undefined;
-      if (isMine) {
-        options.push('Delete message');
-        destructiveButtonIndex = options.length - 1;
-      }
-      ActionSheetIOS.showActionSheetWithOptions(
-        { title: 'Options', options, cancelButtonIndex, destructiveButtonIndex },
-        async (idx) => {
-          const picked = options[idx];
-          if (picked === 'Report') await handleReport(msg);
-          if (picked === 'Delete message') await handleDelete(msg);
-        }
-      );
-    } else {
-      setMenuFor(msg);
-    }
+    tap();
+    // Unified sheet on both platforms: it carries the reaction row, which a native
+    // ActionSheet can't render.
+    setMenuFor(msg);
   };
 
   const handleReport = (msg: ChatMessage) => {
@@ -450,30 +579,88 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     );
   };
 
+  // Toggle my reaction on a message. One reaction per person: picking a new emoji
+  // moves me off any other. The whole (tiny) reactions map is rewritten, which the
+  // narrow ChatMessages update rule (only 'reactions' may change) permits.
+  const handleReact = (msg: ChatMessage, emoji: string) => {
+    setMenuFor(null);
+    const uid = me?.uid;
+    if (!uid || msg.type === 'system') return;
+    selection();
+    const current = msg.reactions || {};
+    const mineOnThis = Array.isArray(current[emoji]) && current[emoji].includes(uid);
+    const next: Record<string, string[]> = {};
+    for (const [em, uids] of Object.entries(current)) {
+      const kept = (uids || []).filter((u) => u !== uid); // clear me everywhere first
+      if (kept.length > 0) next[em] = kept;
+    }
+    if (!mineOnThis) next[emoji] = [...(next[emoji] || []), uid]; // then add me to the picked one
+    const ref = doc(db, 'Beacons', beaconId, 'ChatMessages', msg.id);
+    updateDoc(ref, { reactions: next }).catch(() => Alert.alert("Couldn't react", 'Please try again.'));
+  };
 
+  const handleCopy = async (msg: ChatMessage) => {
+    setMenuFor(null);
+    try {
+      await Clipboard.setStringAsync(msg.text || '');
+      tap();
+    } catch {
+      // no-op: copy failing is not worth an alert
+    }
+  };
+
+
+  const remaining = CHAT_MESSAGE_MAX - text.length;
   const ComposerRow = (
     <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
-      <TextInput
-        value={text}
-        onChangeText={setText}
-        placeholder="Message"
-        placeholderTextColor={tc.subtle}
-        editable
-        style={[styles.input, { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text }]}
-        multiline
-        maxLength={CHAT_MESSAGE_MAX}
-        onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
-        inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
-        blurOnSubmit={false}
-        returnKeyType="send"
-        onSubmitEditing={handleSend}
-      />
+      <View style={[styles.composerPill, { borderColor: tc.border, backgroundColor: tc.inputBg }]}>
+        <TextInput
+          value={text}
+          onChangeText={(t) => {
+            // Buzz once when the cap is first hit (maxLength already blocks further input).
+            if (t.length >= CHAT_MESSAGE_MAX && text.length < CHAT_MESSAGE_MAX) warning();
+            setText(t);
+          }}
+          placeholder="Message"
+          placeholderTextColor={tc.subtle}
+          editable
+          style={[styles.composerInput, { color: tc.text }]}
+          multiline
+          maxLength={CHAT_MESSAGE_MAX}
+          onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
+          inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
+          blurOnSubmit={false}
+          returnKeyType="send"
+          onSubmitEditing={handleSend}
+        />
+        {remaining <= 40 && (
+          <Text
+            style={[
+              styles.charCount,
+              { color: remaining <= 0 ? tc.danger : remaining <= 20 ? '#D97706' : tc.subtle },
+            ]}
+          >
+            {remaining}
+          </Text>
+        )}
+        <Pressable
+          onPress={() => { tap(); Keyboard.dismiss(); setGifOpen(true); }}
+          hitSlop={8}
+          style={({ pressed }) => [styles.gifBtn, { borderColor: tc.border }, pressed && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Add a GIF"
+        >
+          <Text style={[styles.gifBtnText, { color: tc.subtle }]}>GIF</Text>
+        </Pressable>
+      </View>
       <Pressable
         onPress={handleSend}
         disabled={!canSendMsg}
-        style={[styles.sendBtn, { opacity: canSendMsg ? 1 : 0.5, backgroundColor: tc.primary }]}
+        style={[styles.sendCircle, { backgroundColor: tc.primary, opacity: canSendMsg ? 1 : 0.4 }]}
+        accessibilityRole="button"
+        accessibilityLabel="Send message"
       >
-        {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
+        {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-up" size={20} color="#fff" />}
       </Pressable>
     </View>
   );
@@ -481,47 +668,56 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const PanelBody = (
     <>
       <View style={[styles.slimHeader, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
-        <View style={styles.headerLeft}>
-          <Text style={[styles.headerTitle, { color: tc.text }]} numberOfLines={1} ellipsizeMode="tail">
-            {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
+        <Text style={[styles.headerTitle, { color: tc.text }]} numberOfLines={1} ellipsizeMode="tail">
+          {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
+        </Text>
+        {(!!startLabel || !!timeLabel) && (
+          <Text style={[styles.headerDate, { color: tc.subtle }]}>
+            {startLabel}
+            {startLabel && timeLabel ? ' · ' : ''}
+            {timeLabel}
           </Text>
-          {(!!startLabel || !!timeLabel) && (
-            <Text style={[styles.headerDate, { color: tc.subtle }]}>
-              {startLabel}
-              {startLabel && timeLabel ? ' · ' : ''}
-              {timeLabel}
-            </Text>
-          )}
-          <Pressable
-            onPress={() => { tap(); setAttendeesOpen(true); }}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.goingChip,
-              { backgroundColor: tc.inputBg, borderColor: tc.border },
-              pressed && { opacity: 0.85 },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={`${attendees.count} going, tap to see who`}
-          >
-            <Text style={[styles.goingText, { color: tc.text }]}>
-              {attendees.count} going
-            </Text>
-          </Pressable>
-        </View>
-
-        {iAmIn ? (
-          <View style={[styles.imInChip, styles.imInChipDone]}>
-            <Text style={[styles.imInText, styles.imInTextDone]}>✓ I&apos;m in</Text>
-          </View>
-        ) : (
-          <Pressable
-            onPress={handleImIn}
-            style={({ pressed }) => [styles.imInChip, { backgroundColor: tc.primary }, pressed && { opacity: 0.9 }]}
-            hitSlop={8}
-          >
-            <Text style={styles.imInText}>I&apos;m in</Text>
-          </Pressable>
         )}
+        <Pressable
+          onPress={() => { tap(); setAttendeesOpen(true); }}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.goingChip,
+            { backgroundColor: tc.inputBg, borderColor: tc.border },
+            pressed && { opacity: 0.85 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={`${attendees.count} going, tap to see who`}
+        >
+          <Text style={[styles.goingText, { color: tc.text }]}>
+            {attendees.count} going
+          </Text>
+        </Pressable>
+
+        {/* "I'm in" is a fully separate overlay: it does NOT touch the centered title/date/going
+            column (that block is left exactly as it was). It floats in the right half of the header,
+            centered in the gap right of the going chip and bottom-aligned to sit level with it. */}
+        <View style={styles.imInWrap} pointerEvents="box-none">
+          {iAmIn ? (
+            <Pressable
+              onPress={handleUndoImIn}
+              style={({ pressed }) => [styles.imInChip, styles.imInChipDone, pressed && { opacity: 0.85 }]}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="You're in. Tap to undo."
+            >
+              <Text style={[styles.imInText, styles.imInTextDone]}>✓ I&apos;m in</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={handleImIn}
+              style={({ pressed }) => [styles.imInChip, { backgroundColor: tc.primary }, pressed && { opacity: 0.9 }]}
+              hitSlop={8}
+            >
+              <Text style={styles.imInText}>I&apos;m in</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
 
       {!!beaconMessage && (
@@ -549,7 +745,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         style={styles.listArea}
         onLayout={(e) => setListViewportH(e.nativeEvent.layout.height)}
       >
-        {hasRealMessages && isListScrollable && scrollY > 24 && (
+        {hasRealMessages && isListScrollable && showJump && (
           <Pressable
             onPress={scrollToTop}
             hitSlop={10}
@@ -596,49 +792,143 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
               )
             ) : (
               <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                {online ? "No messages yet" : "Can&apos;t load messages. No internet connection."}
+                {online ? "No messages yet. Say something 👋" : "Can&apos;t load messages. No internet connection."}
               </Text>
             )
           }
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
+            // The beacon header already says "Beacon from X", so a "put out the beacon" row is just
+            // noise (and doubled up on an off/on/off). Hide any that were written before.
+            if (item.type === 'system' && item.subtype === 'extinguished') return null;
+
+            // Day divider ("Today" / "Yesterday" / date) the first time each calendar day appears.
+            const prevAny = messages[index - 1];
+            const showDay =
+              item.createdAt.getTime() > 0 &&
+              (!prevAny || !isSameDay(prevAny.createdAt, item.createdAt));
+            const dayDivider = showDay ? (
+              <View style={styles.dayDivider}>
+                <Text style={[styles.dayDividerText, { color: tc.subtle, backgroundColor: tc.inputBg }]}>
+                  {formatDayLabel(item.createdAt)}
+                </Text>
+              </View>
+            ) : null;
+
             if (item.type === 'system') {
+              const isRsvp = item.subtype === 'im-in';
               return (
-                <View style={[styles.systemRow, { backgroundColor: tc.inputBg }]}>
-                  <Text style={[styles.systemText, { color: tc.subtle }]}>{item.text}</Text>
-                </View>
+                <>
+                  {dayDivider}
+                  <View style={[styles.systemRow, { backgroundColor: tc.inputBg }]}>
+                    {isRsvp ? (
+                      <Text style={styles.systemText}>
+                        <Text>🔥 </Text>
+                        <Text style={{ color: tc.primary, fontWeight: '800' }}>{item.actorName || 'Someone'}</Text>
+                        <Text style={{ color: tc.subtle }}> is in</Text>
+                      </Text>
+                    ) : (
+                      <Text style={[styles.systemText, { color: tc.subtle }]}>{item.text}</Text>
+                    )}
+                  </View>
+                </>
               );
             }
 
             const mine = item.authorUid === me?.uid;
+            // Group consecutive messages from the same sender within 3 minutes: tighter spacing,
+            // sender name only on the first of a THEIR-group, timestamp only on the last of a group.
+            const prev = messages[index - 1];
+            const next = messages[index + 1];
+            const GROUP_MS = 3 * 60 * 1000;
+            const samePrev =
+              !!prev && prev.type !== 'system' && prev.authorUid === item.authorUid &&
+              item.createdAt.getTime() - prev.createdAt.getTime() < GROUP_MS;
+            const sameNext =
+              !!next && next.type !== 'system' && next.authorUid === item.authorUid &&
+              next.createdAt.getTime() - item.createdAt.getTime() < GROUP_MS;
+            const showName = !mine && !samePrev;
+            const showTime = !sameNext;
+            const isGif = item.kind === 'gif' && !!item.media?.url;
 
             return (
-              <View style={[styles.msgRow, mine ? styles.msgRowMine : styles.msgRowTheirs]}>
-                <View style={[styles.bubble, mine ? [styles.bubbleMine, { backgroundColor: tc.bubbleMine, borderColor: tc.bubbleMineBorder }] : [styles.bubbleTheirs, { backgroundColor: tc.bubbleTheirs, borderColor: tc.bubbleTheirsBorder }]]}>
-                  <View style={styles.metaRow}>
-                    <Text style={[styles.msgMeta, { color: tc.subtle }]} numberOfLines={1} ellipsizeMode="tail">
-                      {(item.authorName || (mine ? 'You' : 'Friend'))}
-                      {' • '}
-                      {(() => {
-                        const d = item.createdAt;
-                        const now = new Date();
-                        const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-                        const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                        if (isToday) return time;
-                        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time;
-                      })()}
+              <>
+              {dayDivider}
+              <View
+                style={[
+                  styles.msgRow,
+                  mine ? styles.msgRowMine : styles.msgRowTheirs,
+                  { marginTop: samePrev ? 2 : 10 },
+                ]}
+              >
+                <View style={[styles.msgCol, { alignItems: mine ? 'flex-end' : 'flex-start' }]}>
+                  {showName && (
+                    <Text style={[styles.senderName, { color: tc.subtle }]} numberOfLines={1}>
+                      {item.authorName || 'Friend'}
                     </Text>
-                    <Pressable
-                      onPress={() => openMenu(item)}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel="Message options"
-                    >
-                      <Text style={[styles.dotsInline, { color: tc.subtle }]}>⋯</Text>
-                    </Pressable>
-                  </View>
-                  <Text selectable style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
+                  )}
+                  <Pressable
+                    onPress={isGif ? () => { tap(); setGifViewer(item.media!.url); } : undefined}
+                    onLongPress={() => openMenu(item)}
+                    delayLongPress={250}
+                    style={
+                      isGif
+                        ? styles.gifBubble
+                        : [
+                            styles.bubble,
+                            mine
+                              ? [styles.bubbleMine, { backgroundColor: tc.bubbleMine, borderColor: tc.bubbleMineBorder }]
+                              : [styles.bubbleTheirs, { backgroundColor: tc.bubbleTheirs, borderColor: tc.bubbleTheirsBorder }],
+                          ]
+                    }
+                    accessibilityRole={isGif ? 'imagebutton' : 'text'}
+                    accessibilityLabel={isGif ? `GIF from ${item.authorName || 'friend'}, double tap to expand` : undefined}
+                    accessibilityHint="Long press for options"
+                  >
+                    {isGif ? (
+                      <Image
+                        source={{ uri: item.media!.url }}
+                        style={{ width: gifDims(item.media!).w, height: gifDims(item.media!).h, borderRadius: 13 }}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        transition={120}
+                      />
+                    ) : (
+                      <Text style={[styles.msgText, { color: tc.text }]}>{item.text}</Text>
+                    )}
+                  </Pressable>
+                  {item.reactions && Object.values(item.reactions).some((u) => u.length > 0) && (
+                    <View style={[styles.reactionChipsRow, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
+                      {Object.entries(item.reactions)
+                        .filter(([, u]) => u.length > 0)
+                        .map(([em, u]) => {
+                          const active = !!(me && u.includes(me.uid));
+                          return (
+                            <Pressable
+                              key={em}
+                              onPress={() => handleReact(item, em)}
+                              hitSlop={4}
+                              style={[
+                                styles.reactionChip,
+                                { backgroundColor: tc.inputBg, borderColor: active ? tc.primary : tc.border },
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`${em} reaction, ${u.length}, double tap to toggle`}
+                            >
+                              <Text style={styles.reactionChipEmoji}>{em}</Text>
+                              {u.length > 1 && (
+                                <Text style={[styles.reactionChipCount, { color: tc.subtle }]}>{u.length}</Text>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                    </View>
+                  )}
+                  {showTime && (
+                    <Text style={[styles.msgTime, { color: tc.subtle }]}>{formatMsgTime(item.createdAt)}</Text>
+                  )}
                 </View>
               </View>
+              </>
             );
           }}
         />
@@ -647,13 +937,42 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       {ComposerRow}
 
       <Modal
-        visible={!!menuFor && Platform.OS !== 'ios'}
+        visible={!!menuFor}
         transparent
         animationType="fade"
         onRequestClose={() => setMenuFor(null)}
       >
         <Pressable style={[styles.menuBackdrop, { backgroundColor: tc.backdrop }]} onPress={() => setMenuFor(null)}>
           <View style={[styles.menuSheet, { backgroundColor: tc.card }]}>
+            <View style={styles.reactionBar}>
+              {REACTION_EMOJIS.map((em) => {
+                const active = !!(menuFor && me && menuFor.reactions?.[em]?.includes(me.uid));
+                return (
+                  <Pressable
+                    key={em}
+                    onPress={() => { if (menuFor) handleReact(menuFor, em); }}
+                    hitSlop={6}
+                    style={({ pressed }) => [
+                      styles.reactionEmojiBtn,
+                      active && { backgroundColor: tc.inputBg },
+                      pressed && { opacity: 0.6 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`React ${em}`}
+                  >
+                    <Text style={styles.reactionEmoji}>{em}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
+
+            {menuFor && menuFor.kind !== 'gif' && !!menuFor.text && (
+              <Pressable style={styles.menuItem} onPress={() => { if (menuFor) handleCopy(menuFor); }}>
+                <Text style={[styles.menuText, { color: tc.text }]}>Copy</Text>
+              </Pressable>
+            )}
+
             <Pressable
               style={styles.menuItem}
               onPress={() => { if (menuFor) handleReport(menuFor); }}
@@ -702,6 +1021,35 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
               <Text style={[styles.menuText, { color: tc.text }]}>Close</Text>
             </Pressable>
           </View>
+        </Pressable>
+      </Modal>
+
+      <GifPicker visible={gifOpen} onClose={() => setGifOpen(false)} onPick={handleSendGif} />
+
+      <Modal
+        visible={!!gifViewer}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGifViewer(null)}
+      >
+        <Pressable style={styles.gifViewerBackdrop} onPress={() => setGifViewer(null)}>
+          {!!gifViewer && (
+            <Image
+              source={{ uri: gifViewer }}
+              style={styles.gifViewerImage}
+              contentFit="contain"
+              cachePolicy="memory-disk"
+            />
+          )}
+          <Pressable
+            style={styles.gifViewerClose}
+            onPress={() => setGifViewer(null)}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <Ionicons name="close" size={26} color="#fff" />
+          </Pressable>
         </Pressable>
       </Modal>
     </>
@@ -805,34 +1153,45 @@ const styles = StyleSheet.create({
   },
 
   slimHeader: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 10,
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#F8FAFF',
   },
-  headerLeft: {
-    flex: 1,
-    marginRight: 10,
+  // "I'm in" overlay. Occupies the right slice of the header (left:'65%' -> right:0) and centers its
+  // content, so the chip sits closer to the right edge (roughly halving the old gap to the container
+  // edge) while staying clear of the centered going chip. Bottom padding matches the header's
+  // paddingVertical so it sits level with the going chip's bottom. This is a pure overlay: it never
+  // affects the layout of the centered title/date/going column.
+  imInWrap: {
+    position: 'absolute',
+    left: '65%',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingBottom: 10,
   },
   headerTitle: {
     fontSize: 15,
     fontWeight: '800',
     color: '#0B1426',
+    textAlign: 'center',
   },
   headerDate: {
     fontSize: 12,
     color: '#64748B',
-    marginTop: 1,
+    marginTop: 2,
+    textAlign: 'center',
   },
   goingChip: {
-    alignSelf: 'flex-start',
-    marginTop: 4,
+    marginTop: 8,
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
   },
@@ -927,6 +1286,7 @@ const styles = StyleSheet.create({
   systemRow: {
     alignItems: 'center',
     paddingVertical: 4,
+    marginVertical: 6,
     alignSelf: 'center',
     backgroundColor: '#F0F4FF',
     paddingHorizontal: 12,
@@ -936,6 +1296,7 @@ const styles = StyleSheet.create({
 
   inputRow: {
     flexDirection: 'row',
+    alignItems: 'flex-end',
     gap: 8,
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
@@ -965,6 +1326,105 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendTxt: { color: '#fff', fontWeight: '800', fontSize: 15 },
+
+  composerPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingVertical: 4,
+    minHeight: 40,
+  },
+  composerInput: {
+    flex: 1,
+    fontSize: 15,
+    paddingTop: Platform.OS === 'ios' ? 8 : 6,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 6,
+    maxHeight: 120,
+  },
+  charCount: {
+    fontSize: 11,
+    fontWeight: '700',
+    alignSelf: 'center',
+    paddingHorizontal: 4,
+  },
+  gifBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginLeft: 4,
+  },
+  gifBtnText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  sendCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  msgCol: { maxWidth: '82%' },
+  senderName: { fontSize: 11, fontWeight: '600', marginBottom: 2, marginHorizontal: 6 },
+  msgTime: { fontSize: 10, marginTop: 3, marginHorizontal: 4 },
+  gifBubble: {
+    padding: 3,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  gifViewerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gifViewerImage: { width: '92%', height: '72%' },
+
+  reactionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+  },
+  reactionEmojiBtn: { padding: 8, borderRadius: 999 },
+  reactionEmoji: { fontSize: 24 },
+  reactionChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  reactionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  reactionChipEmoji: { fontSize: 12 },
+  reactionChipCount: { fontSize: 11, fontWeight: '700' },
+
+  dayDivider: { alignItems: 'center', marginVertical: 10 },
+  dayDividerText: {
+    fontSize: 11,
+    fontWeight: '700',
+    overflow: 'hidden',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  gifViewerClose: {
+    position: 'absolute',
+    top: 52,
+    right: 20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   menuBackdrop: {
     flex: 1,

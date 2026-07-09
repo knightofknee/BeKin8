@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { auth, db } from "@/firebase.config";
 import {
+  addDoc,
   arrayUnion,
   collection,
   deleteDoc,
@@ -22,7 +23,6 @@ import {
   onSnapshot,
   orderBy,
   query,
-  setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -238,14 +238,31 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
       if (id) {
         await updateDoc(doc(db, "FriendGroups", id), base);
       } else {
-        // deterministic by name+owner to avoid dup spam; otherwise use addDoc
-        // Here we use a deterministic id for UX; if you want multiple same-name groups, switch to addDoc.
-        id = `${meUid}_${nm.toLowerCase().replace(/\s+/g, "-")}`;
-        await setDoc(
-          doc(db, "FriendGroups", id),
-          { ...base, createdAt: new Date() },
-          { merge: true }
+        // NEW group: reject a name whose old deterministic id would collide with the reserved
+        // `${uid}__tutorial_test` group (e.g. a name of "_tutorial_test").
+        const derivedId = `${meUid}_${nm.toLowerCase().replace(/\s+/g, "-")}`;
+        if (derivedId.endsWith("__tutorial_test")) {
+          Alert.alert("Reserved name", "That group name is reserved. Please choose another.");
+          return;
+        }
+        // Enforce name-uniqueness per owner before creating.
+        const dupSnap = await getDocs(
+          query(
+            collection(db, "FriendGroups"),
+            where("ownerUid", "==", meUid),
+            where("name", "==", nm)
+          )
         );
+        if (!dupSnap.empty) {
+          Alert.alert("Duplicate name", "You already have a group with that name.");
+          return;
+        }
+        // Random id so a new group can never silently overwrite a renamed one.
+        const ref = await addDoc(collection(db, "FriendGroups"), {
+          ...base,
+          createdAt: new Date(),
+        });
+        id = ref.id;
       }
 
       onSaved?.({

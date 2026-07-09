@@ -1,5 +1,5 @@
 // components/FriendsBeaconsList.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
@@ -14,7 +14,9 @@ import {
   where,
 } from 'firebase/firestore';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
+import { formatTimeHHmmDisplay } from '../lib/beaconTime';
 import ExampleBeaconCard from './tutorial/ExampleBeaconCard';
+import type { ThemeColors } from './ui/colors';
 
 export type FriendBeacon = {
   id: string;
@@ -97,13 +99,81 @@ async function fetchProfileNames(uids: string[]): Promise<Record<string, string>
   return out;
 }
 
+// Hoisted to module scope (was previously defined inside the component body, which
+// created a brand-new component TYPE on every parent render and force-remounted every
+// card). React.memo skips re-rendering when its props are shallow-equal.
+type FriendBeaconItemProps = {
+  beacon: FriendBeacon;
+  ownerLabel: string;
+  isFirst: boolean;
+  onFirstLayout: (height: number) => void;
+  onSelect: (beacon: FriendBeacon) => void;
+  tc: ThemeColors;
+};
+
+const FriendBeaconItem = React.memo(function FriendBeaconItem({
+  beacon,
+  ownerLabel,
+  isFirst,
+  onFirstLayout,
+  onSelect,
+  tc,
+}: FriendBeaconItemProps) {
+  const isToday = sameDay(beacon.startAt, new Date());
+  const timeLabel = formatTimeHHmmDisplay(beacon.timeHHmm);
+
+  return (
+    <Pressable
+      onLayout={(e) => {
+        if (isFirst) onFirstLayout(Math.max(1, e.nativeEvent.layout.height));
+      }}
+      onPress={() => onSelect(beacon)}
+      style={({ pressed }) => [
+        styles.beaconItem,
+        isToday && beacon.active
+          ? styles.cardActiveToday
+          : !isToday
+          ? styles.cardFuture
+          : styles.cardTodayScheduled,
+        pressed && { opacity: 0.85 },
+      ]}
+    >
+      <View style={[styles.avatar, { backgroundColor: tc.primary }]}>
+        <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.beaconOwner} numberOfLines={1}>
+          {ownerLabel}
+        </Text>
+        <Text style={styles.beaconWhen} numberOfLines={1}>
+          {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
+          {timeLabel ? ` - ${timeLabel}` : ''}
+        </Text>
+        <Text style={styles.beaconMsg} numberOfLines={2}>
+          {beacon.message}
+        </Text>
+      </View>
+    </Pressable>
+  );
+});
+
 export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = false }: Props) {
   const { colors: tc } = useTheme();
   const online = useOnline();
   const meUid = auth.currentUser?.uid || null;
 
   // local caches/state for list
-  const [friendUids, setFriendUids] = useState<string[]>([]);
+  // Two independent friend sources kept separate so a shrinking snapshot actually
+  // removes uids: friendUids is DERIVED as the union of the CURRENT friends
+  // subcollection snapshot and the CURRENT FriendEdges snapshot. The old approach
+  // unioned each snapshot with previous state, so unfriending/blocking someone
+  // mid-session never dropped them (their lit beacons lingered until app restart).
+  const [subFriendUids, setSubFriendUids] = useState<string[]>([]);
+  const [edgeFriendUids, setEdgeFriendUids] = useState<string[]>([]);
+  const friendUids = useMemo(
+    () => Array.from(new Set([...subFriendUids, ...edgeFriendUids])),
+    [subFriendUids, edgeFriendUids]
+  );
   const [beacons, setBeacons] = useState<FriendBeacon[]>([]);
   const nameCacheRef = useRef<Record<string, string>>({});
   const beaconUnsubsRef = useRef<(() => void)[]>([]);
@@ -201,7 +271,8 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
   useEffect(() => {
     const me = auth.currentUser;
     if (!me) {
-      setFriendUids([]);
+      setSubFriendUids([]);
+      setEdgeFriendUids([]);
       setFriendsListReady(true);
       setEdgesReady(true);
       return;
@@ -223,7 +294,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
               }
             }
           });
-          setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
+          setSubFriendUids(Array.from(uids));
           setFriendsListReady(true);
         },
         () => setFriendsListReady(true) // on error, mark ready to avoid perpetual loading
@@ -241,7 +312,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
             const other = arr.find((u) => u !== me.uid);
             if (other) uids.add(other);
           });
-          setFriendUids((prev) => Array.from(new Set([...prev, ...Array.from(uids)])));
+          setEdgeFriendUids(Array.from(uids));
           setEdgesReady(true);
         },
         () => setEdgesReady(true)
@@ -328,6 +399,9 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
 
       const createdMs = getMillis(data?.createdAt) || getMillis(data?.updatedAt) || 0;
 
+      const timeHHmm =
+        typeof data?.timeHHmm === 'string' && data.timeHHmm.trim() ? data.timeHHmm : null;
+
       candidates.push({
         id,
         ownerUid,
@@ -336,6 +410,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
         active,
         scheduled,
         message: msg,
+        timeHHmm,
         _createdMs: createdMs,
       });
     });
@@ -488,47 +563,12 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
     beaconUnsubsRef.current = unsubs;
   }, [friendUids, todayStart, windowEnd]);
 
-  // UI bits
-  const FriendBeaconItem = ({ beacon, index }: { beacon: FriendBeacon; index: number }) => {
-    const isToday = sameDay(beacon.startAt, new Date());
-    // Prefer live cache (Profiles.displayName) over stamped/beacon ownerName
-    const ownerLabel = (nameCacheRef.current[beacon.ownerUid] || beacon.displayName || 'Friend').toString();
-
-    return (
-      <Pressable
-        onLayout={(e) => {
-          if (index === 0 && !firstCardH) {
-            setFirstCardH(Math.max(1, e.nativeEvent.layout.height));
-          }
-        }}
-        onPress={() => onSelect(beacon)}
-        style={({ pressed }) => [
-          styles.beaconItem,
-          isToday && beacon.active
-            ? styles.cardActiveToday
-            : !isToday
-            ? styles.cardFuture
-            : styles.cardTodayScheduled,
-          pressed && { opacity: 0.85 },
-        ]}
-      >
-        <View style={[styles.avatar, { backgroundColor: tc.primary }]}>
-          <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.beaconOwner} numberOfLines={1}>
-            {ownerLabel}
-          </Text>
-          <Text style={styles.beaconWhen} numberOfLines={1}>
-            {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
-          </Text>
-          <Text style={styles.beaconMsg} numberOfLines={2}>
-            {beacon.message}
-          </Text>
-        </View>
-      </Pressable>
-    );
-  };
+  // Stable first-card measurement callback. Only records the first non-zero
+  // height (matches the prior `!firstCardH` guard): once set, the functional
+  // update returns the same value so React bails out of re-rendering.
+  const handleFirstLayout = useCallback((h: number) => {
+    setFirstCardH((prev) => prev || h);
+  }, []);
 
   const listHasOverflow = useMemo(() => {
     if (!firstCardH) return false;
@@ -580,7 +620,15 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
               contentContainerStyle={styles.cardsWrap}
             >
               {beacons.map((b, i) => (
-                <FriendBeaconItem key={b.id} beacon={b} index={i} />
+                <FriendBeaconItem
+                  key={b.id}
+                  beacon={b}
+                  ownerLabel={(nameCacheRef.current[b.ownerUid] || b.displayName || 'Friend').toString()}
+                  isFirst={i === 0}
+                  onFirstLayout={handleFirstLayout}
+                  onSelect={onSelect}
+                  tc={tc}
+                />
               ))}
               <View style={{ height: 8 }} />
             </ScrollView>

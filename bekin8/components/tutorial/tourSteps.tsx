@@ -118,6 +118,33 @@ function TapNounBody({ initialNoun, template }: { initialNoun: string; template:
   return <Text style={[s.body, { color: colors.text }]}>{template(noun)}</Text>;
 }
 
+// Body for the FULL tour's first step. Keeps the live "tap the {noun}" instruction, then presents the
+// quick-setup choice up front as a clear affordance (rather than the easy-to-miss stacked nav button):
+// a green "Try the quick setup" button that switches to the 2-minute speed tour via ctx.onSpeedTour.
+function LightBeaconBody({ initialNoun, onSpeedTour }: { initialNoun: string; onSpeedTour: () => void }) {
+  const { colors } = useTheme();
+  return (
+    <View>
+      <TapNounBody
+        initialNoun={initialNoun}
+        template={(noun) => `A beacon tells friends you're free to hang out. Tap the ${noun} to light it, tap again to put it out. Nothing is shared yet: that starts once you add a username and a friend.`}
+      />
+      <Text style={[s.body, { color: colors.subtle, marginTop: 10 }]}>
+        In a hurry? The quick setup covers just the essentials: a username, a friend, and lighting a beacon.
+      </Text>
+      <Pressable
+        onPress={onSpeedTour}
+        style={[s.enableBtn, { backgroundColor: colors.success, flexDirection: "row", justifyContent: "center", gap: 8 }]}
+        accessibilityRole="button"
+        accessibilityLabel="Try the quick setup, the 2 minute path"
+      >
+        <Ionicons name="flash" size={18} color="#fff" />
+        <Text style={[s.enableTxt, { color: "#fff" }]}>Try the quick setup</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 // Live body for the speed tour's "add a friend" step (2b). Reads the friend count live via
 // useOnboarding, so the instant the user adds a friend the text flips from "add me" to a congrats. The
 // actual friends list (on the Friends screen) swaps the Add-Brian card for the new friend row on its own.
@@ -178,18 +205,14 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       id: "light-beacon-demo",
       target: "beacon-logs",
       title: "Light your beacon",
-      body: (
-        <TapNounBody
-          initialNoun={ctx.tapNoun}
-          template={(noun) => `A beacon tells friends you're free to hang out. Tap the ${noun} to light it, tap again to put it out. Nothing is shared yet: that starts once you add a username and a friend.`}
-        />
-      ),
+      // Body presents the quick-setup choice up front (a clear "Try the quick setup" affordance) instead
+      // of only the easy-to-miss stacked nav button; the speed-tour wiring (ctx.onSpeedTour) is unchanged.
+      body: <LightBeaconBody initialNoun={ctx.tapNoun} onSpeedTour={ctx.onSpeedTour} />,
       interactive: true,
       placement: "top", // keep the callout above the logs so it never covers the "tap the logs" caption below
       holePadTop: ctx.holePadTop, // reach UP over the structure + the current skin's full flame height
       holePadBottom: -16, // lower edge contains the full structure (incl. brazier legs) but clears the chat button
       nextTarget: "beacon-options-cta", // Next skips the chat branch below (only a real light opts into it)
-      speedTour: ctx.onSpeedTour, // green button: jump to the short username/friend/light path
       onEnter: home,
     },
     {

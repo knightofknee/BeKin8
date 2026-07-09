@@ -9,17 +9,20 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { signOut } from "firebase/auth";
 import { auth } from "../firebase.config";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { needsVerification, isGated, daysLeft, resendVerification } from "../lib/emailVerification";
+import { logout } from "../lib/logout";
 
 // Banner dismissal is per-session per-user (no persistence). Module-level so a remount of the
 // gate (e.g. theme change re-render tree churn) doesn't resurrect a dismissed banner.
 let dismissedForUid: string | null = null;
 
-const RELOAD_POLL_MS = 20_000;
+// Poll fast only while the hard gate overlay blocks the app; during the grace period the
+// AppState-foreground re-check carries the unblock, so the interval backs off to save battery/data.
+const GATED_POLL_MS = 20_000;
+const GRACE_POLL_MS = 60_000;
 const NOTE_CLEAR_MS = 3_000;
 
 export default function VerifyEmailGate() {
@@ -56,19 +59,21 @@ export default function VerifyEmailGate() {
     setTick((t) => t + 1);
   }, []);
 
-  // While verification is pending, re-check on foreground and every 20s, so verifying in the
-  // mail app then returning to BeKin unblocks without manual steps. Mounted only while needed.
+  // While verification is pending, re-check on foreground so verifying in the mail app then
+  // returning to BeKin unblocks without manual steps. The background interval polls fast only
+  // while gated; during the grace period it backs off (foreground re-check does the work).
+  // Mounted only while needed.
   useEffect(() => {
     if (!relevant) return;
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") reloadAndCheck();
     });
-    const interval = setInterval(reloadAndCheck, RELOAD_POLL_MS);
+    const interval = setInterval(reloadAndCheck, gated ? GATED_POLL_MS : GRACE_POLL_MS);
     return () => {
       sub.remove();
       clearInterval(interval);
     };
-  }, [relevant, reloadAndCheck]);
+  }, [relevant, gated, reloadAndCheck]);
 
   const handleResend = useCallback(async () => {
     const u = auth.currentUser;
@@ -84,7 +89,10 @@ export default function VerifyEmailGate() {
 
   const handleSignOut = useCallback(async () => {
     try {
-      await signOut(auth); // _layout.tsx sees user=null and routes to "/"
+      // Drop this device's push token first, then sign out, so a later account on this
+      // device does not double-register and inherit the prior account's notifications.
+      // _layout.tsx sees user=null and routes to "/".
+      await logout();
     } catch {
       // ignore; auth listener handles state either way
     }
