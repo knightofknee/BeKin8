@@ -54,7 +54,7 @@ export default function NotificationsPermission() {
       <View style={s.content}>
         <Text style={[s.h1, { color: colors.text }]}>Notifications</Text>
         <Text style={[s.p, { color: colors.subtle }]}>
-          BeKin only notifies you about things that matter. Never spam. We send a notification
+          BeKin only notifies you about things that matter. Never spam. We can send a notification
           when:
         </Text>
 
@@ -66,11 +66,14 @@ export default function NotificationsPermission() {
         </View>
 
         <Text style={[s.p, { color: colors.subtle }]}>
-          You’re always in control. Turn any of these on or off any time below.
+          You’re always in control. Turn any of these on or off any time below, and turn beacon
+          notifications off by friend on the Friends page.
         </Text>
 
+        {/* The OS permission plus the friend-beacon opt-in is all this turns on; every other type
+            above stays off until its own switch is flipped, so the label promises only beacons. */}
         <Pressable style={[s.btn, { backgroundColor: colors.primary }]} onPress={request} disabled={busy}>
-          {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Allow notifications</Text>}
+          {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Turn on beacon notifications</Text>}
         </Pressable>
 
         <Pressable onPress={() => { tap(); router.push("/settings"); }} style={s.manageBtn}>

@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Switch, ScrollView } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
 import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
@@ -10,7 +10,6 @@ import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { ensureNotifyPermission } from "../lib/notifyPermission";
-import { getFireSoundEnabled, setFireSoundEnabled, onFireSoundChange } from "../lib/fireSoundPref";
 import { useTourTarget } from "../providers/TourProvider";
 import { tap, selection } from '../utils/haptics';
 import { logout } from '../lib/logout';
@@ -27,6 +26,7 @@ const colors = {
 
 export default function SettingsScreen() {
   const { colors: tc, isDark, toggleTheme } = useTheme();
+  const insets = useSafeAreaInsets();
   const { profile, profileLoaded, updateProfile } = useAuth();
   const [commentsEnabled, setCommentsEnabled] = useState(false);
   const [commentsBusy, setCommentsBusy] = useState(false);
@@ -39,12 +39,11 @@ export default function SettingsScreen() {
   const [commentOnCommentNotifyBusy, setCommentOnCommentNotifyBusy] = useState(false);
   const [newPostNotify, setNewPostNotify] = useState(false);
   const [newPostNotifyBusy, setNewPostNotifyBusy] = useState(false);
-  // Device-local "Fire sounds" preference (default ON; the read below confirms).
-  const [fireSounds, setFireSounds] = useState(true);
   const router = useRouter();
   const commentsTarget = useTourTarget("settings-comments");
   const commentNotifyTarget = useTourTarget("settings-comment-notify");
   const notifSectionTarget = useTourTarget("settings-notifications");
+  const darkModeTarget = useTourTarget("settings-darkmode");
 
   // Seed local state from cached profile once available
   React.useEffect(() => {
@@ -52,17 +51,6 @@ export default function SettingsScreen() {
       setCommentsEnabled(profile.commentsEnabled);
     }
   }, [profileLoaded]);
-
-  // Fire-sound preference (device-local) + keep in sync if toggled elsewhere.
-  useEffect(() => {
-    getFireSoundEnabled().then(setFireSounds);
-    return onFireSoundChange(setFireSounds);
-  }, []);
-  const handleToggleFireSounds = (val: boolean) => {
-    selection();
-    setFireSounds(val);
-    setFireSoundEnabled(val);
-  };
 
   // Live listeners for notification prefs
   React.useEffect(() => {
@@ -299,23 +287,17 @@ export default function SettingsScreen() {
           </View>
           </View>
 
-          {/* Fire sounds, device-local, default off (separate from the notification group above). */}
-          <View style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={[s.link, { color: tc.primary }]}>Fire sounds</Text>
-              <Text style={[s.subtle, { color: tc.subtle }]}>Play a soft crackle while your beacon is lit</Text>
-            </View>
-            <Switch
-              value={fireSounds}
-              onValueChange={handleToggleFireSounds}
-              trackColor={{ false: tc.border, true: tc.primary }}
-              thumbColor="#fff"
-            />
-          </View>
+          {/* Fire sounds live on the beacon page itself (the little volume button), not here. */}
+        </ScrollView>
 
-          {/* Push bottom actions down */}
-          <View style={{ flexGrow: 1 }} />
+        {/* Leftover space sits BETWEEN the rows and the bottom action group, so the buttons anchor
+            just above Advanced Settings at the bottom instead of dangling under the last row. On
+            small screens this collapses to 0 and the rows above become scrollable. */}
+        <View style={{ flex: 1 }} />
 
+        {/* Bottom action group: Edit Profile + theme toggle + Advanced Settings, always visible
+            above the BottomBar on every device, at every scroll position. */}
+        <View style={[s.bottomGroup, { marginBottom: 64 + Math.max(insets.bottom, 8) }]}>
           {/* Edit Profile, primary action */}
           <Pressable
             style={[s.prominentBtn, { backgroundColor: tc.primary }]}
@@ -329,7 +311,11 @@ export default function SettingsScreen() {
               rendering on simulator and device, unlike emoji) hung off a zero-width anchor a fixed
               gap left of the label, tinted to match the text. */}
           <Pressable
-            style={[s.prominentBtn, { backgroundColor: isDark ? '#FFFFFF' : '#111827' }]}
+            ref={darkModeTarget as any}
+            collapsable={false}
+            // marginBottom 0: the Advanced Settings link below centers itself with its own equal
+            // vertical padding; a trailing button margin here would push the link off-center.
+            style={[s.prominentBtn, { backgroundColor: isDark ? '#FFFFFF' : '#111827', marginBottom: 0 }]}
             onPress={() => { selection(); toggleTheme(); }}
           >
             <View>
@@ -350,19 +336,14 @@ export default function SettingsScreen() {
             </View>
           </Pressable>
 
-        </ScrollView>
-
-        {/* Advanced Settings: a FIXED footer pinned between the scroll area and the BottomBar,
-            OUTSIDE the ScrollView. The settings content is taller than the viewport, so anything
-            rendered after the buttons inside the scroll ends up below the fold; a pinned footer is
-            always visible and always centered, on every device, at every scroll position. */}
-        <Pressable
-          style={({ pressed }) => [s.advancedFooter, pressed && { opacity: 0.6 }]}
-          onPress={() => { tap(); router.push("/advanced-settings"); }}
-          hitSlop={8}
-        >
-          <Text style={[s.link, { color: tc.primary }]}>Advanced Settings ›</Text>
-        </Pressable>
+          <Pressable
+            style={({ pressed }) => [s.advancedLink, pressed && { opacity: 0.6 }]}
+            onPress={() => { tap(); router.push("/advanced-settings"); }}
+            hitSlop={8}
+          >
+            <Text style={[s.link, { color: tc.primary }]}>Advanced Settings ›</Text>
+          </Pressable>
+        </View>
       </SafeAreaView>
       <BottomBar />
     </>
@@ -389,14 +370,10 @@ const s = StyleSheet.create({
   headerSlotRight: { width: 92, flexDirection: "row", alignItems: "center", justifyContent: "flex-end" },
   logoutTxt: { color: colors.danger, fontWeight: "800", fontSize: 16, marginLeft: 4 },
 
-  // The scroll area takes only its content's height (shrinking into a scrollable region when the
-  // content overflows); the Advanced Settings footer below it flexes into ALL leftover space, so
-  // its centered link is truly centered in whatever room is actually available.
+  // The scroll area takes only its content's height, shrinking into a scrollable region when the
+  // rows don't fit (small phones); the flexible spacer + bottom action group below it stay put.
   body: { flexGrow: 0, flexShrink: 1 },
-  // The scroll area ends ABOVE the pinned Advanced Settings footer; zero bottom padding so the
-  // footer owns ALL the space below the Light Mode button (any padding here sits above the footer
-  // and shoves its centered link visually low).
-  bodyContent: { flexGrow: 1, padding: SCREEN_PAD, paddingBottom: 0 },
+  bodyContent: { padding: SCREEN_PAD, paddingBottom: 8 },
   row: {
     paddingVertical: 14,
     borderBottomWidth: 1,
@@ -416,16 +393,18 @@ const s = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800",
   },
-  // Footer strip between the scroll area and the 64pt absolute BottomBar. flexGrow absorbs all
-  // leftover vertical space; minHeight keeps a usable strip when the scroll content overflows.
-  advancedFooter: {
-    flexGrow: 1,
-    minHeight: 56,
+  // Bottom action group: Edit Profile + theme toggle + the Advanced Settings link, pinned above
+  // the BottomBar (marginBottom applied inline, insets-aware).
+  bottomGroup: {
+    paddingHorizontal: SCREEN_PAD,
+    paddingTop: 8,
+  },
+  // Equal padding above and below the text, and the Light Mode button above contributes no
+  // margin, so the link sits dead-center between that button and the BottomBar.
+  advancedLink: {
     alignItems: "center",
     justifyContent: "center",
-    // Biases the centered link UP a bit within the strip (per on-device eyeballing).
-    paddingBottom: 16,
-    marginBottom: 64,
+    paddingVertical: 18,
   },
   // Zero-width anchor pinned a space-width before the label's first character; the mode icon hangs
   // off its RIGHT edge. left: -5 = the gap between the icon's right edge and the label (roughly the

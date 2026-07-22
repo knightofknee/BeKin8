@@ -71,7 +71,16 @@ import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, selection, success } from '../utils/haptics';
 import TutorialResumeBanner from '../components/tutorial/TutorialResumeBanner';
-import { buildBeaconTour, buildSpeedTour, makeFirstBeaconStep, type BeaconTourCtx } from '../components/tutorial/tourSteps';
+import {
+  buildBeaconTour,
+  buildSpeedTour,
+  makeFirstBeaconStep,
+  makeFullUsernameStep,
+  makeSpeedUsernameStep,
+  makeSpeedFriendStep,
+  makeSpeedLightStep,
+  type BeaconTourCtx,
+} from '../components/tutorial/tourSteps';
 import { useTour, useTourTarget, type TourStep } from '../providers/TourProvider';
 import { useOnboarding } from '../providers/OnboardingProvider';
 import { getSeen, setSeen } from '../lib/tutorialFlags';
@@ -188,7 +197,10 @@ export default function HomeScreen() {
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   // Coach-mark tour: target refs to spotlight + the tour controller.
-  const { startTour, updateStepById, isActive, currentStepId, currentStepTarget, goToTarget, navDir, advance, back, restart } = useTour();
+  const { startTour, updateStepById, isActive, currentStepId, currentStepTarget, goToTarget, navDir, advance, advanceFromStepId, back, restart, endTour } = useTour();
+  // Mirrored into a ref so non-reactive code (doc-sync callbacks) can read the live tour state.
+  const tourActiveRef = useRef(isActive);
+  tourActiveRef.current = isActive;
   // Mirror the tour nav direction into a ref so the sheet animation can read it without re-running on
   // every nav. On a BACK navigation the sheet RESTORES (snaps) instead of replaying its open slide.
   const navDirRef = useRef(navDir);
@@ -369,6 +381,13 @@ export default function HomeScreen() {
           return;
         }
         const d: any = snap.data();
+        // An old notification can outlive the beacon: if it was put out or its day has passed,
+        // say so instead of dropping the user into a dead chat room.
+        const expMs = getMillis(d?.expiresAt);
+        if (d?.active !== true || (expMs && expMs < Date.now())) {
+          Alert.alert('Beacon ended', 'This beacon is gone, so its chat is closed.');
+          return;
+        }
         const stMs = getMillis(d?.startAt);
         setSelectedBeacon({
           id: bid,
@@ -508,13 +527,14 @@ export default function HomeScreen() {
           });
           setIsLit(true);
           setPlannedMessage(msg);
-          const testId = `${user.uid}__tutorial_test`;
-          const gids: string[] = (
-            Array.isArray(activeDoc.data?.groupIds)
-              ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
-              : []
-          ).filter((id: string) => id !== testId); // never re-select the tutorial test group from a doc
-          if (!onFirstBeaconStepRef.current) setSelectedGroupIds(gids); // final tour step forces test-only
+          // Mirror the doc's groups EXACTLY, including the tutorial test group. Filtering test out
+          // here made the sheet lie: a deliberately test-scoped beacon showed no group selected, and
+          // the next save silently wrote groupIds [] (= all friends). Never overwrites the forced
+          // test-only selection while a tour runs (tourActiveRef).
+          const gids: string[] = Array.isArray(activeDoc.data?.groupIds)
+            ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
+            : [];
+          if (!onFirstBeaconStepRef.current && !tourActiveRef.current) setSelectedGroupIds(gids);
         } else {
           setMyActiveBeacon(null);
           setIsLit(false);
@@ -534,13 +554,11 @@ export default function HomeScreen() {
             typeof plannedSoonest.data?.timeHHmm === 'string' ? plannedSoonest.data.timeHHmm : null,
           );
 
-          const testId = `${user.uid}__tutorial_test`;
-          const gids: string[] = (
-            Array.isArray(plannedSoonest.data?.groupIds)
-              ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
-              : []
-          ).filter((id: string) => id !== testId); // never re-select the tutorial test group from a doc
-          if (!onFirstBeaconStepRef.current) setSelectedGroupIds(gids); // final tour step forces test-only
+          // Mirror the doc's groups exactly (see the active branch above for why test is NOT filtered).
+          const gids: string[] = Array.isArray(plannedSoonest.data?.groupIds)
+            ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
+            : [];
+          if (!onFirstBeaconStepRef.current && !tourActiveRef.current) setSelectedGroupIds(gids);
         } else {
           setNextPlannedDate(null);
           // Do NOT wipe the time here: when a beacon is lit (active but no separate scheduled doc)
@@ -730,6 +748,26 @@ export default function HomeScreen() {
     return id;
   }, []);
 
+  // THE tutorial-safety net: whenever a tour is running on THIS home instance, the selection is
+  // test-only. The tour-start preselection alone was not enough: the tour navigates across screens,
+  // and a home remount wiped the in-memory selection to [] (= all friends), so a tutorial beacon
+  // once notified a brand-new user's real friend. Runs on mount and on tour start.
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!isActive || !uid) return;
+    setSelectedGroupIds([`${uid}__tutorial_test`]);
+    ensureTestGroup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]);
+
+  // Belt to the braces above: the WRITE-time scope. Any beacon written while a tour runs is
+  // test-scoped no matter what the local selection state says.
+  const tourSafeGroupIds = (): string[] => {
+    const uid = auth.currentUser?.uid;
+    if (isActive && uid) return [`${uid}__tutorial_test`];
+    return selectedGroupIds;
+  };
+
   // Guided first beacon (final tour step): pre-fill the test message, default to today, and select the
   // "test" group (notifies no one). It does NOT open the options sheet: the step is completed by LIGHTING
   // the beacon (tapping the structure, which writes active:true), Saving the sheet only schedules an
@@ -776,6 +814,41 @@ export default function HomeScreen() {
     }
   };
 
+  // Build the tour ctx from LIVE state. Used by startBeaconTour AND as the fallback for the live
+  // step-update effect: a mid-tour home REMOUNT nulls tourCtxRef, and the gated steps
+  // (username/friend/light) must still be able to unlock. Mirrors the set-first-beacon hardening:
+  // never let a home-local ref silently kill a live update.
+  const buildLiveTourCtx = (): BeaconTourCtx => {
+    const uDone0 = !!onboarding.steps.find((st) => st.key === 'username')?.done;
+    const fDone0 = !!onboarding.steps.find((st) => st.key === 'friend')?.done;
+    const beaconLit0 = !!isLit || !!myActiveBeacon; // currently lit/active (NOT a stale planned one)
+    const tourCtx: BeaconTourCtx = {
+      openSheet: () => setOptionsOpen(true),
+      closeSheet: () => setOptionsOpen(false),
+      goFriends: () => router.navigate('/friends'),
+      goHome: () => router.navigate('/home'),
+      goSettings: () => router.navigate('/settings'),
+      // The notifications step lives on /settings; jump back Home before opening the beacon sheet.
+      openFirstBeacon: () => openFirstBeaconCb.current(),
+      hasFriends: hasFriendsRef.current,
+      tapNoun: skin.tap.noun, // step 1 copy adapts to the current skin ("Tap the lighthouse …")
+      // Spotlight headroom over the structure box: the solid flame body tops out at roughly
+      // 170*flameScale px above the seat, which sits 180*origin below the box top; +12 covers the
+      // flickering tip. Flameless skins keep the original 70.
+      holePadTop: skin.fire === 'flame' ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 12) : 70,
+      beaconLit: beaconLit0,
+      usernameDone: uDone0,
+      friendDone: fDone0,
+      online,
+      onEnableNotifications: enableBeaconNotifications,
+      // The green "Speed tour" button (step 1) swaps the running tour to the short path in place.
+      onSpeedTour: () => restart(buildSpeedTour(tourCtx)),
+      // Speed-tour step 1 Back: return to the full tour at its step 1 (the steps already built).
+      onExitSpeedTour: () => restart(builtBeaconStepsRef.current ?? buildBeaconTour(tourCtx)),
+    };
+    return tourCtx;
+  };
+
   // Start (or replay) the beacon coach-mark tour. `startAtTarget` lets the resume banner jump to
   // the earliest incomplete setup step.
   const pendingStartTargetRef = useRef<string | undefined>(undefined);
@@ -784,6 +857,8 @@ export default function HomeScreen() {
   // effect below can refresh that one step (checklist + Done gate) via updateStepById without rebuilding
   // the whole array (which could shift indices if the add-brian step's presence changed mid-tour).
   const builtBeaconStepsRef = useRef<TourStep[] | null>(null);
+  // The ctx the running tour was built with; the live speed-step gates re-make steps from it.
+  const tourCtxRef = useRef<BeaconTourCtx | null>(null);
   // Sticky: latches true once the user has a username + a friend + a LIT beacon, all during this run.
   // Once true the final step shows the celebratory wrap-up with Done enabled, and STAYS there even if
   // the beacon is later put out.
@@ -822,36 +897,11 @@ export default function HomeScreen() {
       setPendingAutoStart(true);
       return;
     }
-    const uDone0 = !!onboarding.steps.find((st) => st.key === 'username')?.done;
-    const fDone0 = !!onboarding.steps.find((st) => st.key === 'friend')?.done;
-    const beaconLit0 = !!isLit || !!myActiveBeacon; // currently lit/active (NOT a stale planned one)
-    const tourCtx: BeaconTourCtx = {
-      openSheet: () => setOptionsOpen(true),
-      closeSheet: () => setOptionsOpen(false),
-      goFriends: () => router.navigate('/friends'),
-      goHome: () => router.navigate('/home'),
-      goSettings: () => router.navigate('/settings'),
-      // The notifications step lives on /settings; jump back Home before opening the beacon sheet.
-      openFirstBeacon: () => openFirstBeaconCb.current(),
-      hasFriends: hasFriendsRef.current,
-      tapNoun: skin.tap.noun, // step 1 copy adapts to the current skin ("Tap the lighthouse …")
-      // Spotlight headroom over the structure box: the solid flame body tops out at roughly
-      // 170*flameScale px above the seat, which sits 180*origin below the box top; +12 covers the
-      // flickering tip. Flameless skins keep the original 70.
-      holePadTop: skin.fire === 'flame' ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 12) : 70,
-      beaconLit: beaconLit0,
-      usernameDone: uDone0,
-      friendDone: fDone0,
-      online,
-      onEnableNotifications: enableBeaconNotifications,
-      // The green "Speed tour" button (step 1) swaps the running tour to the short path in place.
-      onSpeedTour: () => restart(buildSpeedTour(tourCtx)),
-      // Speed-tour step 1 Back: return to the full tour at its step 1 (the steps already built).
-      onExitSpeedTour: () => restart(builtBeaconStepsRef.current ?? buildBeaconTour(tourCtx)),
-    };
+    const tourCtx = buildLiveTourCtx();
     const builtSteps = buildBeaconTour(tourCtx);
     builtBeaconStepsRef.current = builtSteps;
-    reachedRef.current = uDone0 && fDone0 && beaconLit0; // start latched if already fully done
+    tourCtxRef.current = tourCtx; // the live speed-step updates below rebuild steps from this
+    reachedRef.current = tourCtx.usernameDone && tourCtx.friendDone && tourCtx.beaconLit; // start latched if already fully done
     lastGateSigRef.current = ''; // force the live effect to (re)apply for this run
     firstBeaconSeededRef.current = false; // re-seed the first-beacon sheet once for this run
     didFinishTourRef.current = false;
@@ -879,14 +929,9 @@ export default function HomeScreen() {
         builtBeaconStepsRef.current = null;
         reachedRef.current = false;
         firstBeaconSeededRef.current = false;
-        // Drop the tutorial test group the tour selected for the WHOLE run. The on-step effect only
-        // clears it when the user reaches the final step, so skipping earlier (or a replay Close) left
-        // real beacons scoped to the empty test group = reaches nobody. Unconditionally filter it out.
-        const closeUid = auth.currentUser?.uid;
-        if (closeUid) {
-          const testId = `${closeUid}__tutorial_test`;
-          setSelectedGroupIds((prev) => prev.filter((id) => id !== testId));
-        }
+        // NOTE: the group selection is deliberately NOT touched here. It mirrors the beacon doc
+        // (test group included), and the light confirm (describeAudience) tells the user when a
+        // beacon is test-scoped, so nothing is silently re-scoped behind their back.
         setSeen('beacon_chat');
         // Arm the one-time "who will see this" confirm for the first beacon lit AFTER this tour (the
         // tour ending, by finish OR skip, is what arms it, so even users who skip get warned once).
@@ -958,9 +1003,9 @@ export default function HomeScreen() {
     if (!testId) return;
     if (onStep && !was) {
       setSelectedGroupIds([testId]); // entered the step: test group only
-    } else if (!onStep && was) {
-      setSelectedGroupIds((prev) => prev.filter((id) => id !== testId)); // left it: drop the test group
     }
+    // Leaving the step does NOT strip the test group anymore: the selection mirrors whatever the
+    // beacon doc actually says, and the light confirm surfaces test scoping instead of hiding it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, currentStepId]);
 
@@ -978,13 +1023,39 @@ export default function HomeScreen() {
   useEffect(() => {
     const wasLit = prevLitForBranchRef.current;
     prevLitForBranchRef.current = isLit;
-    if (isActive && currentStepId === 'light-beacon-demo' && isLit && !wasLit && myActiveBeacon) {
+    // STRICT false->true edge: on a home REMOUNT (any tour navigation back to home, e.g. Back out
+    // of the speed tour) isLit starts as null while the beacon doc loads, and a loose `!wasLit`
+    // read that null->true load as a fresh light, bouncing an already-lit beacon into this branch.
+    if (isActive && currentStepId === 'light-beacon-demo' && isLit === true && wasLit === false && myActiveBeacon) {
       setSeen('beacon_chat');
       // Push history so Back from the chat mini-step returns to the fire/logs step (the edge-gate
       // above stops it from immediately re-branching when Back lands back on step 1).
       goToTarget('beacon-chat');
     }
   }, [isActive, currentStepId, isLit, myActiveBeacon, goToTarget]);
+
+  // LIVE speed-tour steps: the username/friend gates ungray Next the moment the task is done, and
+  // the single light step flips in place (tap-instruction with a grayed "Light your beacon" task ->
+  // congratulations with Done + the beacon-plus-options highlight). updateStepById is a same-index
+  // swap and a no-op when the id isn't in the running tour, so this is safe during the full tour.
+  useEffect(() => {
+    if (!isActive) return;
+    // Fallback ctx rebuild: a mid-tour home remount nulls tourCtxRef, and without this the
+    // username/friend/light gates could never unlock (Next stuck gray forever).
+    const ctx = tourCtxRef.current ?? (tourCtxRef.current = buildLiveTourCtx());
+    updateStepById('speed-username', makeSpeedUsernameStep(ctx, obUsernameDone));
+    updateStepById('speed-friend', makeSpeedFriendStep(ctx, obFriendDone));
+    updateStepById('speed-light', makeSpeedLightStep(ctx, isLit === true));
+    updateStepById('full-username', makeFullUsernameStep(ctx, obUsernameDone));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, obUsernameDone, obFriendDone, isLit]);
+
+  // Speed tour finale hand-off: the lit step-4 congrats says "Open Beacon options". Opening the
+  // sheet COMPLETES the tour right there, so the sheet is fully usable instead of squeezed under
+  // the coach-mark with its Save/Cancel outside the ring.
+  useEffect(() => {
+    if (isActive && currentStepId === 'speed-light' && isLit === true && optionsOpen) endTour(true);
+  }, [isActive, currentStepId, isLit, optionsOpen, endTour]);
 
   // Keep the options sheet OPEN whenever the tour is on a sheet step, including when the user steps
   // BACK into one from a later screen. (The per-step onEnter's openSheet closure can be stale after a
@@ -1022,12 +1093,22 @@ export default function HomeScreen() {
   }, [isLit, myActiveBeacon, usernameDone, friendDone, isActive]);
 
   // Decide ONCE whether to auto-pop the tour for a new user (the resume banner takes over after).
-  // Skipped when arriving via a notification deep link so we don't cover the opened beacon.
+  // Skipped when arriving via a notification deep link so we don't cover the opened beacon, and
+  // for an already-set-up user (username + friend + notifications) on a fresh install: their
+  // device flags are wiped but they don't need onboarding thrown at them again.
   const [pendingAutoStart, setPendingAutoStart] = useState(false);
+  const autoPopDecidedRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (autoPopDecidedRef.current) return;
       if (params.beaconId) return;
+      if (!onboarding.loaded) return; // wait until setup state is known; effect re-runs when it is
+      autoPopDecidedRef.current = true;
+      if (onboarding.allDone) {
+        setSeen('beacon_intro'); // never auto-pop; the ? button still replays on demand
+        return;
+      }
       const [done, introShown] = await Promise.all([getSeen('beacon'), getSeen('beacon_intro')]);
       if (cancelled) return;
       if (!done && !introShown) {
@@ -1039,7 +1120,7 @@ export default function HomeScreen() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [onboarding.loaded]);
 
   // Start the auto-shown tour only once Home's content (hence the spotlight targets) is mounted,
   // i.e. after isLit resolves, and the friend count is known. Also re-fires a deferred start
@@ -1127,7 +1208,7 @@ export default function HomeScreen() {
       return {
         title: 'This is a test beacon',
         message:
-          'It is set to your test group, so no friends will be notified. To share it for real, open Beacon options and pick a friend group, or remove the test group so all your friends can see it.',
+          'Your beacon is set to your test group, so no friends will be notified. Open Beacon options and deselect the test group to send your beacon to all friends. Or add a friend group to send it to just them.',
       };
     }
     if (selectedGroupIds.length === 0) {
@@ -1224,7 +1305,7 @@ export default function HomeScreen() {
                   updatedAt: serverTimestamp(),
                   startAt: Timestamp.fromDate(sd),
                   expiresAt: Timestamp.fromDate(ed),
-                  groupIds: selectedGroupIds,
+                  groupIds: tourSafeGroupIds(), // tour-time lights are ALWAYS test-scoped
                   // NOTE: allowedUids is intentionally NOT written. It used to embed the owner's
                   // friend uids in this world-readable doc (a friend-graph leak). The server now
                   // resolves the notification audience from groupIds + the private FriendGroups.
@@ -1266,12 +1347,8 @@ export default function HomeScreen() {
 
   const toggleBeacon = () => {
     if (toggleBusyRef.current) return; // an in-flight toggle: ignore rapid re-taps
-    // During the tour, the scripted light must NOT stack a confirm on top of the coach-mark: light
-    // straight through (the tour's own copy explains the demo beacon is scoped to the test group).
-    if (isActive) {
-      performBeaconToggle();
-      return;
-    }
+    // The tour gets NO special-casing here: the final step is meant to be the real workflow, so the
+    // same light/extinguish confirms show (native alerts render above the coach-mark just fine).
     if (isLit) {
       Alert.alert('Extinguish Beacon', 'Are you sure you want to extinguish your beacon?', [
         { text: 'Cancel', style: 'cancel' },
@@ -1311,12 +1388,12 @@ export default function HomeScreen() {
     const user = auth.currentUser;
     if (!user) return false;
 
-    // Catch the partial-input case here rather than inline, surfacing it
-    // mid-typing would scold the user during normal hour-then-minutes flow.
+    // Minutes are optional: an empty minute field means :00 (buildTimeHHmm fills it in).
+    // Only minutes-without-an-hour is ambiguous enough to stop the save.
     const hTrim = timeHourInput.trim();
     const mTrim = timeMinuteInput.trim();
-    if ((hTrim && !mTrim) || (!hTrim && mTrim)) {
-      Alert.alert('Time', 'Enter both hour and minutes, or clear the time.');
+    if (!hTrim && mTrim) {
+      Alert.alert('Time', 'Add an hour, or clear the time.');
       return false;
     }
 
@@ -1343,7 +1420,7 @@ export default function HomeScreen() {
           expiresAt: Timestamp.fromDate(ed),
           scheduled: true,
           updatedAt: serverTimestamp(),
-          groupIds: selectedGroupIds,
+          groupIds: tourSafeGroupIds(), // tour-time saves are ALWAYS test-scoped
           timeHHmm,
         });
       } else {
@@ -1365,7 +1442,7 @@ export default function HomeScreen() {
             expiresAt: Timestamp.fromDate(ed),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
-            groupIds: selectedGroupIds,
+            groupIds: tourSafeGroupIds(), // tour-time saves are ALWAYS test-scoped
             timeHHmm,
           },
           { merge: true }
@@ -1501,7 +1578,18 @@ export default function HomeScreen() {
             <FriendsBeaconsList onSelect={setSelectedBeacon} showExampleWhenEmpty />
           </View>
 
-          <View style={styles.controls}>
+          {/* marginBottom inline: BottomBar is 64 + max(insets.bottom, 8) tall on-device (99 on
+              notched phones), so the static 72 under-cleared it and the options CTA sat flush
+              against the tab bar. The +34 band is the paddingBottom+CTA-margin that used to live
+              INSIDE this container, moved below it so the absolutely-positioned test-beacon note
+              can appear there without shifting the beacon/CTA a single pixel.
+              onLayout: re-anchor the fire whenever THIS container's frame shifts (a layout change
+              here moves the logs without firing the logs wrapper's own onLayout, which once left
+              every skin's flame painted too low after a fast-refresh). */}
+          <View
+            style={[styles.controls, { marginBottom: 64 + Math.max(insets.bottom, 8) + 34 }]}
+            onLayout={measureBeaconAnchor}
+          >
             <View style={styles.myBeaconColumn}>
               <View ref={logsRef} collapsable={false} style={{ position: 'relative' }} onLayout={measureBeaconAnchor}>
                 <TouchableOpacity onPress={toggleBeacon} disabled={toggleBusy} activeOpacity={0.7} style={styles.beaconContainer}>
@@ -1562,6 +1650,19 @@ export default function HomeScreen() {
               <Ionicons name="chevron-forward" size={22} color={colors.primary} />
             </Pressable>
           </View>
+
+          {/* Test-scope warning, in the band BETWEEN Beacon options and the nav bar. Absolutely
+              positioned so showing/hiding it never moves the beacon column above. ONLY when test is
+              the sole selection: with a real group alongside, that group's members DO get the
+              beacon (audience = union of selected groups; test just adds nobody). */}
+          {!!user?.uid && selectedGroupIds.length === 1 && selectedGroupIds[0] === `${user.uid}__tutorial_test` && (
+            <Text
+              style={[styles.testScopeNote, { bottom: 64 + Math.max(insets.bottom, 8) + 2 }]}
+              pointerEvents="none"
+            >
+              Test beacon: friends can&apos;t see it and won&apos;t be notified. Turn off the test group to send to all friends.
+            </Text>
+          )}
 
           {/* FIRE, last child, on TOP of the structure (pointerEvents none, taps reach the structure
               + chat button below). Registry-driven: skin.fire picks the Skia flame, a sweeping beam
@@ -1809,14 +1910,24 @@ export default function HomeScreen() {
           onRequestClose={() => { setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }}
         >
           <KeyboardAvoidingView
-            style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop }]}
+            style={[styles.modalBackdropCenter, { backgroundColor: colors.backdrop, paddingTop: insets.top + 8 }]}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <Pressable style={StyleSheet.absoluteFill} onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} />
             {/* Bottom gap lives on the CARD, not the KAV: KeyboardAvoidingView (behavior padding)
                 overwrites the container's paddingBottom with the keyboard height (0 when closed),
-                which would otherwise drop the card into the home-indicator / curved corner. */}
-            <View style={[styles.detailCard, { backgroundColor: colors.card, marginBottom: insets.bottom + 16 }]} pointerEvents="box-none">
+                which would otherwise drop the card into the home-indicator / curved corner. With the
+                keyboard OPEN the KAV padding already clears it, so the card margin drops to a hairline
+                and the composer sits flush above the keyboard's Done bar (no dead band). */}
+            <View
+              style={[
+                styles.detailCard,
+                // Keyboard open: zero out the card's own bottom chrome so the composer sits flush
+                // against the keyboard's Done bar; no see-through band showing the fire behind.
+                { backgroundColor: colors.card, marginBottom: kbVisible ? 0 : insets.bottom + 8, paddingBottom: kbVisible ? 0 : 8 },
+              ]}
+              pointerEvents="box-none"
+            >
               <View style={styles.modalHeader}>
                 <Pressable onPress={() => { tap(); setSelectedBeacon(null); setSelectedBeaconMessageId(undefined); }} hitSlop={8} style={styles.closeBtn}>
                   <Ionicons name="close" size={24} color={colors.text} />
@@ -1976,8 +2087,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: SCREEN_PAD,
     paddingTop: 12,
-    paddingBottom: 16,
-    marginBottom: 72, // lift above BottomBar
+    // No paddingBottom: that space moved into the inline marginBottom band below the container
+    // (where the test-beacon note lives), keeping the CTA's absolute position identical.
+    paddingBottom: 0,
+    // marginBottom is applied inline (insets-aware) to clear the BottomBar; see the render.
   },
   // Sound + help sit at the BOTTOM corners (by the logs), clear of the tall flame above.
   helpBtn: {
@@ -2166,7 +2279,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.28)',
     justifyContent: 'flex-end',
     paddingHorizontal: SCREEN_PAD,
-    paddingTop: 130,
+    // paddingTop comes inline (insets.top + 8): the chat should use the whole screen height,
+    // the old fixed 130 top band was pure wasted space.
     paddingBottom: 0, // bottom gap is the card's marginBottom (insets-aware); see the modal above
   },
   detailCard: {
@@ -2188,12 +2302,26 @@ const styles = StyleSheet.create({
     paddingVertical: 22,
     paddingHorizontal: 14,
     marginTop: 0,
-    marginBottom: 12,
+    // Trailing margin moved into the controls' inline marginBottom band (the test-note strip),
+    // keeping this card's absolute position unchanged.
+    marginBottom: 0,
     shadowColor: '#000',
     shadowOpacity: 0.08,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
+  },
+  // Amber caution line in the band between the options CTA and the BottomBar. Absolute (bottom
+  // set inline, insets-aware) so its presence never reflows the beacon column.
+  testScopeNote: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#F59E0B',
+    textAlign: 'center',
+    paddingHorizontal: 16,
   },
   optionsCtaPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
   optionsCtaIconWrap: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },

@@ -146,14 +146,16 @@ export const redeemInvite = onCall({ enforceAppCheck: false }, async (req) => {
       cleanName((invP.data() as any)?.username) || cleanName((invU.data() as any)?.username);
 
     tx.set(edgeRef, { uids: [meUid, inviterUid], state: 'accepted', createdAt: now, updatedAt: now }, { merge: true });
+    // notify: true = new friendships DEFAULT ON for beacon notifications, both directions,
+    // until someone flips the per-friend switch off.
     tx.set(
       db.collection('users').doc(meUid).collection('friends').doc(inviterUid),
-      { uid: inviterUid, username: inviterUsername, status: 'accepted', acceptedAt: now },
+      { uid: inviterUid, username: inviterUsername, status: 'accepted', acceptedAt: now, notify: true },
       { merge: true }
     );
     tx.set(
       db.collection('users').doc(inviterUid).collection('friends').doc(meUid),
-      { uid: meUid, username: myUsername, status: 'accepted', acceptedAt: now },
+      { uid: meUid, username: myUsername, status: 'accepted', acceptedAt: now, notify: true },
       { merge: true }
     );
     tx.set(

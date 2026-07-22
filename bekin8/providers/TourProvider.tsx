@@ -33,6 +33,13 @@ type TourCtx = {
   goToTarget: (key: string, opts?: { pushHistory?: boolean }) => void;
   /** Advance the active tour to the next step (e.g. a screen reacting to the sheet closing). */
   advance: () => void;
+  /**
+   * Advance ONLY if the step with this id is still the current one; otherwise a no-op. Use from
+   * screen effects that can fire more than once (e.g. during a navigation both the outgoing and
+   * incoming screen instance may react) so duplicates can't step past the intended target. Never
+   * finishes the tour: advancing past the last step is ignored.
+   */
+  advanceFromStepId: (id: string) => void;
   /** Step the active tour BACK (e.g. the sheet's own Cancel button returning to the previous step). */
   back: () => void;
   /** Swap the active tour to a new step array and restart from the first step (same onFinish/onClose).
@@ -56,6 +63,7 @@ const Ctx = createContext<TourCtx>({
   endTour: () => {},
   goToTarget: () => {},
   advance: () => {},
+  advanceFromStepId: () => {},
   back: () => {},
   restart: () => {},
   currentStepId: undefined,
@@ -191,6 +199,20 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     });
   }, [steps, endTour]);
 
+  // Guarded advance: moves forward only while the NAMED step is still current, so duplicate calls
+  // (two mounted screen instances during a navigation both reacting to the same state) collapse to
+  // one advance instead of stepping past the target and accidentally finishing the tour.
+  const advanceFromStepId = useCallback((id: string) => {
+    setNavDir("forward");
+    setIndex((i) => {
+      if (!steps || steps[i]?.id !== id) return i; // someone already advanced (or wrong step): no-op
+      const next = i + 1;
+      if (next > steps.length - 1) return i; // never implicitly finish
+      history.current.push(i);
+      return next;
+    });
+  }, [steps]);
+
   // Back follows the visited path (not index-1), so it always returns to the step/screen that
   // actually came before, including across optional branches.
   const onPrev = useCallback(() => {
@@ -248,6 +270,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         endTour,
         goToTarget,
         advance: onNext,
+        advanceFromStepId,
         back: onPrev,
         restart,
         currentStepId,

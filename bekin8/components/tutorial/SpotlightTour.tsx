@@ -86,16 +86,26 @@ export type TourStep = {
    */
   holePad?: number;
   /**
+   * Grow the spotlight hole to the UNION of the main target and this second target's rect. Used
+   * when the content to ring is split across elements that can't share a wrapper (the friends
+   * ROWS are list items below the requests block, so a marker at the list's end extends the ring
+   * over every row, however many there are).
+   */
+  holeUnionTarget?: string;
+  /**
    * An optional side-step reached only via goToTarget (never the normal Next flow), NOT counted in
    * the "Step X of N" total, so jumping into it doesn't make the numbers leap.
    */
   branch?: boolean;
   /**
-   * Gate the final "Done": when true (last step only), the CTA renders greyed/disabled and can't be
-   * tapped. Used by the guided first-beacon step (Done unlocks once username + friend + a set beacon
-   * are all complete). Re-evaluated live as the host updates the steps.
+   * Gate the CTA (Next/Done/custom): renders greyed/disabled and can't be tapped. Hosts flip it
+   * live via updateStepById (e.g. the speed tour's username/friend/light gates, the guided
+   * first-beacon Done).
    */
   ctaDisabled?: boolean;
+  /** Short line rendered UNDER the nav row while ctaDisabled, explaining what unlocks it
+   *  (e.g. "1 friend is needed to continue."). Also spoken as the disabled CTA's a11y hint. */
+  ctaDisabledNote?: string;
   /**
    * When set, the step shows a small GREEN "Speed tour" button next to Next that calls this. Used on
    * step 1 to switch the full tour into the abbreviated speed tour (username, friend, light a beacon).
@@ -108,9 +118,14 @@ export type TourStep = {
   backAction?: () => void;
   /** Override the displayed step number with a custom label (e.g. "2a", "2b") instead of the count. */
   stepLabel?: string;
-  /** Fixed callout position: anchor its TOP at this FRACTION of screen height (0..1), independent of
-   *  the target. Use to hold sibling sub-steps (e.g. 2a + 2b) at the SAME, higher spot. */
+  /** Fixed callout position: anchor its TOP at this FRACTION of screen height (0..1), independent
+   *  of the target. Currently unused by the tours (kept as a layout escape hatch). */
   topFrac?: number;
+  /**
+   * Gate for the Next/Done button: called on tap, and the tour only advances if it returns
+   * (or resolves) true. Used by the speed tour's notifications step to warn before skipping.
+   */
+  onBeforeNext?: () => boolean | Promise<boolean>;
 };
 
 type Props = {
@@ -221,61 +236,132 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
       Math.abs(a.y - b.y) < 0.5 &&
       Math.abs(a.width - b.width) < 0.5 &&
       Math.abs(a.height - b.height) < 0.5;
+    // Union of two rects: the smallest rect containing both.
+    const union = (a: Rect, b: Rect): Rect => {
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      return {
+        x,
+        y,
+        width: Math.max(a.x + a.width, b.x + b.width) - x,
+        height: Math.max(a.y + a.height, b.y + b.height) - y,
+      };
+    };
     const poll = async () => {
       if (cancelled) return;
-      const r = await measureTarget(step.target!);
+      let r = await measureTarget(step.target!);
       if (cancelled) return;
+      // Optionally grow the hole to include a second element (e.g. the end-of-list marker, so
+      // every friend row is inside the ring).
+      if (r && r.width > 0 && step.holeUnionTarget) {
+        const ru = await measureTarget(step.holeUnionTarget);
+        if (cancelled) return;
+        if (ru && ru.width > 0) r = union(r, ru);
+      }
       if (r && r.width > 0) {
-        rectForIdxRef.current = index; // this step's target is measured → ring is "fresh"
-        const moved = !near(lastR, r);
+        const same = near(lastR, r);
+        const alreadyFresh = rectForIdxRef.current === index;
         lastR = r;
-        if (moved) setRect((prev) => (near(prev, r) ? prev : r));
-        // Latch the slot from the first keyboard-closed measurement so a later keyboard-driven sheet
-        // shift can't flip TOP↔LOW mid-step.
-        setUseLowLocked((v) => (v == null ? r.y - PAD < insets.top + 12 + 260 : v));
-        let movedB = false;
-        if (step.belowTarget) {
-          const br = await measureTarget(step.belowTarget);
-          if (!cancelled && br && br.width > 0) {
-            belowRectForIdxRef.current = index;
-            movedB = !near(lastBR, br);
-            lastBR = br;
-            if (movedB) setBelowRect((prev) => (near(prev, br) ? prev : br));
+        // FIRST paint waits for TWO consecutive matching measures: pages that reposition right
+        // after a step change (auto-scroll on Friends) otherwise flash the ring at the pre-scroll
+        // spot and visibly shift it. Once painted, keep tracking movement live.
+        if (same || alreadyFresh) {
+          rectForIdxRef.current = index; // this step's target is measured + stable → ring is "fresh"
+          setRect((prev) => (near(prev, r) ? prev : r));
+          // Latch the slot from the first keyboard-closed measurement so a later keyboard-driven
+          // sheet shift can't flip TOP↔LOW mid-step.
+          setUseLowLocked((v) => (v == null ? r.y - PAD < insets.top + 12 + 260 : v));
+          let movedB = false;
+          if (step.belowTarget) {
+            const br = await measureTarget(step.belowTarget);
+            if (!cancelled && br && br.width > 0) {
+              belowRectForIdxRef.current = index;
+              movedB = !near(lastBR, br);
+              lastBR = br;
+              if (movedB) setBelowRect((prev) => (near(prev, br) ? prev : br));
+            }
           }
+          stable = same && !movedB ? stable + 1 : 0;
+        } else {
+          stable = 0; // moving (or first sight): hold off painting until it holds still
         }
-        stable = moved || movedB ? 0 : stable + 1;
       } else {
         stable = 0; // not measured yet; keep trying
       }
-      if (!cancelled && stable < SETTLE) pollTimer = setTimeout(poll, 180);
+      // Pre-paint: retry FAST so the stability gate only costs ~80ms. After painting: never stop
+      // tracking entirely; past the settle window drop to a slow poll so the ring stays glued to a
+      // target the user scrolls under the hole instead of freezing on a stale position.
+      if (!cancelled) {
+        const delay = rectForIdxRef.current !== index ? 80 : stable < SETTLE ? 180 : 450;
+        pollTimer = setTimeout(poll, delay);
+      }
     };
     poll();
     return () => {
       cancelled = true;
       if (pollTimer) clearTimeout(pollTimer);
     };
+    // step?.target: a LIVE step swap (updateStepById) can change the target in place (the speed
+    // tour's light step flips from the logs to the options CTA); re-arm the poll for it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index, kbHeight]);
+  }, [index, kbHeight, step?.target]);
 
-  // Announce to screen readers when the gated final "Done" UNLOCKS. The host enables it via updateStepById
-  // at the SAME index, which the per-step announce (keyed on [index]) does not catch, so a VoiceOver user
-  // would otherwise get no signal that the action became available.
-  const prevCtaDisabledRef = useRef(true);
+  // Callout + ring appear TOGETHER on target steps: the callout is held until the hole is fresh
+  // (see calloutHidden), and this timeout is the fallback so a target that never measures can't
+  // leave the tour invisible.
+  const [revealTimedOut, setRevealTimedOut] = useState(false);
   useEffect(() => {
-    const wasDisabled = prevCtaDisabledRef.current;
+    setRevealTimedOut(false);
+    if (!steps[index]?.target) return;
+    const t = setTimeout(() => setRevealTimedOut(true), 1200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index]);
+
+  // Announce to screen readers when ANY gated CTA UNLOCKS. Hosts enable it via updateStepById at
+  // the SAME index, which the per-step announce (keyed on [index]) does not catch, so a VoiceOver
+  // user would otherwise get no signal that the action became available. Tracks the index too, so
+  // stepping from a gated step to an ungated one is not misread as an unlock.
+  const prevCtaGateRef = useRef<{ index: number; disabled: boolean }>({ index: -1, disabled: true });
+  useEffect(() => {
+    const prev = prevCtaGateRef.current;
     const nowDisabled = !!step?.ctaDisabled;
-    prevCtaDisabledRef.current = nowDisabled;
-    if (wasDisabled && !nowDisabled && step?.id === "set-first-beacon") {
-      AccessibilityInfo.announceForAccessibility("Setup complete. The Done button is now available.");
+    prevCtaGateRef.current = { index, disabled: nowDisabled };
+    if (prev.index !== index) return; // a step change, not an in-place unlock
+    if (prev.disabled && !nowDisabled && step) {
+      AccessibilityInfo.announceForAccessibility(
+        step.id === "set-first-beacon"
+          ? "Setup complete. The Done button is now available."
+          : "You can continue now."
+      );
     }
-  }, [step?.ctaDisabled, step?.id]);
+  }, [index, step?.ctaDisabled, step?.id]);
 
   if (!step) return null;
 
-  const goNext = () => {
-    if (isLast) success();
-    else tap();
-    onNext();
+  // In-flight guard: onBeforeNext made this async (permission checks, confirm alerts), so a
+  // double-tap could queue TWO advances and even finish a tour a step early. One at a time.
+  const nextBusyRef = useRef(false);
+  const goNext = async () => {
+    if (nextBusyRef.current) return;
+    nextBusyRef.current = true;
+    try {
+      // A step can gate advancing (e.g. "notifications are off, sure?"). Only move on a true.
+      if (step.onBeforeNext) {
+        let ok = false;
+        try {
+          ok = await step.onBeforeNext();
+        } catch {
+          ok = true; // a broken gate must never trap the user in the tour
+        }
+        if (!ok) return;
+      }
+      if (isLast) success();
+      else tap();
+      onNext();
+    } finally {
+      nextBusyRef.current = false;
+    }
   };
   const goBack = () => {
     tap();
@@ -285,9 +371,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     tap();
     onSkip();
   };
-  // The final "Done" can be gated (e.g. the guided first-beacon step keeps it greyed until the user
-  // has a username, a friend, and a set beacon). Only meaningful on the last step.
-  const ctaDisabled = isLast && !!step.ctaDisabled;
+  // Any step's CTA can be gated (username/friend/light gates in the speed tour, the guided
+  // first-beacon Done in the full tour). Hosts re-evaluate it live via updateStepById.
+  const ctaDisabled = !!step.ctaDisabled;
 
   // Hole geometry, symmetric padding clamped to the viewport on every axis, so the ring always
   // contains the FULL measured target (never crops the top to satisfy a bottom-overflow clamp).
@@ -349,7 +435,7 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     // it doesn't drift with the (differently sized) highlighted block. Grows down, scrolls if too tall.
     const top = Math.round(H * step.topFrac);
     calloutPos = { top, left: 18, right: 18 };
-    calloutMaxH = Math.max(120, H - top - lowBottom);
+    calloutMaxH = Math.max(120, H - top - lowBottom - CARD_PAD);
   } else if (step.placement === "below" && belowAnchorBottom != null) {
     // Anchor JUST BELOW the anchor element (the spotlighted target, or a shared `belowTarget`) and grow
     // downward. `belowGap` leaves a peek of what's under it for orientation; the box scrolls if its
@@ -357,7 +443,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     // previous step's (stale) rect; the callout is hidden until then.
     const top = Math.min(belowAnchorBottom + (step.belowGap ?? 12), H - 220);
     calloutPos = { top, left: 18, right: 18 };
-    calloutMaxH = Math.max(120, H - top - 8);
+    // Subtract the card's own vertical padding, otherwise the ScrollView cap lets the padded box
+    // run past the bottom of the screen and the Back/Next row gets clipped.
+    calloutMaxH = Math.max(120, H - top - 8 - CARD_PAD);
   } else if (useLow && step.growDown) {
     // Pin the TOP roughly where the short box would have sat in the low slot, then allow the box to
     // grow DOWN toward the screen bottom (covering the tab bar if the body is long) instead of
@@ -365,7 +453,7 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     const LOW_REF = 270;
     const topAnchor = Math.max(TOP_LIMIT, H - lowBottom - LOW_REF);
     calloutPos = { top: topAnchor, left: 18, right: 18 };
-    calloutMaxH = Math.max(120, H - topAnchor - 8); // down to ~8px from the bottom (over the tab bar)
+    calloutMaxH = Math.max(120, H - topAnchor - 8 - CARD_PAD); // down to ~8px from the bottom (over the tab bar)
   } else if (useLow) {
     calloutPos = { bottom: lowBottom, left: 18, right: 18 };
     calloutMaxH = Math.max(120, H - lowBottom - TOP_LIMIT - CARD_PAD);
@@ -384,8 +472,12 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   const blockAll = !freeStep && !(step.interactive && hasFreshHole);
   const dimPE = step.interactive && hasFreshHole ? "auto" : "none";
   // A 'below' callout is positioned FROM its anchor, so hide it until that fresh measurement lands
-  // (rather than letting it flash at a fallback spot and jump into place).
-  const calloutHidden = step.placement === "below" && belowAnchorBottom == null;
+  // (rather than letting it flash at a fallback spot and jump into place). And on ANY target step,
+  // hold the callout until the ring is ready so the two appear together instead of the callout
+  // popping first and the ring trailing in (the timeout covers never-measuring targets).
+  const calloutHidden =
+    (step.placement === "below" && belowAnchorBottom == null) ||
+    (!!step.target && !hasFreshHole && !revealTimedOut);
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -504,13 +596,17 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
               style={[styles.btnPrimary, { backgroundColor: ctaDisabled ? colors.border : colors.primary }]}
               accessibilityRole="button"
               accessibilityState={{ disabled: ctaDisabled }}
-              accessibilityHint={ctaDisabled ? "Add a username and a friend, and light your beacon, to finish" : undefined}
+              accessibilityHint={ctaDisabled ? (step.ctaDisabledNote ?? "Complete this step to continue") : undefined}
             >
               <Text style={[styles.btnPrimaryTxt, ctaDisabled && { color: colors.subtle }]}>
                 {step.cta ?? (isLast ? "Done" : "Next")}
               </Text>
             </Pressable>
           </View>
+
+          {ctaDisabled && step.ctaDisabledNote ? (
+            <Text style={[styles.ctaNote, { color: colors.subtle }]}>{step.ctaDisabledNote}</Text>
+          ) : null}
         </ScrollView>
       </View>
     </View>
@@ -538,13 +634,15 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: "800", marginBottom: 8 },
   skipTxt: { fontSize: 14, fontWeight: "700" },
   body: { fontSize: 15, lineHeight: 22 },
-  nav: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 },
+  nav: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 10 },
   btnGhost: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10 },
   btnGhostTxt: { fontSize: 15, fontWeight: "600" },
   // Narrow GREEN button (stacked "Speed / tour" text) so it stays slim next to the wide Next button.
   btnSpeed: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   btnSpeedTxt: { color: "#fff", fontSize: 13, fontWeight: "800", textAlign: "center", lineHeight: 15 },
   calloutHidden: { opacity: 0 },
+  // Why-the-CTA-is-grayed line, under the nav row.
+  ctaNote: { fontSize: 12, fontWeight: "600", textAlign: "center", marginTop: 8 },
   btnPrimary: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: "center" },
   btnPrimaryTxt: { color: "#fff", fontSize: 16, fontWeight: "700" },
 });

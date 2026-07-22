@@ -21,6 +21,7 @@
     "@shopify/react-native-skia": "2.4.18",
     "expo": "^55.0.26",
     "expo-apple-authentication": "~55.0.13",
+    "expo-application": "~55.0.17",
     "expo-asset": "~55.0.17",
     "expo-audio": "~55.0.14",
     "expo-blur": "~55.0.14",
@@ -47,6 +48,7 @@
     "react-dom": "19.2.0",
     "react-native": "0.83.6",
     "react-native-gesture-handler": "~2.30.0",
+    "react-native-qrcode-svg": "^6.3.21",
     "react-native-reanimated": "4.2.1",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.23.0",
@@ -71,7 +73,9 @@
   "expo": {
     "install": {
       "comment": "Force a single react-native-worklets 0.7.4 (see root overrides) — reanimated 4.2.1's podspec requires the 0.7.x line (rejects 0.8.x), and a stray nested 0.8.3 otherwise splits the Babel plugin from the runtime. Excluded from `expo install --fix`.",
-      "exclude": ["react-native-worklets"]
+      "exclude": [
+        "react-native-worklets"
+      ]
     },
     "doctor": {
       "reactNativeDirectoryCheck": {

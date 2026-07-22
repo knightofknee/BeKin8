@@ -40,9 +40,21 @@ export default function Privacy() {
           (accounts, feeds, notifications) and to keep the community safe (reporting, blocking, moderation).
         </Text>
         <Text style={[s.p, { color: colors.text }]}>
+          Your posts are shown to the friends you have added. If you turn on the optional
+          "Friends of friends" setting, your posts are also shown to friends of your friends who
+          turned that same setting on, and their posts appear in your feed. That sharing is mutual,
+          it never reaches past a friend of a friend, and switching the setting off ends it in both
+          directions.
+        </Text>
+        <Text style={[s.p, { color: colors.text }]}>
           You can delete your account in Settings → Delete Account; this removes your authentication
           record and deletes your personal data from our systems. Some content may be anonymized or removed
           where required to protect other users.
+        </Text>
+        <Text style={[s.p, { color: colors.text }]}>
+          The app is not directed to children under 13, and we do not knowingly collect personal
+          information from anyone under 13. If we learn that we have collected information from a
+          child under 13, we will delete it and remove the account.
         </Text>
         <Text style={[s.p, { color: colors.text }]}>
           For any questions or requests, contact support at bricarlis@gmail.com.

@@ -32,7 +32,8 @@ import { buildPostTour } from '../components/tutorial/tourSteps';
 import { useTour, useTourTarget } from '../providers/TourProvider';
 import { getSeen, setSeen } from '../lib/tutorialFlags';
 
-const BOTTOM_BAR_HEIGHT = 56;
+// BottomBar's row is 64pt; its bottom padding (max(insets.bottom, 8)) is added at the call site.
+const BOTTOM_BAR_HEIGHT = 64;
 const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
 const ACCESSORY_ID_LINK  = 'create-post-accessory-link';
 const ACCESSORY_ID_BODY  = 'create-post-accessory-body';
@@ -360,7 +361,9 @@ export default function CreatePostScreen() {
 
   const isLimited = rateLimitInfo?.limited ?? false;
   const availableDay = rateLimitInfo?.availableDay ?? '';
-  const bottomPadding = BOTTOM_BAR_HEIGHT + insets.bottom + 16;
+  // Clear the REAL BottomBar height (64 + its inset-aware padding) plus a visible gap, so the
+  // Post button never sits flush against the tab bar.
+  const bottomPadding = BOTTOM_BAR_HEIGHT + Math.max(insets.bottom, 8) + 16;
 
   return (
     <>
@@ -422,42 +425,41 @@ export default function CreatePostScreen() {
                 themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
-              {/* word counter */}
+              {/* Metadata row: quiet counters above the CTA (word count left, bonus inventory
+                  right), so the primary button below stays full-width and centered. */}
               <View style={styles.counterRow}>
-                <Text style={[styles.counterText, { color: counterColor }]}>
-                  {wordCount} / 1000 words
-                </Text>
-                {isCharLimitExceeded && (
-                  <Text style={[styles.counterExceeded, { color: colors.error }]}>Character limit exceeded</Text>
-                )}
-              </View>
-
-              {/* Submit row */}
-              <View style={styles.submitRow}>
-                {/* Post button */}
-                <Pressable
-                  onPress={handleSubmit}
-                  disabled={submitting || isLimited || checkingLimit}
-                  style={({ pressed }) => [
-                    styles.submitBtn,
-                    styles.submitBtnFlex,
-                    { backgroundColor: colors.primary, shadowColor: colors.primary },
-                    (submitting || isLimited || checkingLimit) && [styles.submitBtnDisabled, { backgroundColor: colors.border }],
-                    pressed && !isLimited && !checkingLimit && { opacity: 0.88 },
-                  ]}
-                >
-                  {submitting || checkingLimit
-                    ? <ActivityIndicator color="#fff" />
-                    : <Text style={styles.submitTxt}>Post</Text>
-                  }
-                </Pressable>
-
-                {/* Bonus count badge */}
-                <View ref={bonusTarget} collapsable={false} style={styles.bonusBadge}>
+                <View>
+                  <Text style={[styles.counterText, { color: counterColor }]}>
+                    {wordCount} / 1000 words
+                  </Text>
+                  {isCharLimitExceeded && (
+                    <Text style={[styles.counterExceeded, { color: colors.error }]}>Character limit exceeded</Text>
+                  )}
+                </View>
+                <View ref={bonusTarget} collapsable={false} style={[styles.bonusPill, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
                   <Text style={[styles.bonusCount, { color: colors.primary }]}>{bonusPosts}</Text>
-                  <Text style={[styles.bonusLabel, { color: colors.subtle }]}>bonus</Text>
+                  <Text style={[styles.bonusLabel, { color: colors.subtle }]}>
+                    {bonusPosts === 1 ? 'bonus post' : 'bonus posts'}
+                  </Text>
                 </View>
               </View>
+
+              {/* Primary action: full-width, centered, nothing riding beside it. */}
+              <Pressable
+                onPress={handleSubmit}
+                disabled={submitting || isLimited || checkingLimit}
+                style={({ pressed }) => [
+                  styles.submitBtn,
+                  { backgroundColor: colors.primary, shadowColor: colors.primary },
+                  (submitting || isLimited || checkingLimit) && [styles.submitBtnDisabled, { backgroundColor: colors.border }],
+                  pressed && !isLimited && !checkingLimit && { opacity: 0.88 },
+                ]}
+              >
+                {submitting || checkingLimit
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.submitTxt}>Post</Text>
+                }
+              </Pressable>
 
               {/* Available day message when rate-limited */}
               {isLimited && (
@@ -567,20 +569,12 @@ const styles = StyleSheet.create({
   counterText:     { fontSize: 12, fontWeight: '500' },
   counterExceeded: { fontSize: 12, fontWeight: '600' },
 
-  // ── submit row ──
-  submitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 4,
-  },
-  submitBtnFlex: {
-    flex: 1,
-  },
+  // ── submit ──
   submitBtn: {
     borderRadius: 14,
     paddingVertical: 15,
     alignItems: 'center',
+    marginTop: 4,
     shadowOpacity: 0.35,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
@@ -597,18 +591,22 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  // ── bonus badge (always visible) ──
-  bonusBadge: {
+  // ── bonus pill (always visible, in the metadata row; also the post-tour's spotlight target) ──
+  bonusPill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 44,
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
   bonusCount: {
-    fontSize: 20,
-    fontWeight: '700',
-    lineHeight: 22,
+    fontSize: 15,
+    fontWeight: '800',
   },
   bonusLabel: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '500',
   },
 

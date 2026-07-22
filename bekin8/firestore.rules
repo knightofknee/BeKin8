@@ -2,12 +2,23 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // NOTE (2026-07-07): this file is now the source of truth for Firestore rules, deployed via
-    // `firebase deploy --only firestore:rules`. It was seeded from the live console ruleset and then
-    // hardened: the bottom catch-all's blanket `allow read: if true` was CLOSED. That blanket read
-    // was overriding EVERY per-collection restriction below (Firestore ORs matching rules), so the
-    // whole database, including the friend graph, was world-readable. Content that is meant to be
-    // public (Posts, Profiles, Beacons, ChatMessages, comments) keeps its own `allow read: if true`.
+    // NOTE: this file is the source of truth for Firestore rules, deployed via
+    // `firebase deploy --only firestore:rules`. Project: waldgrave-profiles. (Escape from Hades IRL
+    // is a SEPARATE Firebase project and is not governed by this file, despite the vacationDays
+    // block below, which is inert leftover.)
+    //
+    // Firestore ORs every matching block: if any one of them allows an operation, it is allowed.
+    // That makes the catch-all at the bottom the most dangerous block in the file. Both of its
+    // blanket grants have now been closed, `read` in 2026-07-07 and `create` after that grant was
+    // found to be quietly defeating every per-collection create guard above.
+    //
+    // Shared content (Posts, Profiles, Beacons, ChatMessages, comments, Favorites) requires sign-in
+    // to read, but is NOT audience-scoped at the rules layer: any signed-in user can read any post.
+    // The friends-only / friends-of-friends feed is a CLIENT query convention. It cannot currently
+    // be enforced here, because a query is only permitted when its own filters prove the read rule,
+    // and "the author is my friend" is not provable from `where('author','in',[...])` without a
+    // cross-collection join. Enforcing audience server-side would mean denormalizing a reader list
+    // onto every post and querying it with array-contains.
 
     // -------- users subtree --------
     match /users/{userId} {
@@ -30,12 +41,20 @@ service cloud.firestore {
       match /pushTokens/{docId} {
         allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
       }
+      // Per-post mutes for comment notifications. This needs its OWN match block: `match /users/{userId}`
+      // covers the user document ONLY, never its subcollections. Without this, the feed's
+      // silencedPosts collection listener fell through to the catch-all and was denied, which
+      // silently broke muting (the listener has no error callback, so the muted set just stayed
+      // empty). Path-keyed, so the collection listener is provable against it.
+      match /silencedPosts/{postId} {
+        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
     }
 
     // -------- Favorites --------
     match /Favorites/{userId} {
-      allow read: if true;
-      allow create: if request.auth != null;
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == userId;
       allow update, delete: if request.auth != null && request.auth.uid == userId;
     }
 
@@ -46,16 +65,37 @@ service cloud.firestore {
 
     // -------- FriendEdges --------
     match /FriendEdges/{edgeId} {
-      function authed()         { return request.auth != null; }
+      function authed()      { return request.auth != null; }
+      // The uid in `uids` that is not the caller.
+      function otherOf(uids) { return uids[0] == request.auth.uid ? uids[1] : uids[0]; }
+      // Consent gate. FriendRequests doc ids are `{senderUid}_{receiverUid}`, so this path only
+      // resolves when the OTHER party sent a request to ME and I have already accepted it, which
+      // is exactly who is entitled to turn a request into a friendship. The sender cannot use it
+      // to self-approve: for them the path would be `{me}_{other}`, which does not exist.
+      // A get() is fine here: this is a single-document create (10-document-access limit), and
+      // query-provability does not apply because nothing ever queries a create rule.
+      function acceptedRequestFrom(otherUid) {
+        return exists(/databases/$(database)/documents/FriendRequests/$(otherUid + '_' + request.auth.uid))
+               && get(/databases/$(database)/documents/FriendRequests/$(otherUid + '_' + request.auth.uid)).data.status == 'accepted';
+      }
+
       // Query-compatible: a `where('uids','array-contains', uid)` query is provable against this,
       // which the older size()==2/is-list form was NOT (it only worked because the removed catch-all
       // granted read to everything). Reads are still restricted to edge participants.
       allow read: if authed() && request.auth.uid in resource.data.uids;
+      // Force-friending fix: the shape checks alone let ANY signed-in user write
+      // {uids:[me, victim], state:'accepted'} and become a stranger's friend, since nothing tied
+      // the edge to consent and `state` was never checked. Profiles are keyed by uid and readable
+      // to any signed-in user, so the victim set was the entire user base. Admin-SDK writers
+      // (addFriendMutual, redeemInvite, which establish consent their own way) bypass rules and are
+      // unaffected. The client's only edge write is the accept handler in app/friends.tsx, which
+      // updates the request to `accepted` before writing the edge, so it satisfies this.
       allow create: if authed()
                     && request.resource.data.uids is list
                     && request.resource.data.uids.size() == 2
                     && request.resource.data.uids.hasAny([request.auth.uid])
-                    && request.resource.data.uids[0] != request.resource.data.uids[1];
+                    && request.resource.data.uids[0] != request.resource.data.uids[1]
+                    && acceptedRequestFrom(otherOf(request.resource.data.uids));
       allow delete: if authed() && request.auth.uid in resource.data.uids;
       allow update: if false;
     }
@@ -99,7 +139,7 @@ service cloud.firestore {
         return (resource.data.inUids is list) ? resource.data.inUids : [];
       }
 
-      allow read: if true;
+      allow read: if authed();
       allow create: if authed()
                     && request.resource.data.ownerUid == request.auth.uid;
       allow update: if authed() && (
@@ -115,7 +155,7 @@ service cloud.firestore {
       allow delete: if isOwner();
 
       match /ChatMessages/{msgId} {
-        allow read: if true;
+        allow read: if request.auth != null;
         allow create: if request.auth != null;
         allow delete: if request.auth != null && resource.data.authorUid == request.auth.uid;
         // Reactions only: any signed-in user may change the `reactions` map and nothing else.
@@ -127,12 +167,12 @@ service cloud.firestore {
 
     // -------- Profiles + lists subcollection --------
     match /Profiles/{userId} {
-      allow read: if true;
+      allow read: if request.auth != null;
       allow create, update: if request.auth != null && request.auth.uid == userId;
       allow delete: if request.auth != null && request.auth.uid == userId;
 
       match /lists/{listId} {
-        allow read: if true;
+        allow read: if request.auth != null;
         allow create, update, delete: if request.auth != null && request.auth.uid == userId;
       }
     }
@@ -162,19 +202,32 @@ service cloud.firestore {
 
     // -------- Posts (top-level) + comments --------
     match /Posts/{postId} {
-      allow read: if true;
-      allow create: if request.auth != null;
+      function authed()   { return request.auth != null; }
+      function isAuthor() { return authed() && resource.data.author == request.auth.uid; }
+
+      allow read: if authed();
+      // Pinning `author` to the caller is what makes attribution trustworthy. This was previously
+      // unenforceable no matter what was written here: the catch-all's blanket
+      // `allow create: if request.auth != null` ORed with this block and granted the write anyway,
+      // so any signed-in user could publish a post attributed to anyone. The catch-all is now closed.
+      allow create: if authed() && request.resource.data.author == request.auth.uid;
+      // Posts had NO update/delete rule of their own and leaned on the catch-all's author guard.
+      // With the catch-all closed they need explicit ones. `author` is pinned on update so an edit
+      // cannot reassign a post to somebody else.
+      allow update: if isAuthor() && request.resource.data.author == resource.data.author;
+      allow delete: if isAuthor();
 
       match /comments/{commentId} {
-        function authed()    { return request.auth != null; }
-        function isAuthor()  { return authed() && resource.data.authorUid == request.auth.uid; }
+        // Named commentAuthor, not isAuthor: the enclosing Posts block already defines isAuthor
+        // against `author`, and comments key off `authorUid`.
+        function commentAuthor() { return authed() && resource.data.authorUid == request.auth.uid; }
         function createsAsSelf() {
           return authed() && request.resource.data.authorUid == request.auth.uid;
         }
-        allow read: if true;
+        allow read: if authed();
         allow create: if createsAsSelf();
-        allow update: if isAuthor();
-        allow delete: if isAuthor();
+        allow update: if commentAuthor();
+        allow delete: if commentAuthor();
       }
     }
 
@@ -229,14 +282,20 @@ service cloud.firestore {
     }
 
     // -------- Catch-all --------
-    // read CLOSED (was `if true`, which made the whole DB world-readable and overrode every rule
-    // above). Unlisted collections now deny reads by default; explicitly public collections keep
-    // their own `allow read: if true`. Create stays open to authed users (ClientErrors/Usernames
-    // rely on it); update/delete stay author-guarded.
+    // FULLY CLOSED, and it must stay that way. Because Firestore ORs matching blocks, anything
+    // permissive here silently overrides every restriction above. The blanket `allow read: if true`
+    // was closed 2026-07-07. The blanket `allow create: if request.auth != null` survived that pass
+    // and had exactly the same defeating effect on writes, which left every create guard in this
+    // file decorative: any signed-in user could forge FriendEdges between strangers, create a
+    // Profile or Username reservation under someone else's uid, forge a FriendRequest from any
+    // sender, own a Beacon they did not create, plant an Invites code, or post as anyone.
+    // update/delete were author-guarded but only ever reached Posts (the sole collection with an
+    // `author` field and no rule of its own), which now has explicit rules.
+    //
+    // Every collection the client touches has its own block above. Do NOT reintroduce a permissive
+    // rule here to make a new collection work: add an explicit match block for it instead.
     match /{document=**} {
-      allow read: if false;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && request.auth.uid == resource.data.author;
+      allow read, write: if false;
     }
   }
 }

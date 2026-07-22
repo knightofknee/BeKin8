@@ -9,7 +9,7 @@ PODS:
     - GoogleUtilities/Environment (~> 8.0)
     - GoogleUtilities/UserDefaults (~> 8.0)
     - PromisesObjC (~> 2.4)
-  - EXApplication (55.0.15):
+  - EXApplication (55.0.17):
     - ExpoModulesCore
   - EXConstants (55.0.16):
     - ExpoModulesCore
@@ -2915,7 +2915,7 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   AppAuth: 1c1a8afa7e12f2ec3a294d9882dfa5ab7d3cb063
   AppCheckCore: cc8fd0a3a230ddd401f326489c99990b013f0c4f
-  EXApplication: 82a44fa8236bb644a805ee21e64054eeb01d22ea
+  EXApplication: 62f11f3b27bbeb132b4fceaa4e7275dd0fd39cb7
   EXConstants: dadbeba983acc30f855a919658a2b34fbd86615d
   EXJSONUtils: 04bc3807d351331a5fe154ce1da596ec15d99169
   EXManifests: 35b26ca30c8a6bd427d1cba20348cd3c43684bb2

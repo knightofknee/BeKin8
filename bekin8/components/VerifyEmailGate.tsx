@@ -12,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { auth } from "../firebase.config";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
+import { useTour } from "../providers/TourProvider";
 import { needsVerification, isGated, daysLeft, resendVerification } from "../lib/emailVerification";
 import { logout } from "../lib/logout";
 
@@ -28,6 +29,7 @@ const NOTE_CLEAR_MS = 3_000;
 export default function VerifyEmailGate() {
   const { user } = useAuth();
   const { colors } = useTheme();
+  const { isActive: tourActive } = useTour();
   const insets = useSafeAreaInsets();
 
   // user.reload() mutates the User object in place (same reference), so a manual tick forces
@@ -136,7 +138,9 @@ export default function VerifyEmailGate() {
   }
 
   // ---- Grace period: slim dismissible banner ----
-  if (dismissed || dismissedForUid === user.uid) return null;
+  // Hidden while a coach-mark tour runs: the banner floats at the exact height of the tour
+  // callout's eyebrow row and was covering "STEP X OF N" and, worse, the Skip button.
+  if (dismissed || dismissedForUid === user.uid || tourActive) return null;
   const n = daysLeft(user);
   return (
     <View
@@ -147,11 +151,13 @@ export default function VerifyEmailGate() {
     >
       <Ionicons name="mail-unread-outline" size={18} color={colors.primary} />
       <Text style={[styles.bannerText, { color: colors.text }]} numberOfLines={2}>
-        {`Verify your email: check your inbox. ${n} ${n === 1 ? "day" : "days"} left.`}
+        {`Verify your email: ${n} ${n === 1 ? "day" : "days"} left.`}
       </Text>
       <Pressable onPress={handleResend} accessibilityRole="button" hitSlop={8}>
         <Text style={[styles.bannerAction, { color: colors.primary }]}>{note ?? "Resend"}</Text>
       </Pressable>
+      {/* Big, easy-to-hit close: the banner floats over nav controls, so dismissing it must
+          never take more than one casual tap. */}
       <Pressable
         onPress={() => {
           dismissedForUid = user.uid;
@@ -159,9 +165,10 @@ export default function VerifyEmailGate() {
         }}
         accessibilityRole="button"
         accessibilityLabel="Dismiss verification reminder"
-        hitSlop={8}
+        hitSlop={14}
+        style={styles.bannerClose}
       >
-        <Ionicons name="close" size={18} color={colors.subtle} />
+        <Ionicons name="close" size={24} color={colors.subtle} />
       </Pressable>
     </View>
   );
@@ -220,4 +227,5 @@ const styles = StyleSheet.create({
   },
   bannerText: { flex: 1, fontSize: 13, fontWeight: "600" },
   bannerAction: { fontSize: 13, fontWeight: "800" },
+  bannerClose: { padding: 4, margin: -4 },
 });

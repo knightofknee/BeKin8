@@ -43,7 +43,7 @@ import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
-import { buildInviteUrl } from "../lib/inviteLink";
+import { buildInviteUrl, prefetchMyInviteCode } from "../lib/inviteLink";
 import TutorialResumeBanner from "@/components/tutorial/TutorialResumeBanner";
 import FriendsSetupCard from "@/components/tutorial/FriendsSetupCard";
 import { useTour, useTourTarget } from "../providers/TourProvider";
@@ -123,24 +123,28 @@ export default function FriendsScreen() {
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   useEffect(() => {
     if (!profileLoaded || inviteCode || !currentUsername?.trim()) return;
+    let alive = true;
     (async () => {
-      try {
-        const res = await httpsCallable(getFunctions(), "ensureInviteCode")({});
-        const code = (res?.data as any)?.code;
-        if (code) setInviteCode(String(code));
-      } catch {
-        // best-effort; the Share button stays disabled until a username + code exist
-      }
+      const uid = user?.uid;
+      if (!uid) return;
+      // Cache-first (the root layout prefetches at sign-in), so the Share button is live
+      // immediately; falls back to minting via the callable for brand-new usernames.
+      const code = await prefetchMyInviteCode(uid);
+      if (alive && code) setInviteCode(code);
     })();
-  }, [profileLoaded, inviteCode, currentUsername]);
+    return () => { alive = false; };
+  }, [profileLoaded, inviteCode, currentUsername, user?.uid]);
 
   // Coach-mark tour targets on this screen.
-  const { isActive: tourActive, currentStepTarget, measureTarget } = useTour();
+  const { isActive: tourActive, currentStepId, currentStepTarget, measureTarget } = useTour();
   const groupsTarget = useTourTarget("friends-groups");
   const brianTarget = useTourTarget("add-brian");
   // Wraps the Requests section + the My Friends list/add-brian card so the tour highlights them as one
   // step. The page FlatList scrolls this block into view when the tour reaches it.
   const requestsListTarget = useTourTarget("friends-requests");
+  // Zero-content marker at the very END of the friend rows: the tour unions it with the
+  // requests block so the ring encloses EVERY row (rows are list items, not wrappable).
+  const listEndTarget = useTourTarget("friends-list-end");
   const listRef = useRef<FlatList>(null);
   const scrollYRef = useRef(0);
 
@@ -148,40 +152,52 @@ export default function FriendsScreen() {
   // until username + friend + notifications are all done.
   const onboarding = useOnboarding();
 
-  // When the tour reaches a Friends step that sits low in the page (the add-friend card or the
-  // requests/friends-list block), scroll it into view. Uses the tour's measureTarget so it works for
-  // any registered target, including ones inside child components.
+  // While the tour is on a Friends step, the page does NOT hand-scroll (scrollEnabled below):
+  // the ring staying put while content slid under it read as broken. Instead the tour positions
+  // each step's target itself. Uses the tour's measureTarget so it works for any registered
+  // target, including ones inside child components.
   useEffect(() => {
-    const SCROLLABLE = ["friends-add-card", "friends-requests"];
+    // friends-groups is deliberately NOT here: its card sits mid-screen where the TOP-slot callout
+    // never covers it, and auto-scrolling it up to desiredY collided with the callout slot that
+    // was latched from the pre-scroll measurement (callout landed ON the highlighted card).
+    const SCROLLABLE = [
+      "friends-username",
+      "friends-profile",
+      "friends-add-card",
+      "friends-requests",
+    ];
     if (!currentStepTarget || !SCROLLABLE.includes(currentStepTarget)) return;
     const bring = async () => {
       const r = await measureTarget(currentStepTarget);
       if (!r) return;
-      const desiredY = 120; // bring the block's top near the top, above the low callout
+      // Default: block's top near the top of the screen, above a LOW callout. The friends-list
+      // steps (speed 2b + full step 8) instead put their callout in the TOP slot, so their block
+      // sits BELOW the callout (nothing covered).
+      const desiredY = currentStepId === 'speed-friend' || currentStepId === 'full-friends' ? 330 : 120;
       const delta = r.y - desiredY;
       if (Math.abs(delta) > 12) {
-        listRef.current?.scrollToOffset({ offset: Math.max(0, scrollYRef.current + delta), animated: true });
+        // SNAP, don't glide: an animated scroll here made the ring + callout visibly chase the
+        // content a beat after they had already landed (the "awkward vertical shift").
+        listRef.current?.scrollToOffset({ offset: Math.max(0, scrollYRef.current + delta), animated: false });
       }
     };
+    const t0 = setTimeout(bring, 30); // immediately, so the snap lands before the ring/callout draw
     const t1 = setTimeout(bring, 320); // after the navigation to Friends settles
     const t2 = setTimeout(bring, 650); // a second pass in case layout was still mounting
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [currentStepTarget, measureTarget]);
+    return () => { clearTimeout(t0); clearTimeout(t1); clearTimeout(t2); };
+  }, [currentStepTarget, currentStepId, measureTarget]);
 
   const handleShareInvite = async () => {
     const code = inviteCode ?? profile?.inviteCode; // state first; profile fallback during migration
     if (!code) return;
     const url = buildInviteUrl(code);
-    const blurb =
-      "Add me on BeKin 👋, it's where friends light a “beacon” when they're free to hang out, so you actually see each other. Tap my link and we'll be connected automatically:";
+    // Share the LINK, nothing else. The sender adds their own words; no canned marketing blurb.
     try {
       if (Platform.OS === "ios") {
-        // iOS attaches `url` separately so apps can show a rich link preview; keep it out of the
-        // message text so the link doesn't appear twice. `subject` pre-fills the email subject line.
-        await Share.share({ message: blurb, url }, { subject: "Add me on BeKin" });
+        await Share.share({ url }, { subject: "Add me on BeKin" });
       } else {
-        // Android ignores `url`, so the link has to live inside the message text.
-        await Share.share({ message: `${blurb}\n${url}` }, { dialogTitle: "Invite a friend to BeKin" });
+        // Android ignores `url`, so the link is the message.
+        await Share.share({ message: url }, { dialogTitle: "Share your friend link" });
       }
     } catch {
       // user cancelled or share failed, no-op
@@ -692,9 +708,11 @@ export default function FriendsScreen() {
         req.senderUsername ||
         otherUid;
 
+      // notify: true = new friendships DEFAULT ON for beacon notifications (the server's
+      // onFriendRequestAccepted mirrors the sender's side).
       await setDoc(
         doc(db, "users", me.uid, "friends", otherUid),
-        { uid: otherUid, username: otherUsername, status: "accepted", acceptedAt: serverTimestamp() },
+        { uid: otherUid, username: otherUsername, status: "accepted", acceptedAt: serverTimestamp(), notify: true },
         { merge: true }
       );
 
@@ -705,19 +723,10 @@ export default function FriendsScreen() {
       );
 
       nameCacheRef.current[otherUid] = otherUsername;
-
-      // Auto-enable notifications for new friend when master toggle is ON
-      if (notifyAllBeacons) {
-        try {
-          await setDoc(
-            doc(db, "users", me.uid, "friends", otherUid),
-            { notify: true, updatedAt: serverTimestamp() },
-            { merge: true }
-          );
-          await subscribeToFriendNotifications(otherUid);
-          setNotifyByUid((prev) => ({ ...prev, [otherUid]: true }));
-        } catch {}
-      }
+      setNotifyByUid((prev) => ({ ...prev, [otherUid]: true }));
+      try {
+        await subscribeToFriendNotifications(otherUid);
+      } catch {}
 
       showMessage("Friend added!", "success");
     } catch (e) {
@@ -1277,7 +1286,7 @@ export default function FriendsScreen() {
             </View>
           </View>
         }
-        ListFooterComponent={<View style={{ paddingBottom: 16 }} />}
+        ListFooterComponent={<View ref={listEndTarget} collapsable={false} style={{ height: 16 }} />}
         contentContainerStyle={{
           padding: SCREEN_PAD,
           paddingTop: 70,
@@ -1285,6 +1294,9 @@ export default function FriendsScreen() {
           rowGap: 14,
         }}
         style={{ flex: 1 }}
+        // The tour drives positioning while it's active (see the effect above); hand-scrolling
+        // under the spotlight just slid content out of the ring and looked broken.
+        scrollEnabled={!tourActive}
         onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
         scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"

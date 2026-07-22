@@ -1150,6 +1150,17 @@ export const onFriendEdgeDeleted = onDocumentDeleted(
 const mutualEdgeId = (a: string, b: string) => [a, b].sort().join('_');
 const cleanUsername = (v: any): string => (typeof v === 'string' ? v.trim() : '');
 
+/**
+ * Resolve the "Add Brian" card's target server-side, so the caller cannot choose it.
+ * Mirrors the lookup app/friends.tsx does for display: usernameLower first, then username.
+ */
+async function resolveBrianUid(): Promise<string | null> {
+  const profiles = db.collection('Profiles');
+  let snap = await profiles.where('usernameLower', '==', 'brain').limit(1).get();
+  if (snap.empty) snap = await profiles.where('username', '==', 'brain').limit(1).get();
+  return snap.empty ? null : snap.docs[0].id;
+}
+
 export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) => {
   const meUid = req.auth?.uid;
   if (!meUid) throw new HttpsError('unauthenticated', 'Sign in required.');
@@ -1157,6 +1168,26 @@ export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) =>
   const targetUid = String((req.data as any)?.targetUid ?? '').trim();
   if (!targetUid) return { ok: false, error: 'BAD_TARGET' };
   if (targetUid === meUid) return { ok: false, error: 'SELF' };
+
+  // This callable exists ONLY to back the "Add Brian" first-friend card, which needs the Admin SDK
+  // because a client cannot write Brian's owner-only denorms (users/{brian}/friends, Friends/{brian}).
+  // It used to accept ANY targetUid, which made it a force-friending vector that no security rule
+  // could stop: Profiles are keyed by uid and readable to every signed-in user, so anyone could
+  // enumerate the entire user base and unilaterally friend all of it, bypassing FriendRequests
+  // consent entirely. The target is now resolved server-side and the caller's targetUid is honored
+  // only if it agrees. Every other pairing gets consent from FriendRequests (enforced by the
+  // FriendEdges create rule) or from redeemInvite (sharing your code IS the consent).
+  // Kept accepting targetUid rather than dropping the arg so builds already in the wild, which
+  // pass Brian's uid, keep working unchanged.
+  const brianUid = await resolveBrianUid();
+  if (!brianUid) {
+    logger.error('addFriendMutual: could not resolve the Brian profile');
+    return { ok: false, error: 'BAD_TARGET' };
+  }
+  if (targetUid !== brianUid) {
+    logger.warn('addFriendMutual: rejected non-Brian target', { meUid, targetUid });
+    return { ok: false, error: 'BAD_TARGET' };
+  }
 
   const edgeRef = db.collection('FriendEdges').doc(mutualEdgeId(meUid, targetUid));
   const now = FieldValue.serverTimestamp();
@@ -1193,6 +1224,9 @@ export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) =>
       cleanUsername((tgtP.data() as any)?.username) || cleanUsername((tgtU.data() as any)?.username);
 
     tx.set(edgeRef, { uids: [meUid, targetUid], state: 'accepted', createdAt: now, updatedAt: now }, { merge: true });
+    // Deliberately NO notify default here: this is the Add-Brian first-friend path, and a new
+    // user should not be signed up for the creator's beacon pings (nor Brian for thousands of
+    // first-friend users'). Every OTHER way a friendship forms defaults notify ON.
     tx.set(
       db.collection('users').doc(meUid).collection('friends').doc(targetUid),
       { uid: targetUid, username: targetUsername, status: 'accepted', acceptedAt: now },
@@ -1222,6 +1256,27 @@ export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) =>
   return { ok: true, targetUid };
 });
 
+/**
+ * When a friend request flips to accepted, default BOTH sides' per-friend beacon notifications ON
+ * (users/{x}/friends/{y}.notify). The accepting client can only write its own side, and the
+ * sender's side otherwise stayed silently OFF. New friendships should notify until turned off.
+ */
+export const onFriendRequestAccepted = onDocumentUpdated('FriendRequests/{id}', async (event) => {
+  const before = event.data?.before?.data() as any;
+  const after = event.data?.after?.data() as any;
+  if (!before || !after) return;
+  if (before.status === 'accepted' || after.status !== 'accepted') return;
+  const a = String(after.senderUid ?? '');
+  const b = String(after.receiverUid ?? '');
+  if (!a || !b) return;
+  const now = FieldValue.serverTimestamp();
+  await Promise.all([
+    db.collection('users').doc(a).collection('friends').doc(b).set({ uid: b, notify: true, updatedAt: now }, { merge: true }),
+    db.collection('users').doc(b).collection('friends').doc(a).set({ uid: a, notify: true, updatedAt: now }, { merge: true }),
+  ]);
+  logger.info('onFriendRequestAccepted: defaulted notify on', { a, b });
+});
+
 // Keep callable exports (ESM requires .js suffix)
 export { deleteAccountDataV2 } from './deleteAccountV2.js';
 export { checkPostAllowed } from './checkPostAllowed.js';
@@ -1230,5 +1285,6 @@ export { dailyBonusAccrual } from './dailyBonusAccrual.js';
 // leaving it deployed is a needless attack surface. Re-add this export only if that UI
 // returns. (See functions/src/portAccount.ts, kept dormant.)
 export { ensureInviteCode, redeemInvite } from './redeemInvite.js';
+export { recordInviteVisit, claimInviteVisit } from './deferredInvite.js';
 export { getFriendsOfFriends } from './friendsOfFriends.js';
 export { fetchLinkPreview } from './fetchLinkPreview.js';

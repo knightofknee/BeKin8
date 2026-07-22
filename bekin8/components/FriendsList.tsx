@@ -59,7 +59,8 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
         )}
       </View>
 
-      {/* Notifications toggle (minimal, inline) */}
+      {/* Notifications toggle. Kept in the right-hand cluster (not mid-row) so a scroll swipe down
+          the middle of the list can't land on it. */}
       <View style={[styles.notifyWrap, notifyDisabled && { opacity: 0.4 }]}>
         <Text style={[styles.notifyLabel, { color: colors.subtle }]}>Notifications?</Text>
         <Switch
@@ -69,25 +70,26 @@ function Row({ item, busy, onRemove, onBlock, notify = false, onToggleNotify, on
         />
       </View>
 
-      {/* Block button */}
-      <Pressable
-        disabled={disabled}
-        onPress={() => { warning(); onBlock(); }}
-        hitSlop={10}
-        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
-      >
-        <Text style={styles.iconTxt}>⛔</Text>
-      </Pressable>
-
-      {/* Remove (unfriend) button */}
-      <Pressable
-        disabled={disabled}
-        onPress={() => { warning(); onRemove(); }}
-        hitSlop={10}
-        style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
-      >
-        <Text style={styles.iconTxt}>🗑️</Text>
-      </Pressable>
+      {/* Block + remove stacked vertically at the right edge, so the whole control cluster hugs
+          the side of the row instead of drifting toward the middle. */}
+      <View style={styles.actionCol}>
+        <Pressable
+          disabled={disabled}
+          onPress={() => { warning(); onBlock(); }}
+          hitSlop={8}
+          style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
+        >
+          <Text style={styles.iconTxt}>⛔</Text>
+        </Pressable>
+        <Pressable
+          disabled={disabled}
+          onPress={() => { warning(); onRemove(); }}
+          hitSlop={8}
+          style={[styles.iconBtn, { opacity: disabled ? 0.5 : 1, backgroundColor: colors.inputBg, borderColor: colors.border }]}
+        >
+          <Text style={styles.iconTxt}>🗑️</Text>
+        </Pressable>
+      </View>
     </Pressable>
   );
 }
@@ -119,11 +121,11 @@ const styles = StyleSheet.create({
   avatarTappable: {
     opacity: 1, // keeps full color; slight scale effect comes from Pressable's pressed state
   },
-  // circular icon button
+  // circular icon button (slightly smaller so two stack inside a comfortable row height)
   iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#F3F4F6",
@@ -131,8 +133,12 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   iconTxt: {
-    fontSize: 18,
-    lineHeight: 22,
+    fontSize: 15,
+    lineHeight: 19,
+  },
+  actionCol: {
+    justifyContent: "center",
+    gap: 8,
   },
   notifyWrap: {
     alignItems: "center",

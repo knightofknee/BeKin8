@@ -25,6 +25,12 @@ export default function Terms() {
             You are responsible for the content you post. We may remove content or suspend
             accounts that violate these terms.
           </Text>
+          <Text style={[s.h2, { color: colors.text }]}>Age Requirement</Text>
+          <Text style={[s.p, { color: colors.text }]}>
+            You must be at least 13 years old to use the app. If you are under 13, do not create an
+            account. We do not knowingly collect information from anyone under 13, and we will remove
+            accounts we learn belong to someone under 13.
+          </Text>
           <Text style={[s.h2, { color: colors.text }]}>Community Guidelines (UGC)</Text>
           <Text style={[s.p, { color: colors.text }]}>
             No hate speech, harassment, threats, doxxing, sexual exploitation, or illegal content.

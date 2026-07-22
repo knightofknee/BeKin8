@@ -162,6 +162,10 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
+  // Measured content height of the composer input. iOS keeps a multiline TextInput at its grown
+  // height after a PROGRAMMATIC clear (sending), so the height is driven explicitly from this and
+  // reset to 0 on send, snapping the box back to one line.
+  const [composerContentH, setComposerContentH] = useState(0);
   const [sending, setSending] = useState(false);
   const [gifOpen, setGifOpen] = useState(false);
   const [gifViewer, setGifViewer] = useState<string | null>(null);
@@ -421,6 +425,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       });
 
       setText('');
+      setComposerContentH(0); // snap the input back to one line (see composerContentH above)
       pendingScrollRef.current = true;
     } catch (e) {
       Alert.alert('Send failed', 'Please try again.');
@@ -611,6 +616,10 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
 
   const remaining = CHAT_MESSAGE_MAX - text.length;
+  // Explicit input height clamped to the same 120 cap as before. The reported contentSize already
+  // INCLUDES the input's vertical padding (one line reports ~36); adding it again held the box at
+  // two-line height permanently. 36 = the single-line height (20pt line + 16 padding on iOS).
+  const composerH = Math.max(36, Math.min(120, Math.ceil(composerContentH)));
   const ComposerRow = (
     <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
       <View style={[styles.composerPill, { borderColor: tc.border, backgroundColor: tc.inputBg }]}>
@@ -624,7 +633,8 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           placeholder="Message"
           placeholderTextColor={tc.subtle}
           editable
-          style={[styles.composerInput, { color: tc.text }]}
+          style={[styles.composerInput, { color: tc.text, height: composerH }]}
+          onContentSizeChange={(e) => setComposerContentH(e.nativeEvent.contentSize.height)}
           multiline
           maxLength={CHAT_MESSAGE_MAX}
           onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
@@ -1262,8 +1272,11 @@ const styles = StyleSheet.create({
   msgRowMine: { justifyContent: 'flex-end' },
   msgRowTheirs: { justifyContent: 'flex-start' },
 
+  // NO maxWidth here: msgCol (below) caps the width against the full-width row. A percentage cap
+  // on this level resolved against msgCol's CONTENT-derived width, so a short timestamp under a
+  // message could set the column width first and squeeze the bubble to a couple of characters
+  // ("test" rendering as "te"/"st" on two lines).
   bubble: {
-    maxWidth: '90%',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 16,

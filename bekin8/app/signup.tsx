@@ -20,8 +20,6 @@ import { useRouter, Link } from "expo-router";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../firebase.config";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as Clipboard from "expo-clipboard";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { statusCodes } from "@react-native-google-signin/google-signin";
 import { Ionicons } from "@expo/vector-icons";
@@ -30,7 +28,6 @@ import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
 import PasswordInput, { type PasswordInputHandle } from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
-import { stashPendingInvite, coerceInviteCode, getPendingInvite } from "../lib/inviteLink";
 import { sendInitialVerification } from "../lib/emailVerification";
 
 const TOP_OFFSET = 64; // match login offset
@@ -60,39 +57,9 @@ export default function SignUp() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [inviteCodeInput, setInviteCodeInput] = useState("");
 
-  // Persist a typed invite code before account creation so the Gate redeems it once signed in.
-  // This is the guaranteed fallback when a smart-link / clipboard capture didn't carry the code.
-  const stashInviteIfPresent = () => stashPendingInvite(inviteCodeInput);
-
-  // Deferred attribution: a brand-new install opened from a smart link leaves the code on the
-  // clipboard (set by the waldgrave.com landing page). We read the clipboard LAZILY (only when the
-  // user focuses the invite field) so the iOS "Allow Paste" system alert never fires unprompted on
-  // mount. Gated by a per-install flag so we don't repeatedly trigger paste prompts.
-  const clipboardChecked = useRef(false);
-  const maybeReadClipboardInvite = async () => {
-    if (clipboardChecked.current) return;
-    clipboardChecked.current = true;
-    const CHECK_KEY = "@bekin_clipboard_invite_checked";
-    try {
-      // Skip entirely if a deep-link already stashed a code, or the field is already filled:
-      // no reason to touch the clipboard (and no paste prompt) in either case. These paths do NOT
-      // burn the one-shot, so a real clipboard check can still happen later.
-      if (await AsyncStorage.getItem(CHECK_KEY)) return;
-      if (inviteCodeInput.trim()) return;
-      if (await getPendingInvite()) return;
-      const text = await Clipboard.getStringAsync();
-      const code = coerceInviteCode(text);
-      if (code) setInviteCodeInput(code);
-      // Burn the one-shot only AFTER an actual clipboard read (or denial), so a declined paste
-      // prompt isn't re-shown, but a skip-because-deep-link path leaves it available.
-      AsyncStorage.setItem(CHECK_KEY, "1").catch(() => {});
-    } catch {
-      AsyncStorage.setItem(CHECK_KEY, "1").catch(() => {}); // a denied read still burns the one-shot
-    }
-  };
-
+  // No invite handling here: invites are LINK-only. Tapping a friend's link (before or after
+  // signing up) stashes + redeems the code via the root layout; signup shows no code field.
 
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -132,7 +99,6 @@ export default function SignUp() {
 
     try {
       setLoading(true);
-      await stashInviteIfPresent();
       const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
 
       // Deferred email verification: fire-and-forget the initial verification
@@ -164,7 +130,6 @@ export default function SignUp() {
     try {
       Keyboard.dismiss();
       setGoogleLoading(true);
-      await stashInviteIfPresent();
       await signInWithGoogle();
       router.replace("/home");
     } catch (e: any) {
@@ -184,7 +149,6 @@ export default function SignUp() {
     try {
       Keyboard.dismiss();
       setAppleLoading(true);
-      await stashInviteIfPresent();
       const { isRelayEmail } = await signInWithApple();
       if (isRelayEmail) {
         Alert.alert(
@@ -361,26 +325,6 @@ export default function SignUp() {
                     toggleColor={colors.primary}
                   />
                 </View>
-              </View>
-
-              {/* Invite code (optional) */}
-              <View style={styles.inputGroup}>
-                <Text style={[styles.label, { color: colors.text }]}>Invite code (optional)</Text>
-                <TextInput
-                  style={[
-                    styles.input,
-                    { borderColor: colors.border, backgroundColor: colors.inputBg, color: colors.text },
-                  ]}
-                  placeholder="From a friend's link"
-                  placeholderTextColor={colors.subtle}
-                  autoCapitalize="characters"
-                  autoCorrect={false}
-                  maxLength={6}
-                  value={inviteCodeInput}
-                  onChangeText={(v) => setInviteCodeInput(v.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 6))}
-                  onFocus={maybeReadClipboardInvite}
-                  editable={!anyLoading}
-                />
               </View>
 
               {/* Sign Up */}

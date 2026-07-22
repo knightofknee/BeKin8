@@ -1,11 +1,13 @@
 // components/FriendsProfileAndInvite.tsx
-import React from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import React, { useState } from "react";
+import { ActivityIndicator, Dimensions, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import QRCode from "react-native-qrcode-svg";
 import { colors } from "./ui/colors";
 import { MessageState } from "./types";
 import { useTheme } from "../providers/ThemeProvider";
 import { useTourTarget } from "../providers/TourProvider";
-import { press } from "../utils/haptics";
+import { buildInviteUrl } from "../lib/inviteLink";
+import { press, tap } from "../utils/haptics";
 
 type Props = {
   currentUsername: string | null;
@@ -47,6 +49,10 @@ export default function FriendsProfileAndInvite({
   message,
 }: Props) {
   const { colors } = useTheme();
+  // In-person friending: the friend link rendered as a QR. A small tile sits beside the Share
+  // button; tapping it opens the full-size code (see the Modal at the bottom).
+  const [qrOpen, setQrOpen] = useState(false);
+  const inviteUrl = inviteCode ? buildInviteUrl(inviteCode) : null;
   // Tour targets: step "Pick your username" spotlights ONLY the username block; step "Your name &
   // invite link" spotlights the WHOLE profile block below (username + display name + invite) so the
   // display name its copy mentions is highlighted and tappable, not just the invite.
@@ -85,7 +91,7 @@ export default function FriendsProfileAndInvite({
             <TextInput
               value={usernameInput}
               onChangeText={onChangeUsername}
-              placeholder="choose_a_username"
+              placeholder="choose a username"
               placeholderTextColor={colors.subtle}
               autoCapitalize="none"
               autoCorrect={false}
@@ -124,19 +130,30 @@ export default function FriendsProfileAndInvite({
           <View collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
             <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
-              Share your link. When a friend joins (or already has BeKin), you’re instantly connected.
+              Share your link. When a friend taps it, you’re instantly connected. No accept needed. Works for new signups too.
             </Text>
+            {/* Share button + a small QR tile (the SAME link, drawn as a code for in-person adds:
+                a friend points their camera at it and the universal link does the rest). QR stays
+                on a white card in both themes: scanners want dark modules on light, always. */}
             <View style={styles.inputRow}>
-              <View style={[styles.codeBox, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
-                <Text style={[styles.codeTxt, { color: colors.text }]}>{inviteCode ?? "······"}</Text>
-              </View>
               <Pressable
                 disabled={!inviteCode}
                 onPress={() => { press(); onShareInvite(); }}
-                style={[styles.btn, { paddingHorizontal: 16, opacity: inviteCode ? 1 : 0.5, backgroundColor: colors.primary }]}
+                style={[styles.btn, { flex: 1, opacity: inviteCode ? 1 : 0.5, backgroundColor: colors.primary }]}
               >
-                <Text style={styles.btnText}>Share</Text>
+                <Text style={styles.btnText}>Share friend link</Text>
               </Pressable>
+              {inviteUrl ? (
+                <Pressable
+                  onPress={() => { tap(); setQrOpen(true); }}
+                  style={({ pressed }) => [styles.qrTile, { borderColor: colors.border }, pressed && { opacity: 0.8 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Show my friend QR code"
+                  hitSlop={6}
+                >
+                  <QRCode value={inviteUrl} size={38} backgroundColor="#FFFFFF" color="#111827" />
+                </Pressable>
+              ) : null}
             </View>
           </View>
         ) : (
@@ -190,9 +207,44 @@ export default function FriendsProfileAndInvite({
           </Text>
         )}
       </View>
+
+      {/* Full-size friend QR. White card in both themes (scan contrast), quiet zone via the
+          card's padding, high error correction so the center logo never breaks scanning. */}
+      {inviteUrl ? (
+        <Modal visible={qrOpen} transparent animationType="fade" onRequestClose={() => setQrOpen(false)}>
+          <Pressable
+            style={[styles.qrBackdrop, { backgroundColor: colors.backdrop }]}
+            onPress={() => setQrOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close QR code"
+          >
+            <View style={styles.qrCard}>
+              <QRCode
+                value={inviteUrl}
+                size={QR_SIZE}
+                ecl="H"
+                backgroundColor="#FFFFFF"
+                color="#111827"
+                logo={require("../assets/icon.png")}
+                logoSize={Math.round(QR_SIZE * 0.18)}
+                logoBackgroundColor="#FFFFFF"
+                logoMargin={4}
+                logoBorderRadius={8}
+              />
+              {currentUsername ? <Text style={styles.qrName}>@{currentUsername}</Text> : null}
+              <Text style={styles.qrHint}>
+                Have a friend point their camera here. One tap and you&apos;re connected.
+              </Text>
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
     </View>
   );
 }
+
+// Sized for an arm's-length scan: most of the screen width, capped for tablets.
+const QR_SIZE = Math.min(Math.round(Dimensions.get("window").width * 0.66), 300);
 
 const styles = StyleSheet.create({
   card: {
@@ -229,15 +281,29 @@ const styles = StyleSheet.create({
   },
   btnText: { color: "#fff", fontWeight: "800" },
   message: { marginTop: 10, fontWeight: "600" },
-  codeBox: {
-    flex: 1,
+  // Small QR tile beside the Share button. Always white: QR contrast is non-negotiable.
+  qrTile: {
+    backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    alignItems: "center",
+    borderRadius: 10,
+    padding: 5,
   },
-  codeTxt: { fontSize: 20, fontWeight: "800", letterSpacing: 4 },
+  qrBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  // The big code's card doubles as its quiet zone (the light margin scanners need).
+  qrCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 24,
+    alignItems: "center",
+    maxWidth: 380,
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+  },
+  qrName: { marginTop: 14, fontSize: 18, fontWeight: "800", color: "#111827" },
+  qrHint: { marginTop: 6, fontSize: 13, color: "#6B7280", textAlign: "center", lineHeight: 18 },
   usernameRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   displayNameLink: { fontWeight: "700", textDecorationLine: "underline" },
   rowTitle: { fontWeight: "700", color: colors.text },

@@ -3,13 +3,58 @@
 // across Home, the options sheet, Friends, the Post screen, and Settings. Steps marked
 // `interactive` let the user touch/edit the highlighted element without ending the tour.
 import React, { useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
+import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../providers/ThemeProvider";
 import { useOnboarding } from "../../providers/OnboardingProvider";
 import { getBeaconSkinId, onBeaconSkinChange } from "../../lib/beaconSkinPref";
 import { getSkin } from "../../lib/beaconSkins";
+import { onNotifyPermissionChange } from "../../lib/notifyPermission";
 import type { TourStep } from "./SpotlightTour";
+
+// Live OS notification-permission state for the tour's enable buttons: checked on mount and
+// re-checked whenever the app-wide permission pub/sub fires (ensureNotifyPermission emits on grant).
+function useBeaconNotifsGranted(): boolean | null {
+  const [granted, setGranted] = useState<boolean | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    const check = () =>
+      Notifications.getPermissionsAsync()
+        .then((p) => { if (mounted) setGranted(!!p.granted); })
+        .catch(() => {});
+    check();
+    const off = onNotifyPermissionChange(check);
+    return () => { mounted = false; off(); };
+  }, []);
+  return granted;
+}
+
+// The enable button, permission-aware: already granted (or just granted) flips it to a congrats
+// state instead of offering a button that would do nothing.
+function NotifEnableAction({ onEnable }: { onEnable: () => void }) {
+  const { colors } = useTheme();
+  const granted = useBeaconNotifsGranted();
+  if (granted) {
+    return (
+      <View style={[s.enableBtn, s.enableDone, { borderColor: colors.success }]}>
+        <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+        <Text style={[s.enableTxt, { color: colors.success }]}>Beacon notifications are on 🎉</Text>
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={onEnable}
+      style={[s.enableBtn, { backgroundColor: colors.success, flexDirection: "row", justifyContent: "center", gap: 8 }]}
+      accessibilityRole="button"
+      accessibilityLabel="Turn on beacon notifications"
+    >
+      <Ionicons name="notifications" size={18} color="#fff" />
+      <Text style={[s.enableTxt, { color: "#fff" }]}>Turn on beacon notifications</Text>
+    </Pressable>
+  );
+}
 
 // ---------- Beacon tour (Home + sheet + Friends) ----------
 
@@ -50,18 +95,10 @@ function NotifTourBody({ onEnable }: { onEnable: () => void }) {
   return (
     <View>
       <Text style={[s.body, { color: colors.text }]}>
-        BeKin only notifies you when a friend lights a beacon. These switches turn on any extra
-        notifications you want, and they all start off. You can mute any single friend from the friends tab.
+        BeKin only notifies you when a friend lights a beacon. Everything else starts off; these
+        switches add more if you want it.
       </Text>
-      {/* Solid GREEN "live" action (distinct from the solid-blue Next CTA) so it reads as active and
-          inviting, not a ghosted/disabled control. */}
-      <Pressable
-        onPress={onEnable}
-        style={[s.enableBtn, { backgroundColor: colors.success, flexDirection: "row", justifyContent: "center", gap: 8 }]}
-      >
-        <Ionicons name="notifications" size={18} color="#fff" />
-        <Text style={[s.enableTxt, { color: "#fff" }]}>Turn on beacon notifications</Text>
-      </Pressable>
+      <NotifEnableAction onEnable={onEnable} />
     </View>
   );
 }
@@ -89,7 +126,7 @@ function FirstBeaconBody({ usernameDone, friendDone, beaconLit }: { usernameDone
     <View>
       <Text style={[s.body, { color: colors.text }]}>
         This is set to your <Text style={{ fontWeight: "800" }}>test</Text> group, so you can light beacons
-        here to try things out without notifying anyone.
+        here to try things out without notifying anyone. Give it a try.
       </Text>
       <Text style={[s.body, { color: colors.text, marginTop: 8 }]}>
         Tweak the day, time, or who can see it in Beacon options. Finish these three to wrap up:
@@ -101,6 +138,46 @@ function FirstBeaconBody({ usernameDone, friendDone, beaconLit }: { usernameDone
       </View>
     </View>
   );
+}
+
+// Completion body: the wrap-up copy with the full checklist shown checked off, so finishing
+// reads as an accomplishment rather than the list silently vanishing.
+function FirstBeaconDoneBody() {
+  const { colors } = useTheme();
+  return (
+    <View>
+      <Text style={[s.body, { color: colors.text }]}>
+        That&apos;s everything, your setup is complete. Friends can see your beacon whenever it&apos;s lit,
+        so they know when you&apos;re free to hang out. Tap Done to finish.
+      </Text>
+      <View style={s.todoList}>
+        <TodoItem done label="Add a username" />
+        <TodoItem done label="Add a friend" />
+        <TodoItem done label="Light your beacon" />
+      </View>
+    </View>
+  );
+}
+
+// Full tour's username step: same required-to-advance gate as the speed tour (home re-renders it
+// live via updateStepById as the username lands).
+export function makeFullUsernameStep(ctx: BeaconTourCtx, usernameDone: boolean): TourStep {
+  const friends = () => { ctx.closeSheet(); ctx.goFriends(); };
+  return {
+    id: "full-username",
+    target: "friends-username",
+    title: "Pick your username",
+    body: "A username is required to uniquely identify you. It can be used to add friends. You can also set a display name in the next step.",
+    interactive: true,
+    // Sit the callout just below the "send a friend request" field (shared anchor) so it's high and
+    // at the SAME height as the next step, with that field still barely visible above the box.
+    placement: "below",
+    belowTarget: "friends-add",
+    belowGap: 6,
+    ctaDisabled: !usernameDone,
+    ctaDisabledNote: "Save a username to continue.",
+    onEnter: friends,
+  };
 }
 
 // Live "tap the {noun}" body. The interactive 'beacon-style' step invites mid-tour skin switches
@@ -118,19 +195,14 @@ function TapNounBody({ initialNoun, template }: { initialNoun: string; template:
   return <Text style={[s.body, { color: colors.text }]}>{template(noun)}</Text>;
 }
 
-// Body for the FULL tour's first step. Keeps the live "tap the {noun}" instruction, then presents the
-// quick-setup choice up front as a clear affordance (rather than the easy-to-miss stacked nav button):
-// a green "Try the quick setup" button that switches to the 2-minute speed tour via ctx.onSpeedTour.
-function LightBeaconBody({ initialNoun, onSpeedTour }: { initialNoun: string; onSpeedTour: () => void }) {
+// Body for the FULL tour's first step: SHORT, so the callout never buries the beacon it spotlights.
+// Lighting is practiced for real on the final step, so this is just the intro + the quick-setup choice.
+function LightBeaconBody({ onSpeedTour }: { onSpeedTour: () => void }) {
   const { colors } = useTheme();
   return (
     <View>
-      <TapNounBody
-        initialNoun={initialNoun}
-        template={(noun) => `A beacon tells friends you're free to hang out. Tap the ${noun} to light it, tap again to put it out. Nothing is shared yet: that starts once you add a username and a friend.`}
-      />
-      <Text style={[s.body, { color: colors.subtle, marginTop: 10 }]}>
-        In a hurry? The quick setup covers just the essentials: a username, a friend, and lighting a beacon.
+      <Text style={[s.body, { color: colors.text }]}>
+        A lit beacon tells friends you&apos;re free to hang out. You&apos;ll light yours at the end of the tour.
       </Text>
       <Pressable
         onPress={onSpeedTour}
@@ -145,6 +217,43 @@ function LightBeaconBody({ initialNoun, onSpeedTour }: { initialNoun: string; on
   );
 }
 
+// Speed tour's notifications step: one strongly-recommended green button. Next is gated by
+// onBeforeNext (see buildSpeedTour), which warns before letting the user skip past this.
+function SpeedNotifBody({ onEnable }: { onEnable: () => void }) {
+  const { colors } = useTheme();
+  return (
+    <View>
+      <Text style={[s.body, { color: colors.text }]}>
+        Notifications are how you know the moment a friend lights a beacon. That is the only
+        notification we are turning on in this step.
+      </Text>
+      <NotifEnableAction onEnable={onEnable} />
+    </View>
+  );
+}
+
+// Next-gate for the notifications step: pass through silently when permission is already granted,
+// otherwise warn (missing friends' beacons is the whole point of the app) with Go back / Okay.
+async function confirmSkipNotifications(): Promise<boolean> {
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    if (perm.granted) return true;
+  } catch {
+    // fall through to the warning; never block the tour on a failed permission read
+  }
+  return new Promise<boolean>((resolve) => {
+    Alert.alert(
+      "Skip notifications?",
+      "Without them you won't know when a friend lights a beacon. You can turn them on later in Settings.",
+      [
+        { text: "Go back", style: "cancel", onPress: () => resolve(false) },
+        { text: "Okay", onPress: () => resolve(true) },
+      ],
+      { cancelable: false }
+    );
+  });
+}
+
 // Live body for the speed tour's "add a friend" step (2b). Reads the friend count live via
 // useOnboarding, so the instant the user adds a friend the text flips from "add me" to a congrats. The
 // actual friends list (on the Friends screen) swaps the Add-Brian card for the new friend row on its own.
@@ -157,7 +266,7 @@ function SpeedFriendBody() {
       <Text style={[s.body, { color: colors.text }]}>
         {hasFriend
           ? "Congrats on adding your first friend! They show up in your friends list right here."
-          : "If you are looking for a first friend to test with, add me! Tap Add on Brian's card, and you will see them appear in your friends list."}
+          : "Add me if you need a friend to get started! Tap Add on Brian's card and you'll see me appear in your friends list right here."}
       </Text>
     </View>
   );
@@ -176,7 +285,7 @@ export function makeFirstBeaconStep(
     return {
       id: "set-first-beacon",
       title: "You're all set! 🎉",
-      body: "That's everything, your setup is complete. Friends can see your beacon whenever it's lit, so they know when you're free to hang out. Tap Done to finish.",
+      body: <FirstBeaconDoneBody />,
       interactive: true,
       cta: "Done",
       onEnter: ctx.onEnterDone,
@@ -204,10 +313,11 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
     {
       id: "light-beacon-demo",
       target: "beacon-logs",
-      title: "Light your beacon",
-      // Body presents the quick-setup choice up front (a clear "Try the quick setup" affordance) instead
-      // of only the easy-to-miss stacked nav button; the speed-tour wiring (ctx.onSpeedTour) is unchanged.
-      body: <LightBeaconBody initialNoun={ctx.tapNoun} onSpeedTour={ctx.onSpeedTour} />,
+      title: "Your beacon",
+      // SHORT intro (the callout must not bury the beacon) + the quick-setup choice. The real
+      // light-your-beacon practice happens on the final step, so this one doesn't instruct a tap;
+      // it stays interactive, and a curious tap gets the normal light confirm + the chat branch.
+      body: <LightBeaconBody onSpeedTour={ctx.onSpeedTour} />,
       interactive: true,
       placement: "top", // keep the callout above the logs so it never covers the "tap the logs" caption below
       holePadTop: ctx.holePadTop, // reach UP over the structure + the current skin's full flame height
@@ -241,11 +351,9 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       title: "Make it yours",
       body: "Pick your beacon's look and sound.",
       interactive: true,
-      // The style chips sit at the TOP of the sheet, so sit the callout JUST BELOW them (as high as
-      // readable without covering the chips), leaving the "Day" header + first row peeking through for
-      // orientation. belowGap is tunable on device.
-      placement: "below",
-      belowGap: 72,
+      // TOP slot, the same spot as step 2's callout, so opening the sheet doesn't bounce the box:
+      // the sheet (and its style chips) starts below the top zone, so nothing is covered.
+      placement: "top",
       onEnter: homeSheet,
     },
     {
@@ -258,25 +366,18 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       placement: "top",
       onEnter: homeSheet,
     },
-    {
-      target: "friends-username",
-      title: "Pick your username",
-      body: "A username is required to uniquely identify you. It can be used to add friends. You can also set a display name in the next step.",
-      interactive: true,
-      // Sit the callout just below the "send a friend request" field (shared anchor) so it's high and
-      // at the SAME height as the next step, with that field still barely visible above the box.
-      placement: "below",
-      belowTarget: "friends-add",
-      belowGap: 6,
-      onEnter: friends,
-    },
+    makeFullUsernameStep(ctx, ctx.usernameDone),
     {
       // Spotlights the WHOLE profile block (username + display name + invite) so everything the copy
       // mentions is highlighted + tappable, not just the invite. Setting a username here is fine; if one
       // already exists that area is just read-only, which is benign.
       target: "friends-profile",
       title: "Your name & invite link",
-      body: "Friends see your display name if you set one; tap it up top to change it anytime. And share your invite link here: anyone who joins through it (or already has BeKin) becomes your friend.",
+      // For a brand-new user (no friends yet) this is THE place to say how to get a first friend:
+      // the invite link, or adding Brian from the list just below.
+      body: ctx.hasFriends
+        ? "Friends see your display name if you set one; tap it up top to change it anytime. Share your invite link here: anyone who joins through it (or already has BeKin) becomes your friend."
+        : "Friends see your display name if you set one; tap it up top to change it anytime. Share your invite link here: anyone who joins through it (or already has BeKin) becomes your friend. Want a first friend right away? Add me from the list below!",
       interactive: true,
       placement: "below",
       belowTarget: "friends-add",
@@ -292,16 +393,18 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
     },
     {
       // Requests + the friends list (and, for a brand-new user with no friends, the "Add Brian" card).
-      // friends.tsx scrolls this block into view when this step is active. The last sentence only shows
-      // at 0 friends, since the Add-Brian card only renders then. Always present, so the onboarding
-      // banner's "Add a friend" jump (target friends-requests) always resolves.
+      // friends.tsx scrolls this block BELOW the top-slot callout (same treatment as speed 2b), and
+      // the hole unions with the end-of-list marker so EVERY friend row is inside the ring. Always
+      // present, so the onboarding banner's "Add a friend" jump (target friends-requests) resolves.
+      id: "full-friends",
       target: "friends-requests",
       title: "Requests and friends",
       body: ctx.hasFriends
         ? "If you are added by username, you will see the friend request here. Below is a list of your friends."
         : "If you are added by username, you will see the friend request here. Below is a list of your friends. If you are looking for a first friend to test with, add me!",
       interactive: true,
-      placement: "low",
+      placement: "top",
+      holeUnionTarget: "friends-list-end",
       onEnter: friends,
     },
     {
@@ -309,11 +412,19 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       title: "You're in control",
       body: <NotifTourBody onEnable={ctx.onEnableNotifications} />,
       interactive: true,
-      // Force the LOW slot from the first frame so the callout never starts TOP then DIPS to LOW once the
-      // (first-time, slow to mount) settings target measures. Long body grows DOWN over the tab bar, not
-      // up over the switches.
+      // Force the LOW slot from the first frame so the callout never starts TOP then DIPS to LOW once
+      // the (first-time, slow to mount) settings target measures. The body is short now, so no
+      // growDown: the callout hugs the bottom and the switches stay visible (and scrollable) above it.
       placement: "low",
-      growDown: true,
+      onEnter: ctx.goSettings,
+    },
+    {
+      // Light or dark: asked as its own question, pointing at the actual button so the user knows
+      // where it lives. Interactive: tapping flips the theme live under the spotlight.
+      target: "settings-darkmode",
+      title: "Light or dark?",
+      body: "Your call. This button flips the whole app, and you can come back and change it anytime.",
+      interactive: true,
       onEnter: ctx.goSettings,
     },
     // Final step is ALWAYS shown (never auto-skipped). It's a single LIVE step: gated guided-first-
@@ -333,80 +444,122 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
   return steps.filter(Boolean) as TourStep[];
 }
 
-// The SPEED TOUR: the minimum to get going. username, then a friend, then light a beacon, then a short
-// "you're all set" that points at Beacon options. Reached from step 1 of the full tour via its green
-// "Speed tour" button (ctx.onSpeedTour calls restart() with these steps).
-export function buildSpeedTour(ctx: BeaconTourCtx): TourStep[] {
+// ---- Speed tour LIVE steps. Each is a maker so home can re-render it in place (updateStepById)
+// as the underlying state changes: username saved, first friend added, beacon lit. ----
+
+// Step 1: gated on actually SAVING a username (Next grayed until then).
+export function makeSpeedUsernameStep(ctx: BeaconTourCtx, usernameDone: boolean): TourStep {
+  const friends = () => { ctx.closeSheet(); ctx.goFriends(); };
+  return {
+    // Back returns to the FULL tour's step 1 (ctx.onExitSpeedTour) rather than ending the tour.
+    id: "speed-username",
+    target: "friends-username",
+    title: "Add a username",
+    body: "Pick a username and tap Save. It is how friends find and add you.",
+    interactive: true,
+    placement: "below",
+    belowTarget: "friends-add",
+    belowGap: 6,
+    backAction: ctx.onExitSpeedTour,
+    ctaDisabled: !usernameDone,
+    ctaDisabledNote: "Save a username to continue.",
+    onEnter: friends,
+  };
+}
+
+// Step 2b: LIVE body (congrats only once a friend actually exists; otherwise pitches the Add-Brian
+// card, which renders INSIDE the highlighted block at 0 friends). Next gated on having a friend.
+// The hole reaches below the wrapper so the first friend row is highlighted too.
+export function makeSpeedFriendStep(ctx: BeaconTourCtx, friendDone: boolean): TourStep {
+  const friends = () => { ctx.closeSheet(); ctx.goFriends(); };
+  return {
+    id: "speed-friend",
+    target: "friends-requests",
+    title: "Your friends",
+    body: <SpeedFriendBody />,
+    interactive: true,
+    stepLabel: "2b",
+    placement: "top",
+    holeUnionTarget: "friends-list-end", // ring the WHOLE friends list, however many rows
+    branch: true,
+    ctaDisabled: !friendDone,
+    ctaDisabledNote: "1 friend is needed to continue.",
+    onEnter: friends,
+  };
+}
+
+// Step 4, ONE live step: unlit shows the tap instruction with the CTA as a grayed incomplete task;
+// lighting flips it in place to the congratulations with Done enabled and the highlight grown to
+// wrap the beacon AND Beacon options together.
+export function makeSpeedLightStep(ctx: BeaconTourCtx, lit: boolean): TourStep {
   const home = () => { ctx.goHome(); ctx.closeSheet(); };
+  if (lit) {
+    return {
+      id: "speed-light",
+      target: "beacon-options-cta",
+      title: "Beacon lit! 🎉",
+      body: "Congrats, that's the whole flow. It went to your test group, so no friends were notified. Open Beacon options to set the day, time, and who sees it.",
+      interactive: true,
+      placement: "top",
+      holePadTop: ctx.holePadTop + 235, // structure + chat slot; slightly short of the flame tip so
+      // the ring keeps clear air between itself and the instruction box above
+      cta: "Done",
+      onEnter: home,
+    };
+  }
+  return {
+    id: "speed-light",
+    target: "beacon-logs",
+    title: "Light your beacon",
+    body: (
+      <TapNounBody
+        initialNoun={ctx.tapNoun}
+        template={(noun) =>
+          `Tap the ${noun} to light your beacon. It is set to your test group, so no friends are notified while you try it.`}
+      />
+    ),
+    interactive: true,
+    placement: "top",
+    holePadTop: ctx.holePadTop,
+    holePadBottom: -16,
+    cta: "Light your beacon",
+    ctaDisabled: true, // not a button: the incomplete task, shown where Next goes
+    onEnter: home,
+  };
+}
+
+// The SPEED TOUR: the minimum to get going. username, then a friend, then notifications, then light
+// a beacon (which congratulates in place). Reached from step 1 of the full tour via its green
+// "Try the quick setup" button (ctx.onSpeedTour calls restart() with these steps).
+export function buildSpeedTour(ctx: BeaconTourCtx): TourStep[] {
   const friends = () => { ctx.closeSheet(); ctx.goFriends(); };
   return [
+    makeSpeedUsernameStep(ctx, ctx.usernameDone),
     {
-      // Step 1. Back returns to the FULL tour's step 1 (ctx.onExitSpeedTour) rather than ending the tour.
-      id: "speed-username",
-      target: "friends-username",
-      title: "Add a username",
-      body: "Pick a username and tap Save. It is how friends find and add you.",
-      interactive: true,
-      placement: "below",
-      belowTarget: "friends-add",
-      belowGap: 6,
-      backAction: ctx.onExitSpeedTour,
-      onEnter: friends,
-    },
-    {
-      // Step 2a: how to add a friend (invite link + add by username). topFrac holds the callout at the
-      // SAME higher spot as 2b (below the highlighted block, not pinned to the bottom).
+      // Step 2a: how to add a friend (invite link + add by username). LOW slot with the block
+      // scrolled to the top of the screen.
       id: "speed-invite",
       target: "friends-add-card",
       title: "Add a friend",
       body: "Share your invite link, or send a friend request by their username here.",
       interactive: true,
       stepLabel: "2a",
-      topFrac: 0.52,
+      placement: "low",
       onEnter: friends,
     },
+    makeSpeedFriendStep(ctx, ctx.friendDone),
     {
-      // Step 2b (a non-counted continuation of step 2): the friends list + the Add-Brian option. The body
-      // is LIVE (SpeedFriendBody) and flips to a congrats the moment a friend is added. Same topFrac as 2a.
-      id: "speed-friend",
-      target: "friends-requests",
-      title: "Your friends",
-      body: <SpeedFriendBody />,
+      // Optional but STRONGLY recommended: without notifications the whole app goes quiet. Next is
+      // gated: with permission still off it warns (Go back / Okay) before moving on.
+      id: "speed-notifications",
+      title: "Don't miss your friends",
+      body: <SpeedNotifBody onEnable={ctx.onEnableNotifications} />,
       interactive: true,
-      stepLabel: "2b",
-      topFrac: 0.52,
-      branch: true,
+      stepLabel: "3",
+      onBeforeNext: confirmSkipNotifications,
       onEnter: friends,
     },
-    {
-      id: "speed-light",
-      target: "beacon-logs",
-      title: "Light your beacon",
-      body: (
-        <TapNounBody
-          initialNoun={ctx.tapNoun}
-          template={(noun) => `Tap the ${noun} to light your beacon. That tells your friends you are free to hang out.`}
-        />
-      ),
-      interactive: true,
-      placement: "top",
-      stepLabel: "3a",
-      holePadTop: ctx.holePadTop,
-      holePadBottom: -16,
-      onEnter: home,
-    },
-    {
-      // Phase 2 of "light a beacon": not counted, so the light step and this both read as step 3.
-      id: "speed-done",
-      target: "beacon-options-cta",
-      title: "You're all set!",
-      body: "Nice work. Open Beacon options to set the day, time, and more.",
-      interactive: true,
-      branch: true,
-      stepLabel: "3b",
-      cta: "Done",
-      onEnter: home,
-    },
+    makeSpeedLightStep(ctx, ctx.beaconLit),
   ];
 }
 
@@ -422,7 +575,9 @@ export function buildPostTour(ctx: PostTourCtx): TourStep[] {
     {
       target: "post-limit",
       title: "Your posting pace",
-      body: "You can make 1 post every other day. The counter shows your word limit (1000 words).",
+      // Describes exactly what's highlighted (the pace note); the 1000-word cap is mentioned
+      // without claiming the counter is inside the ring (it lives further down the form).
+      body: "You can make 1 post every other day, up to 1000 words each.",
       onEnter: ctx.goPost,
     },
     {
@@ -434,14 +589,14 @@ export function buildPostTour(ctx: PostTourCtx): TourStep[] {
     {
       target: "settings-comments",
       title: "Comments are your call",
-      body: "Decide whether friends can comment on your posts. Try the switch; the tour will stay put.",
+      body: "Decide whether friends can comment on your posts.",
       interactive: true,
       onEnter: ctx.goSettings,
     },
     {
       target: "settings-comment-notify",
       title: "Comment notifications",
-      body: "And choose whether to be notified about comments. Flip it however you like.",
+      body: "Choose whether to be notified about comments.",
       interactive: true,
       onEnter: ctx.goSettings,
     },
@@ -457,6 +612,8 @@ export function buildPostTour(ctx: PostTourCtx): TourStep[] {
 const s = StyleSheet.create({
   body: { fontSize: 15, lineHeight: 22 },
   enableBtn: { marginTop: 14, borderRadius: 12, paddingVertical: 12, alignItems: "center" },
+  // Granted state: outlined green row with a check, clearly done rather than tappable.
+  enableDone: { borderWidth: 1.5, backgroundColor: "transparent", flexDirection: "row", justifyContent: "center", gap: 8 },
   enableTxt: { color: "#fff", fontSize: 15, fontWeight: "700" },
   todoList: { marginTop: 14, gap: 8 },
   todoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
