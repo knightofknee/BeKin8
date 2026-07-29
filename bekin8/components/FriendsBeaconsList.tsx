@@ -510,12 +510,11 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       return;
     }
 
-    const sortedUids = Array.from(new Set(friendUids)).filter(Boolean).sort();
-    const key = sortedUids.length === 0 ? '__empty__' : sortedUids.join('|');
-
-    // Bail out: friend uids are unchanged from the active subscription set.
-    // Adding/removing one friend would change the key and skip this; only
-    // identical-content updates (e.g. parent re-render, listener echo) are skipped.
+    // Subscription no longer depends on the friend uid list: the audience lives on the Beacon docs
+    // themselves (functions/src/audience.ts), so one listener covers everyone allowed to see me.
+    // Keying on the uid alone also means a friendship change no longer tears down and rebuilds
+    // listeners; the server restamps audienceUids and this listener just sees docs enter or leave.
+    const key = `aud:${me.uid}`;
     if (subscriptionsKeyRef.current === key) return;
     subscriptionsKeyRef.current = key;
 
@@ -523,12 +522,6 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
     beaconUnsubsRef.current.forEach((fn) => fn());
     beaconUnsubsRef.current = [];
     docStoreRef.current.clear();
-
-    if (sortedUids.length === 0) {
-      setBeacons([]);
-      setBeaconsReady(true);
-      return;
-    }
 
     // we expect at least one snapshot; hold off on empty-state copy until one arrives
     setBeaconsReady(false);
@@ -548,19 +541,20 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       }
     };
 
-    const unsubs: (() => void)[] = [];
-    for (let i = 0; i < sortedUids.length; i += 10) {
-      const batch = sortedUids.slice(i, i + 10);
-      const qOwners = query(collection(db, 'Beacons'), where('ownerUid', 'in', batch));
-      unsubs.push(
-        onSnapshot(
-          qOwners,
-          applySnapshot,
-          () => { /* even on error, avoid deadlock */ setBeaconsReady(true); }
-        )
-      );
-    }
-    beaconUnsubsRef.current = unsubs;
+    // One listener instead of ceil(friends/30). My own beacons come back too (I am in my own
+    // audience), but applySnapshot already drops them ("never show my own"), so the visible result
+    // is unchanged.
+    const qAudience = query(
+      collection(db, 'Beacons'),
+      where('audienceUids', 'array-contains', me.uid)
+    );
+    beaconUnsubsRef.current = [
+      onSnapshot(
+        qAudience,
+        applySnapshot,
+        () => { /* even on error, avoid deadlock */ setBeaconsReady(true); }
+      ),
+    ];
   }, [friendUids, todayStart, windowEnd]);
 
   // Stable first-card measurement callback. Only records the first non-zero

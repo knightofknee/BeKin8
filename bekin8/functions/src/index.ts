@@ -154,8 +154,17 @@ async function membersOfGroups(ownerUid: string, groupIds: string[]): Promise<st
 
 /**
  * Eligible = (group members resolved server-side, OR all accepted friends if unscoped)
+ *            ∩ the owner's actual accepted friends
  *            ∩ users who opted in (new subdoc OR legacy notify flag)
  *            − ownerUid
+ *
+ * The friend intersection is a hard backstop, not a formality. Two of the three audience sources
+ * are client-written and unvalidated: legacy `allowedUids` (the Beacons create rule pins only
+ * ownerUid) and FriendGroups.memberUids (the create rule checks only `is list`). The last filter,
+ * recipientWantsNotify, passes on the recipient's notify-all toggle with no friendship test. So
+ * before this, anyone could create a beacon carrying arbitrary allowedUids and arbitrary message
+ * text and push attacker-authored notifications to strangers, repeatably with a fresh beacon each
+ * time. Friendship is the one thing the sender cannot forge, so every path is funneled through it.
  */
 async function eligibleRecipients(
   allowed: string[] | undefined,
@@ -175,17 +184,35 @@ async function eligibleRecipients(
   // "all friends") falls back to the full friend list. Legacy docs that still carry allowedUids are
   // honored verbatim.
   const scoped = Array.isArray(groupIds) && groupIds.length > 0;
+  // Track whether `base` already came straight from the friend list, so the unscoped path doesn't
+  // pay for the same lookup twice.
+  let baseIsFriendList = false;
   const base: string[] = scoped
     ? normalizedAllowed.length > 0
       ? normalizedAllowed
       : await membersOfGroups(ownerUid, groupIds as string[])
     : normalizedAllowed.length > 0
     ? normalizedAllowed
-    : await friendUidsOf(ownerUid);
+    : ((baseIsFriendList = true), await friendUidsOf(ownerUid));
 
   if (base.length === 0) return [];
 
-  const baseSet = new Set(base); // dedupe
+  // Constrain to real friendships. Skipped only when `base` IS the friend list.
+  let audience = base;
+  if (!baseIsFriendList) {
+    const friendSet = new Set(await friendUidsOf(ownerUid));
+    audience = base.filter((uid) => friendSet.has(uid));
+    if (audience.length !== base.length) {
+      logger.info('eligibleRecipients: dropped non-friend recipients', {
+        ownerUid,
+        requested: base.length,
+        kept: audience.length,
+      });
+    }
+    if (audience.length === 0) return [];
+  }
+
+  const baseSet = new Set(audience); // dedupe
   const out: string[] = [];
 
   await Promise.all(
@@ -950,33 +977,44 @@ async function removeUidFromFriendsArray(ownerUid: string, uidToRemove: string) 
   }
 }
 
-async function cancelPendingFriendRequests(uidA: string, uidB: string) {
+/**
+ * Delete EVERY FriendRequests doc between two users, in both directions, at any status.
+ *
+ * This used to only flip `pending` requests to `cancelled`, which left two problems behind:
+ *
+ * 1) Security: an `accepted` request is what the FriendEdges create rule accepts as proof of
+ *    consent (see `acceptedRequestFrom` in firestore.rules). Because nothing ever removed it,
+ *    consent was permanent: a user who was unfriended or blocked could re-create the edge
+ *    document from a modified client at any time and reappear in the other user's friend list,
+ *    beacon push fanout, and friends-of-friends graph. Consent must be consumed, not archived.
+ *
+ * 2) Re-friending was impossible. app/friends.tsx re-sends with setDoc(merge), which is an
+ *    UPDATE against a surviving doc, and the update rule only permits transitions OUT of
+ *    `pending`. So any leftover doc at accepted/cancelled/rejected permanently blocked a new
+ *    request between that pair, and a leftover `accepted` also made the client report
+ *    "Already friends." after an unfriend.
+ *
+ * Both listeners in the friends screen filter on status == 'pending', so non-pending docs are
+ * residue nothing reads. Deleting is the correct disposal.
+ */
+async function clearFriendRequestsBetween(uidA: string, uidB: string) {
   const reqs = db.collection('FriendRequests');
+  // Query by field rather than by the `{sender}_{receiver}` doc id, so legacy
+  // random-id request docs are cleaned up too.
   const [aToB, bToA] = await Promise.all([
-    reqs
-      .where('senderUid', '==', uidA)
-      .where('receiverUid', '==', uidB)
-      .where('status', '==', 'pending')
-      .get(),
-    reqs
-      .where('senderUid', '==', uidB)
-      .where('receiverUid', '==', uidA)
-      .where('status', '==', 'pending')
-      .get(),
+    reqs.where('senderUid', '==', uidA).where('receiverUid', '==', uidB).get(),
+    reqs.where('senderUid', '==', uidB).where('receiverUid', '==', uidA).get(),
   ]);
   const batch = db.batch();
   let touched = 0;
   for (const snap of [aToB, bToA]) {
     snap.forEach((d) => {
-      batch.update(d.ref, {
-        status: 'cancelled',
-        updatedAt: FieldValue.serverTimestamp(),
-        cancelReason: 'user_blocked',
-      });
+      batch.delete(d.ref);
       touched++;
     });
   }
   if (touched > 0) await batch.commit();
+  return touched;
 }
 
 export const onUserBlocked = onDocumentCreated(
@@ -1020,8 +1058,9 @@ export const onUserBlocked = onDocumentCreated(
         removeUidFromFriendsArray(blockedUid, ownerUid),
       ]);
 
-      // 4) Cancel any pending requests in either direction.
-      await cancelPendingFriendRequests(ownerUid, blockedUid);
+      // 4) Delete every request between them, in either direction, at any status. An `accepted`
+      //    one left behind is standing consent the blocked party can use to rebuild the edge.
+      await clearFriendRequestsBetween(ownerUid, blockedUid);
 
       logger.info('onUserBlocked: cleanup complete', {
         ownerUid,
@@ -1133,7 +1172,13 @@ export const onFriendEdgeDeleted = onDocumentDeleted(
         removeUidFromFriendsArray(b, a),
       ]);
 
-      logger.info('onFriendEdgeDeleted: cleanup complete', { a, b });
+      // Consume the consent that created this edge. The accepted FriendRequests doc is what the
+      // FriendEdges create rule checks, so leaving it behind let the removed party re-create the
+      // edge and undo their own removal. It also blocked re-friending: the client's re-send is a
+      // setDoc(merge) = update, which the rules only permit on a `pending` doc.
+      const requestsCleared = await clearFriendRequestsBetween(a, b);
+
+      logger.info('onFriendEdgeDeleted: cleanup complete', { a, b, requestsCleared });
     } catch (err) {
       logger.error('onFriendEdgeDeleted: cleanup failed', { a, b, err });
     }
@@ -1152,22 +1197,55 @@ const cleanUsername = (v: any): string => (typeof v === 'string' ? v.trim() : ''
 
 /**
  * Resolve the "Add Brian" card's target server-side, so the caller cannot choose it.
- * Mirrors the lookup app/friends.tsx does for display: usernameLower first, then username.
+ *
+ * This used to be `where('usernameLower','==','brain').limit(1)`. A single-equality query with no
+ * ordering returns the lowest document id, and Profiles usernames are NOT validated against the
+ * Usernames reservation (app/friends.tsx enforces uniqueness with a client-side getDocs that a
+ * direct SDK call skips). So any user could set their own usernameLower to 'brain' and, if their
+ * uid sorted below the real one, silently receive every new user's Add-Brian friendship. Retryable
+ * with fresh accounts until a low-sorting uid came up.
+ *
+ * Resolution order, most trustworthy first:
+ *   1. BEKIN_BRIAN_UID env var. Authoritative and unspoofable; set this to close the hole outright.
+ *   2. The Usernames/brain reservation. Rules allow create and owner-delete but never update, so
+ *      first-writer-wins makes this doc trustworthy when it exists.
+ *   3. A Profiles scan that FAILS CLOSED on ambiguity. If two profiles claim the name we cannot
+ *      tell which is real, so we refuse rather than guess by document id. An impostor can then
+ *      break the Add-Brian card, but can never be substituted for its target.
  */
 async function resolveBrianUid(): Promise<string | null> {
+  const pinned = (process.env.BEKIN_BRIAN_UID ?? '').trim();
+  if (pinned) return pinned;
+
+  const reservation = await db.collection('Usernames').doc('brain').get();
+  const reservedUid = reservation.exists ? cleanUsername(reservation.data()?.uid) : '';
+  if (reservedUid) return reservedUid;
+
   const profiles = db.collection('Profiles');
-  let snap = await profiles.where('usernameLower', '==', 'brain').limit(1).get();
-  if (snap.empty) snap = await profiles.where('username', '==', 'brain').limit(1).get();
-  return snap.empty ? null : snap.docs[0].id;
+  let snap = await profiles.where('usernameLower', '==', 'brain').limit(2).get();
+  if (snap.empty) snap = await profiles.where('username', '==', 'brain').limit(2).get();
+  if (snap.empty) return null;
+  if (snap.size > 1) {
+    logger.error(
+      'addFriendMutual: multiple profiles claim the username "brain", refusing to guess. ' +
+        'Set BEKIN_BRIAN_UID to pin the real target.',
+      { candidateUids: snap.docs.map((d) => d.id) }
+    );
+    return null;
+  }
+  return snap.docs[0].id;
 }
 
 export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) => {
   const meUid = req.auth?.uid;
   if (!meUid) throw new HttpsError('unauthenticated', 'Sign in required.');
 
+  // targetUid is now OPTIONAL. Profiles are audience-scoped, so the client can no longer resolve
+  // Brian's uid with its own Profiles query; it just calls this with no argument and the server
+  // resolves. Builds already in the wild still pass a targetUid, which is honored only if it agrees
+  // with the server's answer (checked below).
   const targetUid = String((req.data as any)?.targetUid ?? '').trim();
-  if (!targetUid) return { ok: false, error: 'BAD_TARGET' };
-  if (targetUid === meUid) return { ok: false, error: 'SELF' };
+  if (targetUid && targetUid === meUid) return { ok: false, error: 'SELF' };
 
   // This callable exists ONLY to back the "Add Brian" first-friend card, which needs the Admin SDK
   // because a client cannot write Brian's owner-only denorms (users/{brian}/friends, Friends/{brian}).
@@ -1184,20 +1262,24 @@ export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) =>
     logger.error('addFriendMutual: could not resolve the Brian profile');
     return { ok: false, error: 'BAD_TARGET' };
   }
-  if (targetUid !== brianUid) {
+  // An explicitly-passed target must agree with the server's answer; omitting it means "whoever the
+  // server says", which is what current builds do.
+  if (targetUid && targetUid !== brianUid) {
     logger.warn('addFriendMutual: rejected non-Brian target', { meUid, targetUid });
     return { ok: false, error: 'BAD_TARGET' };
   }
+  const resolvedTarget = brianUid;
+  if (resolvedTarget === meUid) return { ok: false, error: 'SELF' };
 
-  const edgeRef = db.collection('FriendEdges').doc(mutualEdgeId(meUid, targetUid));
+  const edgeRef = db.collection('FriendEdges').doc(mutualEdgeId(meUid, resolvedTarget));
   const now = FieldValue.serverTimestamp();
 
   const meProfRef = db.collection('Profiles').doc(meUid);
   const meUserRef = db.collection('users').doc(meUid);
-  const tgtProfRef = db.collection('Profiles').doc(targetUid);
-  const tgtUserRef = db.collection('users').doc(targetUid);
-  const meBlockRef = db.collection('users').doc(meUid).collection('blocks').doc(targetUid);
-  const tgtBlockRef = db.collection('users').doc(targetUid).collection('blocks').doc(meUid);
+  const tgtProfRef = db.collection('Profiles').doc(resolvedTarget);
+  const tgtUserRef = db.collection('users').doc(resolvedTarget);
+  const meBlockRef = db.collection('users').doc(meUid).collection('blocks').doc(resolvedTarget);
+  const tgtBlockRef = db.collection('users').doc(resolvedTarget).collection('blocks').doc(meUid);
 
   const outcome = await db.runTransaction(async (tx) => {
     // All reads before writes.
@@ -1223,27 +1305,27 @@ export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) =>
     const targetUsername =
       cleanUsername((tgtP.data() as any)?.username) || cleanUsername((tgtU.data() as any)?.username);
 
-    tx.set(edgeRef, { uids: [meUid, targetUid], state: 'accepted', createdAt: now, updatedAt: now }, { merge: true });
+    tx.set(edgeRef, { uids: [meUid, resolvedTarget], state: 'accepted', createdAt: now, updatedAt: now }, { merge: true });
     // Deliberately NO notify default here: this is the Add-Brian first-friend path, and a new
     // user should not be signed up for the creator's beacon pings (nor Brian for thousands of
     // first-friend users'). Every OTHER way a friendship forms defaults notify ON.
     tx.set(
-      db.collection('users').doc(meUid).collection('friends').doc(targetUid),
-      { uid: targetUid, username: targetUsername, status: 'accepted', acceptedAt: now },
+      db.collection('users').doc(meUid).collection('friends').doc(resolvedTarget),
+      { uid: resolvedTarget, username: targetUsername, status: 'accepted', acceptedAt: now },
       { merge: true }
     );
     tx.set(
-      db.collection('users').doc(targetUid).collection('friends').doc(meUid),
+      db.collection('users').doc(resolvedTarget).collection('friends').doc(meUid),
       { uid: meUid, username: myUsername, status: 'accepted', acceptedAt: now },
       { merge: true }
     );
     tx.set(
       db.collection('Friends').doc(meUid),
-      { friends: FieldValue.arrayUnion({ uid: targetUid, username: targetUsername }) },
+      { friends: FieldValue.arrayUnion({ uid: resolvedTarget, username: targetUsername }) },
       { merge: true }
     );
     tx.set(
-      db.collection('Friends').doc(targetUid),
+      db.collection('Friends').doc(resolvedTarget),
       { friends: FieldValue.arrayUnion({ uid: meUid, username: myUsername }) },
       { merge: true }
     );
@@ -1251,9 +1333,10 @@ export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) =>
   });
 
   if (outcome.status === 'blocked') return { ok: false, error: 'BLOCKED' };
-  if (outcome.status === 'already') return { ok: true, already: true, targetUid };
-  logger.info('addFriendMutual: friendship created', { meUid, targetUid });
-  return { ok: true, targetUid };
+  // Response key stays `targetUid` so existing clients reading it are unaffected.
+  if (outcome.status === 'already') return { ok: true, already: true, targetUid: resolvedTarget };
+  logger.info('addFriendMutual: friendship created', { meUid, targetUid: resolvedTarget });
+  return { ok: true, targetUid: resolvedTarget };
 });
 
 /**
@@ -1288,3 +1371,17 @@ export { ensureInviteCode, redeemInvite } from './redeemInvite.js';
 export { recordInviteVisit, claimInviteVisit } from './deferredInvite.js';
 export { getFriendsOfFriends } from './friendsOfFriends.js';
 export { fetchLinkPreview } from './fetchLinkPreview.js';
+// Username -> uid for add-friend / unblock, now that Profiles are audience-scoped and a client can
+// no longer query a stranger's profile. Returns uid + display name only.
+export { resolveUsername } from './resolveUsername.js';
+// Read-audience denormalization (see audience.ts). Stamps `audienceUids` on Posts/Beacons and keeps
+// it current as friendships change, so reads can be scoped to the audience instead of to "any
+// signed-in user". Data-only for now; the rules that enforce it land after the backfill.
+export {
+  onPostCreatedStampAudience,
+  onBeaconCreatedStampAudience,
+  onChatMessageCreatedStampAudience,
+  onFriendEdgeCreatedSyncAudience,
+  onFriendEdgeDeletedSyncAudience,
+  onProfileFofToggled,
+} from './audience.js';

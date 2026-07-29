@@ -14,6 +14,22 @@
       },
       "oauth_client": [
         {
+          "client_id": "203808800578-4qq0607saf7hivnl1vcmkv9dvogoa949.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.waldgrave.bekin",
+            "certificate_hash": "71bd853840cbc8bee278ffedcca07113dd561895"
+          }
+        },
+        {
+          "client_id": "203808800578-a7av6k64rv8r8fhrs09u1ndvhmgjhol7.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.waldgrave.bekin",
+            "certificate_hash": "2ee505d08def0de9a9814f70177870462c8568fe"
+          }
+        },
+        {
           "client_id": "203808800578-nslfpo7rtapvqh6th03qor6v5lbdhqga.apps.googleusercontent.com",
           "client_type": 3
         }
@@ -29,6 +45,13 @@
             {
               "client_id": "203808800578-nslfpo7rtapvqh6th03qor6v5lbdhqga.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "203808800578-5k1jdclv4kmak8rlda848u71t8nrcct1.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.briancarlisle.escapefromhadesirl"
+              }
             }
           ]
         }

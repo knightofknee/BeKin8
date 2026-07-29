@@ -21,7 +21,7 @@ export default function Guidelines() {
 
         <ScrollView contentContainerStyle={s.content}>
           <Text style={[s.p, { color: colors.text }]}>
-            Be kind. Don't post illegal or harmful content. Don't target individuals. If you see something
+            Be kind. Don&apos;t post illegal or harmful content. Don&apos;t target individuals. If you see something
             that breaks the rules, report it. If someone is bothering you, block them.
           </Text>
           <Text style={[s.p, { color: colors.text }]}>

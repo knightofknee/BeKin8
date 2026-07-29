@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -87,6 +88,11 @@ export default function Index() {
   };
 
   useEffect(() => {
+    // Android: the window resizes under the keyboard (adjustResize) and the screen scrolls,
+    // so the iOS translate-the-card trick is not needed. Worse, it fought the resize and
+    // could push the focused field out of view entirely.
+    if (Platform.OS === "android") return;
+
     const onShow = (e: any) => {
       const kb = e?.endCoordinates?.height ?? 0;
       kbHeightRef.current = kb;
@@ -170,7 +176,10 @@ export default function Index() {
         setError(CROSS_PROVIDER_COLLISION_MSG);
         return;
       }
-      setError("Google sign-in failed. Please try again.");
+      // Keep the code visible: "failed (DEVELOPER_ERROR)" vs a bare "failed" is the
+      // difference between a fixable config report and a shrug.
+      const code = e?.code != null ? String(e.code) : "";
+      setError(code ? `Google sign-in failed (${code}). Please try again.` : "Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
     }
@@ -203,29 +212,9 @@ export default function Index() {
     }
   };
 
-  return (
+  // Blobs + header + card, shared by the platform wrappers in the return below.
+  const formContent = (
     <>
-      <Stack.Screen
-        options={{
-          headerBackVisible: false,
-          gestureEnabled: false,
-          animation: "fade",
-        }}
-      />
-
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: colors.bg }}
-        behavior={undefined}
-      >
-        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-        <SafeAreaView style={{ flex: 1 }}>
-          <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-            <Animated.View
-              style={[
-                styles.container,
-                { paddingTop: insets.top + TOP_OFFSET, transform: [{ translateY: shift }] },
-              ]}
-            >
               {/* decorative soft circles */}
               <View style={[styles.blobA, { backgroundColor: isDark ? "#1E2A4A" : "#e2ebff" }]} />
               <View style={[styles.blobB, { backgroundColor: isDark ? "#1A2744" : "#d7e4ff" }]} />
@@ -364,27 +353,31 @@ export default function Index() {
                     )}
                   </Pressable>
 
-                  <Pressable
-                    onPress={handleAppleSignIn}
-                    disabled={anyLoading}
-                    style={({ pressed }) => [
-                      styles.appleBtn,
-                      { backgroundColor: isDark ? "#FFFFFF" : "#000" },
-                      pressed && { opacity: 0.85 },
-                      anyLoading && { opacity: 0.7 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Sign in with Apple"
-                  >
-                    {appleLoading ? (
-                      <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
-                    ) : (
-                      <View style={styles.ssoBtnInner}>
-                        <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
-                        <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
-                      </View>
-                    )}
-                  </Pressable>
+                  {/* Apple Sign-In is iOS-only (expo-apple-authentication has no Android
+                      implementation); on Android the button did nothing, so don't show it. */}
+                  {Platform.OS === "ios" && (
+                    <Pressable
+                      onPress={handleAppleSignIn}
+                      disabled={anyLoading}
+                      style={({ pressed }) => [
+                        styles.appleBtn,
+                        { backgroundColor: isDark ? "#FFFFFF" : "#000" },
+                        pressed && { opacity: 0.85 },
+                        anyLoading && { opacity: 0.7 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Sign in with Apple"
+                    >
+                      {appleLoading ? (
+                        <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
+                      ) : (
+                        <View style={styles.ssoBtnInner}>
+                          <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
+                          <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  )}
                 </View>
 
                 {/* Terms / Privacy notice */}
@@ -396,7 +389,49 @@ export default function Index() {
                   <Text style={[styles.termsText, { color: colors.subtle }]}>.</Text>
                 </View>
               </View>
-            </Animated.View>
+    </>
+  );
+
+  return (
+    <>
+      <Stack.Screen
+        options={{
+          headerBackVisible: false,
+          gestureEnabled: false,
+          animation: "fade",
+        }}
+      />
+
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: colors.bg }}
+        behavior={undefined}
+      >
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
+        <SafeAreaView style={{ flex: 1 }}>
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+            {Platform.OS === "android" ? (
+              // Android: scrollable, so the card can never hang under the system nav bar,
+              // and adjustResize + ScrollView keeps the focused input visible while typing.
+              // The iOS translate-the-card animation stays iOS-only.
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={[
+                  styles.containerAndroid,
+                  { paddingTop: insets.top + TOP_OFFSET, paddingBottom: 24 + insets.bottom },
+                ]}
+              >
+                {formContent}
+              </ScrollView>
+            ) : (
+              <Animated.View
+                style={[
+                  styles.container,
+                  { paddingTop: insets.top + TOP_OFFSET, transform: [{ translateY: shift }] },
+                ]}
+              >
+                {formContent}
+              </Animated.View>
+            )}
           </TouchableWithoutFeedback>
           {anyLoading && (
             <View style={[styles.blocker, { backgroundColor: isDark ? "rgba(15,17,23,0.98)" : "rgba(255,255,255,0.98)" }]} pointerEvents="auto">
@@ -414,6 +449,8 @@ export default function Index() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 20 },
+  // Android scroll-content variant of `container` (flex doesn't apply to scroll content).
+  containerAndroid: { flexGrow: 1, paddingHorizontal: 20 },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: "800" },

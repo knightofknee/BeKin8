@@ -38,6 +38,7 @@ import FriendsProfileAndInvite from "@/components/FriendsProfileAndInvite";
 import FriendRequestsSection from "@/components/FriendRequestsSection";
 import FriendsList from "@/components/FriendsList";
 import FriendGroupEditor, { type FriendGroup } from "@/components/FriendGroupEditor";
+import FriendCelebration from "@/components/FriendCelebration";
 import BottomBar from "@/components/BottomBar";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
@@ -91,6 +92,7 @@ export default function FriendsScreen() {
 
   // Friends (derived from multiple sources)
   const [friends, setFriends] = useState<Friend[]>([]);
+  const [celebrateFirstFriend, setCelebrateFirstFriend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<MessageState>({ text: "", type: null });
 
@@ -518,40 +520,56 @@ export default function FriendsScreen() {
 
     try {
       setBusyUsername(true);
-      const profilesCol = collection(db, "Profiles");
-      const q1 = query(profilesCol, where("usernameLower", "==", desiredLower));
-      const snap = await getDocs(q1);
+      const prevLower = currentUsername?.trim().toLowerCase();
 
-      if (!snap.empty && snap.docs[0].id !== user.uid) {
-        return showMessage("That username is already taken.", "error");
+      // RESERVE FIRST, then write the Profile. The order used to be the other way round, with the
+      // reservation as a best-effort afterthought that failed silently, which left the Profile
+      // username unbacked: uniqueness was only the client-side query below, so anyone calling the
+      // SDK directly could take any name, including one already in use. The Profiles rules now
+      // require an owned Usernames/{name} reservation before they accept a name change, so the
+      // reservation has to land first or the profile write is denied.
+      if (desiredLower !== prevLower) {
+        // Usernames has no update rule, so a setDoc onto an existing doc is denied. That makes the
+        // create itself the uniqueness check: it can only succeed when the name is unclaimed.
+        // First find out whether we already hold it (retry after a partially-completed rename);
+        // the owner-only read denies both "someone else's" and "does not exist", so treat any
+        // failure as "not mine" and let the create attempt decide.
+        let alreadyMine = false;
+        try {
+          const mine = await getDoc(doc(db, "Usernames", desiredLower));
+          alreadyMine = mine.exists() && (mine.data() as any)?.uid === user.uid;
+        } catch {
+          alreadyMine = false;
+        }
+
+        if (!alreadyMine) {
+          try {
+            await setDoc(doc(db, "Usernames", desiredLower), {
+              uid: user.uid,
+              username: desired,
+              createdAt: serverTimestamp(),
+            });
+          } catch {
+            return showMessage("That username is already taken.", "error");
+          }
+        }
       }
 
-      // Write the username to the Profiles doc (the source of truth the app reads). This must NOT
-      // be coupled to the Usernames reservation below: the deployed rules are default-deny and no
-      // rule establishes the Usernames collection, so an atomic batch that includes it would reject
-      // the whole commit and make usernames impossible to set. So commit Profiles on its own first.
+      // Now the Profile write, which the rules will accept because the reservation backs it.
       await setDoc(
         doc(db, "Profiles", user.uid),
         { username: desired, usernameLower: desiredLower },
         { merge: true }
       );
 
-      // Best-effort uniqueness reservation, entirely separate so a rule denial can never block the
-      // username itself. Only prevents true races once the deployed rules enforce create-if-absent
-      // on the Usernames collection (a console-only rules change, see report); until then it is a
-      // no-op that fails silently.
-      const prevLower = currentUsername?.trim().toLowerCase();
-      try {
-        await setDoc(
-          doc(db, "Usernames", desiredLower),
-          { uid: user.uid, username: desired, createdAt: serverTimestamp() },
-          { merge: true }
-        );
-        if (prevLower && prevLower !== desiredLower) {
+      // Release the old name so it becomes available again. Last, and best-effort: losing this
+      // only strands a reservation, whereas failing it earlier would abort a rename that worked.
+      if (prevLower && prevLower !== desiredLower) {
+        try {
           await deleteDoc(doc(db, "Usernames", prevLower));
+        } catch (releaseErr) {
+          if (__DEV__) console.warn("releasing previous username reservation failed", releaseErr);
         }
-      } catch (claimErr: any) {
-        if (__DEV__) console.warn("username reservation (non-blocking) failed", claimErr);
       }
 
       setCurrentUsername(desired);
@@ -577,16 +595,20 @@ export default function FriendsScreen() {
     try {
       setBusy(true);
 
-      // Resolve username -> uid
-      const profilesCol = collection(db, "Profiles");
-      let snap = await getDocs(query(profilesCol, where("usernameLower", "==", input.toLowerCase())));
-      if (snap.empty) snap = await getDocs(query(profilesCol, where("username", "==", input)));
+      // Resolve username -> uid SERVER-SIDE. Profiles are audience-scoped now (friends, plus
+      // friends-of-friends when both sides opted in), so a client query for a stranger's profile is
+      // denied by the rules, and the person you are trying to friend is by definition a stranger.
+      // The callable returns only { uid, username }, never profile content.
+      const resolved = await httpsCallable<{ username: string }, { found: boolean; uid?: string; username?: string }>(
+        getFunctions(),
+        "resolveUsername"
+      )({ username: input });
 
-      if (snap.empty) return showMessage("User not found.", "error");
-
-      const targetDoc = snap.docs[0];
-      const targetUid = targetDoc.id;
-      const targetUsername = (targetDoc.data() as any)?.username || input;
+      if (!resolved.data?.found || !resolved.data.uid) {
+        return showMessage("User not found.", "error");
+      }
+      const targetUid = resolved.data.uid;
+      const targetUsername = resolved.data.username || input;
 
       const meUid = me.uid;
       if (targetUid === meUid) return showMessage("You can’t add yourself.", "error");
@@ -640,11 +662,27 @@ export default function FriendsScreen() {
       if (existingIn?.exists() && (existingIn.data() as any).status === "pending") {
         return showMessage("They already requested you. Check requests above.", "success");
       }
-      if (
-        (existingOut?.exists() && (existingOut.data() as any).status === "accepted") ||
-        (existingIn?.exists() && (existingIn.data() as any).status === "accepted")
-      ) {
-        return showMessage("Already friends.", "success");
+      // Clear any settled request in either direction before re-sending. Two reasons:
+      //   - The re-send below is a setDoc(merge), which is an UPDATE when the doc already exists,
+      //     and the rules only allow transitions OUT of `pending`. A leftover rejected/cancelled/
+      //     accepted doc therefore made "send request" fail forever for that pair.
+      //   - An `accepted` leftover is standing consent for the FriendEdges create rule. The
+      //     onFriendEdgeDeleted / onUserBlocked triggers clear these server-side, but a request
+      //     that was rejected or cancelled never had an edge, so no trigger ever covers it.
+      // The delete rule permits a participant to delete any non-pending request, so this is allowed.
+      // Best-effort: if a delete is denied we still attempt the send below and report its failure.
+      const settled = [
+        existingOut?.exists() && (existingOut.data() as any).status !== "pending" ? outId : null,
+        existingIn?.exists() && (existingIn.data() as any).status !== "pending" ? inId : null,
+      ].filter(Boolean) as string[];
+      if (settled.length) {
+        await Promise.all(
+          settled.map((id) =>
+            deleteDoc(doc(db, "FriendRequests", id)).catch((err) => {
+              if (__DEV__) console.warn("stale request cleanup failed (best-effort)", id, err);
+            })
+          )
+        );
       }
 
       // Create outgoing request
@@ -880,54 +918,44 @@ export default function FriendsScreen() {
     const me = auth.currentUser;
     if (!me) return showMessage("Please log in first.", "error");
     if (!hasProfileUsername) return showMessage("Set a username first.", "error");
+    // Capture BEFORE the call: is this about to be their very first friend?
+    const wasFriendless = friends.length === 0;
 
     try {
       setAddingBrian(true);
 
-      const profilesCol = collection(db, "Profiles");
-      let snap = await getDocs(query(profilesCol, where("usernameLower", "==", "brain")));
-      if (snap.empty) snap = await getDocs(query(profilesCol, where("username", "==", "brain")));
-      if (snap.empty) return showMessage("User not found.", "error");
-
-      const targetDoc = snap.docs[0];
-      const targetUid = targetDoc.id;
-      const targetUsername = (targetDoc.data() as any)?.username || "brain";
-      const meUid = me.uid;
-
-      if (targetUid === meUid) return; // user IS Brian
-
-      // Check if already friends
-      const qEdges = query(
-        collection(db, "FriendEdges"),
-        where("uids", "array-contains", meUid),
-        where("state", "==", "accepted")
-      );
-      const edgesSnap = await getDocs(qEdges);
-      const alreadyFriends = edgesSnap.docs.some((d) => {
-        const ed = d.data() as any;
-        const uids: string[] = Array.isArray(ed?.uids) ? ed.uids : [];
-        return uids.includes(targetUid);
-      });
-      if (alreadyFriends) return showMessage("Already friends with Brian!", "success");
-
-      // Create the mutual friendship server-side. A client can't write Brian's
-      // owner-only collections (users/{brian}/friends, Friends/{brian}), so we
-      // call the Admin-SDK callable which creates the accepted edge + BOTH sides'
-      // denorms after a bidirectional block check. The callable RESOLVES (does not
-      // throw) with { ok:false } for its guard cases, so inspect the result and
-      // never claim success on a soft failure.
-      const res = await httpsCallable(getFunctions(), "addFriendMutual")({ targetUid });
-      const data = (res?.data ?? {}) as { ok?: boolean; already?: boolean; error?: string };
+      // The target is resolved entirely server-side now. The client used to look Brian up with its
+      // own Profiles query, which no longer works: Profiles are audience-scoped, and a brand-new
+      // user with zero friends is not in Brian's audience. addFriendMutual resolves the target
+      // itself (pinned uid / Usernames reservation, failing closed on ambiguity), so calling it
+      // with no argument is both simpler and unspoofable.
+      //
+      // The client-side "already friends" pre-check is gone with it: it needed the uid we no longer
+      // have, and the callable is already idempotent, returning { ok:true, already:true } when the
+      // edge exists. The callable RESOLVES (does not throw) on its guard cases, so inspect the
+      // result and never claim success on a soft failure.
+      const res = await httpsCallable(getFunctions(), "addFriendMutual")({});
+      const data = (res?.data ?? {}) as {
+        ok?: boolean; already?: boolean; error?: string; targetUid?: string;
+      };
       if (!data.ok) {
         if (data.error === "BLOCKED") {
           return showMessage("You've blocked Brian. Unblock to add them.", "error");
         }
+        if (data.error === "SELF") return; // user IS Brian
         return showMessage("Couldn't add Brian. Please try again.", "error");
       }
 
-      nameCacheRef.current[targetUid] = targetUsername;
+      if (data.targetUid) nameCacheRef.current[data.targetUid] = "brain";
 
-      showMessage("You and Brian are now friends!", "success");
+      if (!data.already && wasFriendless) {
+        setCelebrateFirstFriend(true);
+      } else {
+        showMessage(
+          data.already ? "Already friends with Brian!" : "You and Brian are now friends!",
+          "success"
+        );
+      }
     } catch (e: any) {
       if (__DEV__) console.error("handleAddBrian error", e);
       // Fail soft when the callable isn't deployed yet (or otherwise errors), so
@@ -1313,6 +1341,15 @@ export default function FriendsScreen() {
         onClose={() => setGroupEditorOpen(false)}
         onSaved={() => showMessage(editingGroup ? "Group updated!" : "Group created!", "success")}
         onDeleted={() => showMessage("Group deleted.", "success")}
+      />
+
+      {/* First-friend celebration (the add-Brian path): a user's FIRST friend is the moment the
+          app starts working for them, so it gets the full celebration, not just a toast. */}
+      <FriendCelebration
+        visible={celebrateFirstFriend}
+        friendNames={["Brian"]}
+        variant="first"
+        onDone={() => setCelebrateFirstFriend(false)}
       />
       <BottomBar />
     </View>

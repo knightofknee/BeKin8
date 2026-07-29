@@ -363,17 +363,24 @@ export default function CreatePostScreen() {
   const availableDay = rateLimitInfo?.availableDay ?? '';
   // Clear the REAL BottomBar height (64 + its inset-aware padding) plus a visible gap, so the
   // Post button never sits flush against the tab bar.
-  const bottomPadding = BOTTOM_BAR_HEIGHT + Math.max(insets.bottom, 8) + 16;
+  // A real gap under the last control: the page fits by SHRINKING the flexible content box,
+  // never by starving the buttons of breathing room against the tab bar.
+  const bottomPadding = BOTTOM_BAR_HEIGHT + Math.max(insets.bottom, 8) + 20;
 
   return (
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
         <KeyboardAvoidingView
+          // iOS keyboard handling moved to the ScrollView's automaticallyAdjustKeyboardInsets:
+          // unlike KAV padding, it also keeps the CARET visible as a multiline field grows past
+          // the keyboard line (typing low in a long post used to disappear under the keyboard).
+          // Both at once would double-compensate, so the KAV is inert on iOS now.
           style={{ flex: 1 }}
-          behavior={Platform.select({ ios: 'padding', android: undefined })}
+          behavior={undefined}
         >
           <ScrollView
             keyboardShouldPersistTaps="handled"
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             contentContainerStyle={[styles.container, { paddingBottom: bottomPadding, flexGrow: 1 }]}
           >
             {/* Header */}
@@ -418,10 +425,16 @@ export default function CreatePostScreen() {
                 textAlignVertical="top"
                 autoCorrect
                 autoCapitalize="sentences"
-                returnKeyType="done"
-                blurOnSubmit={false}
+                // Enter must insert a NEWLINE: with returnKeyType="done", Android replaces the
+                // Enter key with a Done action key, making paragraphs impossible to type. The
+                // iOS accessory bar's Done button is the dismiss affordance instead.
+                submitBehavior="newline"
                 accessoryID={ACCESSORY_ID_BODY}
-                fieldStyle={{ flex: 1, minHeight: 260 }}
+                // flex absorbs the leftover height; the MIN is deliberately small so that on
+                // shorter screens (or when rate-limited, with the extra bonus UI below) the whole
+                // page still fits WITHOUT scrolling: nobody should scroll here except inside
+                // their own content.
+                fieldStyle={{ flex: 1, minHeight: 132 }}
                 themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
@@ -533,12 +546,12 @@ const styles = StyleSheet.create({
   container:   { padding: SCREEN_PAD },
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  h1:          { fontSize: 26, fontWeight: '700', marginBottom: 4, textAlign: 'center' },
+  h1:          { fontSize: 24, fontWeight: '700', marginBottom: 2, textAlign: 'center' },
   headerRow:   { position: 'relative', alignItems: 'center', justifyContent: 'center' },
   headerHelp:  { position: 'absolute', right: 0, top: 2 },
-  rateNote:    { fontSize: 13, marginBottom: 20, textAlign: 'center' },
+  rateNote:    { fontSize: 13, marginBottom: 12, textAlign: 'center' },
 
-  form:        { gap: 16 },
+  form:        { gap: 12 },
 
   // ── floating label field ──
   floatWrap: {
@@ -560,7 +573,7 @@ const styles = StyleSheet.create({
     margin: 0,
   },
   floatInputMulti: {
-    minHeight: 200,
+    minHeight: 96,
     textAlignVertical: 'top',
   },
 

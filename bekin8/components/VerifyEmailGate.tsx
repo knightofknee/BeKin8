@@ -25,6 +25,9 @@ let dismissedForUid: string | null = null;
 const GATED_POLL_MS = 20_000;
 const GRACE_POLL_MS = 60_000;
 const NOTE_CLEAR_MS = 3_000;
+// Grace-period banner is a reminder, not a fixture: it shows briefly once per app session,
+// then hides itself. Past the deadline the hard gate takes over, so it never auto-hides.
+const BANNER_AUTO_HIDE_MS = 8_000;
 
 export default function VerifyEmailGate() {
   const { user } = useAuth();
@@ -76,6 +79,20 @@ export default function VerifyEmailGate() {
       clearInterval(interval);
     };
   }, [relevant, gated, reloadAndCheck]);
+
+  // Auto-hide the grace-period banner. Uses the same per-session dismissal as the X button,
+  // so it comes back for ~8s on the next app launch but never lingers within a session.
+  // Paused while the tour hides the banner (the countdown only runs while it's on screen).
+  const bannerVisible = !!user && relevant && !gated && !dismissed && dismissedForUid !== user.uid && !tourActive;
+  useEffect(() => {
+    if (!bannerVisible) return;
+    const uid = user!.uid;
+    const t = setTimeout(() => {
+      dismissedForUid = uid;
+      setDismissed(true);
+    }, BANNER_AUTO_HIDE_MS);
+    return () => clearTimeout(t);
+  }, [bannerVisible, user]);
 
   const handleResend = useCallback(async () => {
     const u = auth.currentUser;

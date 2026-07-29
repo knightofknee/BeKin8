@@ -15,8 +15,9 @@ import {
   limit as fbLimit,
   orderBy,
   query,
+  where,
 } from 'firebase/firestore';
-import { db } from '../firebase.config';
+import { auth, db } from '../firebase.config';
 
 const prefetched = new Set<string>();
 const inFlight = new Set<string>();
@@ -27,8 +28,15 @@ export function prefetchBeaconMessages(beaconId: string, n: number = PREFETCH_LI
   if (!beaconId) return;
   if (prefetched.has(beaconId) || inFlight.has(beaconId)) return;
   inFlight.add(beaconId);
+  // The array-contains filter mirrors ChatRoom's listener and is required, not an optimization:
+  // the ChatMessages read rule is `uid in resource.data.audienceUids`, and Firestore rejects any
+  // query whose own constraints don't prove the rule. Without it this warms nothing and the cache
+  // stays cold (silently, since prefetch swallows errors).
+  const meUid = auth.currentUser?.uid;
+  if (!meUid) return;
   const q = query(
     collection(db, 'Beacons', beaconId, 'ChatMessages'),
+    where('audienceUids', 'array-contains', meUid),
     orderBy('createdAt', 'asc'),
     fbLimit(n),
   );

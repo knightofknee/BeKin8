@@ -31,6 +31,53 @@ function genCode(len = 6): string {
 
 const cleanName = (v: any): string => (typeof v === 'string' ? v.trim() : '');
 
+// ── Redeem brute-force limiting ───────────────────────────────────────────────
+// A correct guess creates an ACCEPTED friendship immediately, with no consent step for the
+// inviter, so a redeem attempt is a write primitive and not just a lookup. The code space is
+// 31^6 (~887M), which is only a real defense if guessing is bounded: unlimited authenticated
+// attempts turn it into a matter of throughput. Failures are counted per caller uid in a rolling
+// window; successes never count, so ordinary users are unaffected.
+// Attempts live in InviteRedeemAttempts/{uid}. That collection deliberately has NO match block in
+// firestore.rules, so the closed catch-all denies clients all access while the Admin SDK here
+// bypasses rules. Do not add a rule for it.
+const REDEEM_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const REDEEM_MAX_FAILURES = 10;
+
+const attemptRef = (uid: string) => db.collection('InviteRedeemAttempts').doc(uid);
+
+/** True when this caller has burned through the failure budget for the current window. */
+async function redeemBlocked(uid: string): Promise<boolean> {
+  const snap = await attemptRef(uid).get();
+  if (!snap.exists) return false;
+  const d = snap.data() as any;
+  const windowStart = typeof d?.windowStart === 'number' ? d.windowStart : 0;
+  const failures = typeof d?.failures === 'number' ? d.failures : 0;
+  if (Date.now() - windowStart > REDEEM_WINDOW_MS) return false; // window rolled over
+  return failures >= REDEEM_MAX_FAILURES;
+}
+
+/** Records one failed redeem, starting a fresh window if the previous one has expired. */
+async function recordRedeemFailure(uid: string): Promise<void> {
+  await db.runTransaction(async (tx) => {
+    const ref = attemptRef(uid);
+    const snap = await tx.get(ref);
+    const d = snap.exists ? (snap.data() as any) : null;
+    const now = Date.now();
+    const windowStart = typeof d?.windowStart === 'number' ? d.windowStart : 0;
+    const prior = typeof d?.failures === 'number' ? d.failures : 0;
+    const expired = now - windowStart > REDEEM_WINDOW_MS;
+    tx.set(
+      ref,
+      {
+        windowStart: expired ? now : windowStart,
+        failures: expired ? 1 : prior + 1,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+}
+
 /** Returns the caller's permanent invite code, generating + persisting one if needed.
  *  Stored on users/{uid} (OWNER-ONLY readable) + mirrored to Invites/{code} (the code->uid map the
  *  Admin-SDK redeem path reads). Deliberately NOT on the world-readable Profiles doc anymore: a
@@ -97,13 +144,27 @@ export const redeemInvite = onCall({ enforceAppCheck: false }, async (req) => {
   const meUid = req.auth?.uid;
   if (!meUid) throw new HttpsError('unauthenticated', 'Sign in required.');
 
+  if (await redeemBlocked(meUid)) {
+    logger.warn('redeemInvite: caller rate limited', { meUid });
+    return { ok: false, error: 'RATE_LIMITED' };
+  }
+
   const code = String(req.data?.code ?? '').trim().toUpperCase();
-  if (!CODE_RE.test(code)) return { ok: false, error: 'BAD_CODE' };
+  if (!CODE_RE.test(code)) {
+    await recordRedeemFailure(meUid);
+    return { ok: false, error: 'BAD_CODE' };
+  }
 
   const invSnap = await db.collection('Invites').doc(code).get();
-  if (!invSnap.exists) return { ok: false, error: 'NOT_FOUND' };
+  if (!invSnap.exists) {
+    await recordRedeemFailure(meUid);
+    return { ok: false, error: 'NOT_FOUND' };
+  }
   const inviterUid = String((invSnap.data() as any)?.uid || '');
-  if (!inviterUid) return { ok: false, error: 'NOT_FOUND' };
+  if (!inviterUid) {
+    await recordRedeemFailure(meUid);
+    return { ok: false, error: 'NOT_FOUND' };
+  }
   if (inviterUid === meUid) return { ok: false, error: 'SELF' };
 
   const edgeRef = db.collection('FriendEdges').doc(edgeId(meUid, inviterUid));

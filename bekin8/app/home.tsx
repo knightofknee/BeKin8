@@ -24,17 +24,20 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import BeaconStructure from '../components/BeaconStructure';
 import BeaconScene from '../components/BeaconScene';
-import BeaconFireSVG from '../components/BeaconFire';
-import BeaconFireSkia from '../components/BeaconFireSkia';
+import BeaconFire from '../components/BeaconFireSkia';
 import BeaconLighthouseBeam from '../components/BeaconLighthouseBeam';
 import BeaconSearchlightBeam from '../components/BeaconSearchlightBeam';
 import BeaconStormBolt from '../components/BeaconStormBolt';
 import BeaconSmokeSignal from '../components/BeaconSmokeSignal';
 import BeaconFireworks from '../components/BeaconFireworks';
 import BeaconSkyLanterns from '../components/BeaconSkyLanterns';
-// Centerpiece fire is the GPU Skia shader; flip to false to A/B against the original SVG flame.
-const USE_SKIA_FIRE = true;
-const BeaconFire = USE_SKIA_FIRE ? BeaconFireSkia : BeaconFireSVG;
+import BeaconEmberColumn from '../components/BeaconEmberColumn';
+import BeaconPrintFire from '../components/BeaconPrintFire';
+import BeaconBonfireFlame from '../components/BeaconBonfireFlame';
+import StylePreview from '../components/StylePreview';
+// Centerpiece fire is the GPU Skia shader. The original SVG flame it was A/B'd against is gone:
+// the flag had been pinned on for every skin built since, so the SVG path was unreachable code
+// that still carried three rules-of-hooks violations.
 // Skia (GPU shader) smoke, drop-in for the old SVG BeaconSmoke. Revert by swapping this import
 // back to '../components/BeaconSmoke' (kept in the repo as the no-native-dep fallback).
 import BeaconSmoke from '../components/BeaconSmokeSkia';
@@ -226,6 +229,11 @@ export default function HomeScreen() {
   // fire, smoke, and structure.
   const [skinId, setSkinId] = useState(DEFAULT_SKIN_ID);
   const skin = getSkin(skinId);
+  // Live style preview in the options sheet: opens on any style tap, closes with its X or the sheet.
+  const [stylePreviewOpen, setStylePreviewOpen] = useState(false);
+  useEffect(() => {
+    if (!optionsOpen) setStylePreviewOpen(false);
+  }, [optionsOpen]);
   useEffect(() => {
     let mounted = true;
     getBeaconSkinId().then((id) => mounted && setSkinId(id));
@@ -835,7 +843,7 @@ export default function HomeScreen() {
       // Spotlight headroom over the structure box: the solid flame body tops out at roughly
       // 170*flameScale px above the seat, which sits 180*origin below the box top; +12 covers the
       // flickering tip. Flameless skins keep the original 70.
-      holePadTop: skin.fire === 'flame' ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 12) : 70,
+      holePadTop: skin.fire === 'flame' || skin.fire === 'print' || skin.fire === 'pyre' ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 12) : 70,
       beaconLit: beaconLit0,
       usernameDone: uDone0,
       friendDone: fDone0,
@@ -922,9 +930,6 @@ export default function HomeScreen() {
         success();
         setSeen('beacon');
       },
-      // Dismissing the main tour ANY way (skip or finish) also satisfies the standalone chat
-      // explainer, the chat is already covered by step 1's branch, so it never pops on the
-      // first light right after the user skips. (onClose fires on both skip and finish.)
       onClose: () => {
         builtBeaconStepsRef.current = null;
         reachedRef.current = false;
@@ -932,7 +937,6 @@ export default function HomeScreen() {
         // NOTE: the group selection is deliberately NOT touched here. It mirrors the beacon doc
         // (test group included), and the light confirm (describeAudience) tells the user when a
         // beacon is test-scoped, so nothing is silently re-scoped behind their back.
-        setSeen('beacon_chat');
         // Arm the one-time "who will see this" confirm for the first beacon lit AFTER this tour (the
         // tour ending, by finish OR skip, is what arms it, so even users who skip get warned once).
         setSeen('first_tour_done');
@@ -1015,7 +1019,7 @@ export default function HomeScreen() {
   // via onFinish (setSeen('beacon') + the success haptic).
 
   // If the user LIGHTS the beacon during tour step 1, opt into the chat mini-step (a branch) so we
-  // explain the chat right there. Marks beacon_chat seen so the post-tour explainer won't repeat it.
+  // explain the chat right there.
   // Edge-gated on a real false→true light: starting the tour with an already-lit beacon (e.g. the
   // help-button replay) must NOT jump straight to the branch, and stepping Back into step 1 must not
   // re-bounce. goToTarget pushes history (default), so Back from the chat mini-step returns to step 1.
@@ -1027,7 +1031,6 @@ export default function HomeScreen() {
     // of the speed tour) isLit starts as null while the beacon doc loads, and a loose `!wasLit`
     // read that null->true load as a fresh light, bouncing an already-lit beacon into this branch.
     if (isActive && currentStepId === 'light-beacon-demo' && isLit === true && wasLit === false && myActiveBeacon) {
-      setSeen('beacon_chat');
       // Push history so Back from the chat mini-step returns to the fire/logs step (the edge-gate
       // above stops it from immediately re-branching when Back lands back on step 1).
       goToTarget('beacon-chat');
@@ -1067,30 +1070,10 @@ export default function HomeScreen() {
     }
   }, [isActive, currentStepTarget]);
 
-  // One-time beacon-chat explainer: the first time the user has a LIT beacon while username + friend
-  // are set (and no tour is mid-flow, e.g. right after the final tour step lights it, or any later
-  // light), spotlight the "Open beacon chat" button and explain it. Highlight only, never opens it.
-  const usernameDone = !!onboarding.steps.find((s) => s.key === 'username')?.done;
-  const friendDone = !!onboarding.steps.find((s) => s.key === 'friend')?.done;
-  const chatExplainerShownRef = useRef(false);
-  useEffect(() => {
-    if (!isLit || !myActiveBeacon || !usernameDone || !friendDone || isActive || chatExplainerShownRef.current) return;
-    chatExplainerShownRef.current = true;
-    getSeen('beacon_chat').then((seen) => {
-      if (seen) return;
-      startTour(
-        [
-          {
-            target: 'beacon-chat',
-            title: 'Your beacon chat',
-            body: "Friends who can see your beacon can RSVP and chat here. Tap it any time to open the conversation.",
-            cta: 'Got it',
-          },
-        ],
-        { onFinish: () => setSeen('beacon_chat'), onClose: () => setSeen('beacon_chat') }
-      );
-    });
-  }, [isLit, myActiveBeacon, usernameDone, friendDone, isActive]);
+  // (The standalone one-step "beacon chat" explainer that used to live here was DELETED
+  // 2026-07-24: its seen-flag was device-local, so every fresh install re-showed it to
+  // established users, and it fired from a backgrounded Home while another screen (e.g. the
+  // feed) was on top, ringing blank space. The chat mini-step inside the tour covers it.)
 
   // Decide ONCE whether to auto-pop the tour for a new user (the resume banner takes over after).
   // Skipped when arriving via a notification deep link so we don't cover the opened beacon, and
@@ -1535,16 +1518,24 @@ export default function HomeScreen() {
           {/* SMOKE, drifts up BEHIND the friend tiles (shown through the gaps; the tile list stays
               in front and untouched). Rises from the measured structure anchor. Registry-driven:
               skin.smokeKind picks the ambient smoke, the smoke-signal puff column, the fireworks
-              show, the sky-lantern field, or nothing. */}
+              show, the sky-lantern field, the bonfire's spiral ember column, or nothing. */}
           {skin.smokeKind === 'signal' ? (
             <BeaconSmokeSignal skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'fireworks' ? (
             <BeaconFireworks skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'lanterns' ? (
             <BeaconSkyLanterns skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : skin.smokeKind === 'embers' ? (
+            <BeaconEmberColumn skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'ambient' ? (
             <BeaconSmoke skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : null}
+          {/* The bonfire's flame BODY lives here, behind the tiles AND behind the structure below,
+              so the pyre's front logs occlude the flame base and the wood burns INSIDE the fire
+              (the structure adds its own front licks on top). */}
+          {skin.fire === 'pyre' && (
+            <BeaconBonfireFlame skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          )}
           {(() => {
             const resumeVisible = onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart;
             const banner = (
@@ -1677,6 +1668,8 @@ export default function HomeScreen() {
             )
           ) : skin.fire === 'bolt' ? (
             <BeaconStormBolt skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+          ) : skin.fire === 'print' ? (
+            <BeaconPrintFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.fire === 'flame' ? (
             <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : null}
@@ -1722,20 +1715,32 @@ export default function HomeScreen() {
                   contentContainerStyle={{ paddingBottom: 12 }}
                   showsVerticalScrollIndicator={false}
                 >
-                  {/* Beacon style (skin), switches the home beacon live */}
-                  <View ref={beaconStyleRef} collapsable={false}>
+                  {/* Beacon style (skin), switches the home beacon live. FIXED-WIDTH 3-across grid:
+                      the chips used to size to their text, so the selected chip's bold label
+                      changed its width and the whole wrap reflowed on every tap. Now every chip is
+                      the same size and nothing ever moves. Selecting a style also opens a live
+                      preview box that overlays the fields below until dismissed. */}
+                  <View ref={beaconStyleRef} collapsable={false} style={stylePreviewOpen ? styles.styleZTop : undefined}>
                     <Text style={[styles.modalLabel, { color: colors.text }]}>Beacon style</Text>
                     <View style={styles.daysWrap}>
                       {BEACON_SKINS.map((bs) => (
                         <Pressable
                           key={bs.id}
-                          onPress={() => { selection(); setBeaconSkinId(bs.id); }}
-                          style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, bs.id === skinId && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
+                          onPress={() => { selection(); setBeaconSkinId(bs.id); setStylePreviewOpen(true); }}
+                          style={[styles.dayChip, styles.skinChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, bs.id === skinId && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
                         >
-                          <Text style={[styles.dayChipText, { color: colors.text }, bs.id === skinId && styles.dayChipTextActive]}>{bs.label}</Text>
+                          <Text numberOfLines={1} style={[styles.dayChipText, { color: colors.text }, bs.id === skinId && styles.dayChipTextActive]}>{bs.label}</Text>
                         </Pressable>
                       ))}
                     </View>
+                    {stylePreviewOpen && (
+                      // No key: remounting on every style tap reset the measured box width, which
+                      // flashed the structure at the left edge for a frame. The component restarts
+                      // its own lit cycle when skin.id changes.
+                      <View style={styles.stylePreviewWrap}>
+                        <StylePreview skin={skin} onClose={() => setStylePreviewOpen(false)} />
+                      </View>
+                    )}
                   </View>
 
                   {/* Day, time, friend groups, and message: wrapped so the tour highlights them together. */}
@@ -2222,6 +2227,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   dayChipActive: { backgroundColor: '#2F6FED', borderColor: '#2F6FED' },
+  // Style-picker chips: FIXED width (3 per row) so selection (bold text) never reflows the grid.
+  skinChip: { width: '31.5%', alignItems: 'center', paddingHorizontal: 4 },
+  // The preview overlays the sheet fields below the grid until dismissed.
+  styleZTop: { zIndex: 40, elevation: 40 },
+  stylePreviewWrap: { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 40, elevation: 40 },
   dayChipText: { color: '#0B1426', fontSize: 14 },
   dayChipTextActive: { color: '#fff', fontWeight: '700' },
 

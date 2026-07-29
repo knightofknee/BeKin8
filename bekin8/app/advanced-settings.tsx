@@ -87,17 +87,21 @@ export default function AdvancedSettingsScreen() {
     setUnblockBusy(true);
     setUnblockMsg({ text: "", type: null });
     try {
-      // Resolve username to uid (same pattern as friends.tsx: usernameLower first, then username).
-      const profilesCol = collection(db, "Profiles");
-      let snap = await getDocs(query(profilesCol, where("usernameLower", "==", input.toLowerCase())));
-      if (snap.empty) snap = await getDocs(query(profilesCol, where("username", "==", input)));
-      if (snap.empty) {
+      // Resolve username -> uid SERVER-SIDE (same as friends.tsx). Profiles are audience-scoped
+      // now, and a blocked user is precisely someone whose profile this client cannot read, so the
+      // old direct Profiles query would always fail here. The callable returns only uid + username.
+      const resolved = await httpsCallable<{ username: string }, { found: boolean; uid?: string; username?: string }>(
+        getFunctions(),
+        "resolveUsername"
+      )({ username: input });
+
+      if (!resolved.data?.found || !resolved.data.uid) {
         setUnblockMsg({ text: "User not found.", type: "error" });
         return;
       }
 
-      const targetUid = snap.docs[0].id;
-      const targetUsername = (snap.docs[0].data() as any)?.username || input;
+      const targetUid = resolved.data.uid;
+      const targetUsername = resolved.data.username || input;
 
       // deleteDoc on a missing doc succeeds (no-op), so confirm the block exists first, else we'd
       // falsely report "Unblocked" for someone who was never blocked.

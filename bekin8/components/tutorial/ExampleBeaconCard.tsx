@@ -3,22 +3,36 @@
 // zero friends. It is LOCAL-ONLY, never written to Firestore, so it can't leak into
 // real queries or notifications, and the real list naturally replaces it once a friend
 // beacon arrives. Visibly marked as an example (dashed border, dimmed, "Example" pill).
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+// Tapping it opens a full LOCAL demo chat room (RSVP + composer, notifies no one), so a
+// brand-new user can feel the whole loop before they have a single friend.
+import React, { useState } from "react";
+import { View, Text, StyleSheet, Pressable } from "react-native";
 import { useTheme } from "../../providers/ThemeProvider";
+import { tap } from "../../utils/haptics";
+import DemoChatRoom from "./DemoChatRoom";
 
 type Props = {
   /** Caption under the card. Pass null to hide it (e.g. when surrounding copy already explains). */
   caption?: string | null;
 };
 
-const DEFAULT_CAPTION = "Example: this is how a friend's lit beacon will appear here.";
+const DEFAULT_CAPTION = "Example: a friend's lit beacon will appear here. Tap it to try the chat.";
 
 export default function ExampleBeaconCard({ caption = DEFAULT_CAPTION }: Props) {
   const { colors } = useTheme();
+  const [demoOpen, setDemoOpen] = useState(false);
   return (
     <View>
-      <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
+      <Pressable
+        onPress={() => { tap(); setDemoOpen(true); }}
+        style={({ pressed }) => [
+          styles.card,
+          { borderColor: colors.border, backgroundColor: colors.inputBg },
+          pressed && { opacity: 0.6 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Example beacon. Tap to try a demo chat."
+      >
         <View style={styles.row}>
           <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
             <Text style={styles.avatarTxt}>A</Text>
@@ -35,8 +49,9 @@ export default function ExampleBeaconCard({ caption = DEFAULT_CAPTION }: Props) 
             </Text>
           </View>
         </View>
-      </View>
+      </Pressable>
       {caption ? <Text style={[styles.caption, { color: colors.subtle }]}>{caption}</Text> : null}
+      <DemoChatRoom visible={demoOpen} onClose={() => setDemoOpen(false)} />
     </View>
   );
 }

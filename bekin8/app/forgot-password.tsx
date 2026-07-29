@@ -59,7 +59,7 @@ export default function ForgotPasswordScreen() {
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <Text style={[styles.title, { color: colors.text }]}>Forgot password</Text>
         <Text style={[styles.subtitle, { color: colors.subtle }]}>
-          Enter the email you used to sign up and we'll send you a reset link.
+          Enter the email you used to sign up and we&apos;ll send you a reset link.
         </Text>
 
         <TextInput

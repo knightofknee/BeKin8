@@ -14,7 +14,9 @@ import { TourProvider } from "../providers/TourProvider";
 import { OnboardingProvider } from "../providers/OnboardingProvider";
 import OfflineBanner from "../components/OfflineBanner";
 import VerifyEmailGate from "../components/VerifyEmailGate";
+import UpdateRequiredGate from "../components/UpdateRequiredGate";
 import FriendCelebration, { type FriendCelebrationVariant } from "../components/FriendCelebration";
+import UpdateModal from "../components/UpdateModal";
 import ErrorBoundary, { logClientError } from "../components/ErrorBoundary";
 import { getSeen } from "../lib/tutorialFlags";
 import {
@@ -303,6 +305,10 @@ function Gate() {
         {/* Deferred email-verification UX (email/password accounts created after the epoch):
             grace-period banner, then a hard gate overlay that must cover the whole router stack. */}
         <VerifyEmailGate />
+        {/* Minimum-version gate. Renders nothing unless Config/app.minVersion is above this build,
+            and fails open on any error, so it is inert until deliberately switched on remotely.
+            Mounted after VerifyEmailGate so an out-of-date build wins over the verification UI. */}
+        <UpdateRequiredGate />
         <OfflineBanner />
         {/* Link-made friendship celebration: a Modal, so it covers the tutorial overlay too; for a
             new user, dismissing it lands them on the tutorial's first step. */}
@@ -312,6 +318,9 @@ function Gate() {
           variant={celebrate?.variant ?? "first"}
           onDone={() => setCelebrate(null)}
         />
+        {/* App Store update nudge: checks at launch + on foreground, gated so it never
+            covers the login screen or an active tour. */}
+        <UpdateModal />
       </ErrorBoundary>
     </View>
   );

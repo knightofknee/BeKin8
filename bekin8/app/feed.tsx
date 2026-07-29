@@ -14,7 +14,10 @@ import {
   TextInput,
   RefreshControl,
   KeyboardAvoidingView,
+  InputAccessoryView,
+  Keyboard,
   Platform,
+  ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
@@ -46,9 +49,11 @@ import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import LinkPreview from '../components/LinkPreview';
+import LinkifiedText from '../components/LinkifiedText';
 import { tap, press, warning, selection } from '../utils/haptics';
 
 const PAGE_SIZE = 10; // posts per page
+const EDIT_ACCESSORY_ID = 'feed-edit-post-accessory'; // iOS Done bar for the edit-post inputs
 
 interface Post {
   id: string;
@@ -71,10 +76,12 @@ const prefKey = () => `feed_showMine:${auth.currentUser?.uid ?? 'anon'}`;
 // (navigating away and back) reuses resolved Profiles instead of re-reading them.
 const moduleAuthorCache: Record<string, { label: string; username: string; commentsEnabled: boolean }> = {};
 
-// Firestore 'in' queries cap at 10 values, chunk author uids into groups of 10.
-function chunk10<T>(arr: T[]): T[][] {
+// Firestore 'in' queries cap at 30 values (raised from 10 in June 2023 with OR-query GA),
+// chunk author uids into groups of 30. Fewer chunks => fewer parallel getDocs per feed page.
+const IN_QUERY_MAX = 30;
+function chunkAuthors<T>(arr: T[]): T[][] {
   const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += 10) out.push(arr.slice(i, i + 10));
+  for (let i = 0; i < arr.length; i += IN_QUERY_MAX) out.push(arr.slice(i, i + IN_QUERY_MAX));
   return out;
 }
 
@@ -175,6 +182,8 @@ export default function Feed() {
   const authorCache = useRef(moduleAuthorCache);
   // friend uid set
   const friendUids = useRef<Set<string>>(new Set());
+  const emptyRetryRef = useRef(0); // fresh-friendship empty-feed retries (see initialLoad)
+  const injectedScrollPostRef = useRef<string | null>(null); // just-created post injection guard
   // friends-of-friends uid set (session cache, kept separate from friends)
   const fofUids = useRef<Set<string>>(new Set());
   // last seen value of my Profiles/{me}.friendsOfFriendsPosts flag
@@ -305,46 +314,39 @@ export default function Feed() {
   }, []);
 
   // ── load one page of posts ──────────────────────────────────────────────────
-  // Batched: authors are grouped into chunks of 10 and queried with where('author','in', chunk)
-  // + orderBy('timestamp','desc') + limit(PAGE_SIZE), so cost is ceil(N/10) reads not N.
-  // Returns the merged page plus a next cursor that is guaranteed not to skip any
-  // post newer than it. A chunk that returns exactly PAGE_SIZE docs is "truncated":
-  // there may be more posts in it older than the last returned doc but newer than the
-  // global page slice, so the cursor must not advance past that chunk's oldest returned
-  // timestamp. seenIds carries de-dupe state across pages so equal-timestamp posts at a
-  // '<=' boundary aren't lost or duplicated.
+  // ONE query, scoped by audience: where('audienceUids','array-contains', me).
+  //
+  // This replaced a fan-out that chunked friend uids 30 at a time into parallel
+  // where('author','in', chunk) queries. That shape existed because the reader had to name every
+  // author it was allowed to see, which also meant the RULES could not enforce anything better than
+  // "any signed-in user may read any post". `audienceUids` is stamped server-side (functions/src/
+  // audience.ts) with the author's friends, plus friends-of-friends when both sides opted in, so the
+  // audience is now expressed on the document and the rule enforces it.
+  //
+  // Collapsing to a single query also removes the cross-chunk cursor hazard: there is no longer a
+  // "truncated chunk" whose older posts could be skipped, so the cursor is simply the oldest post on
+  // this page. seenIds still carries de-dupe state across pages so equal-timestamp posts at a '<='
+  // boundary aren't lost or duplicated.
   const loadPage = useCallback(async (
-    uids: string[],
+    me: string,
     olderThanOrEq: number,
     seenIds: Set<string>,
   ): Promise<{ posts: Post[]; nextCursor: number; exhausted: boolean }> => {
-    if (!uids.length) return { posts: [], nextCursor: 0, exhausted: true };
+    if (!me) return { posts: [], nextCursor: 0, exhausted: true };
 
-    const chunks = chunk10(uids);
-    const results = await Promise.allSettled(
-      chunks.map((group) =>
-        getDocs(
-          query(
-            collection(db, 'Posts'),
-            where('author', 'in', group),
-            orderBy('timestamp', 'desc'),
-            where('timestamp', '<=', olderThanOrEq),
-            limit(PAGE_SIZE)
-          )
-        )
+    const snap = await getDocs(
+      query(
+        collection(db, 'Posts'),
+        where('audienceUids', 'array-contains', me),
+        orderBy('timestamp', 'desc'),
+        where('timestamp', '<=', olderThanOrEq),
+        limit(PAGE_SIZE)
       )
     );
 
     const collected: Post[] = [];
-    // Oldest returned timestamp among chunks that came back FULL (truncated). The cursor
-    // may never advance past the newest such boundary, or we'd skip that chunk's posts.
-    let truncatedFloor = -Infinity;
-    let anyFulfilled = false;
-
-    results.forEach((res) => {
-      if (res.status !== 'fulfilled') return;
-      anyFulfilled = true;
-      const docs = res.value.docs;
+    {
+      const docs = snap.docs;
       docs.forEach((d) => {
         const data = d.data() as any;
         const uid = String(data.author ?? '');
@@ -369,12 +371,7 @@ export default function Feed() {
           _timestamp: cursorTs,
         });
       });
-      if (docs.length === PAGE_SIZE) {
-        const lastData = docs[docs.length - 1].data() as any;
-        const oldest = toTimestamp(lastData.timestamp ?? lastData.createdAt);
-        if (oldest > truncatedFloor) truncatedFloor = oldest;
-      }
-    });
+    }
 
     // De-dupe against posts already shown (across pages), then sort newest-first.
     const deduped = collected.filter((p) => !seenIds.has(p.id));
@@ -382,21 +379,15 @@ export default function Feed() {
     const pageSlice = deduped.slice(0, PAGE_SIZE);
     pageSlice.forEach((p) => seenIds.add(p.id));
 
-    // Cursor: advance to the oldest post we're actually showing this page, but never
-    // past any truncated chunk's oldest returned ts (or we'd skip that chunk's newer
-    // posts forever). Use '<=' next time + seenIds de-dupe to keep the boundary safe.
-    const sliceOldest = pageSlice.length ? pageSlice[pageSlice.length - 1]._timestamp : olderThanOrEq;
-    let nextCursor: number;
-    if (truncatedFloor > -Infinity) {
-      // max(sliceOldest, truncatedFloor): don't move past a chunk that still has posts.
-      nextCursor = Math.max(sliceOldest, truncatedFloor);
-    } else {
-      nextCursor = sliceOldest;
-    }
+    // Cursor: the oldest post shown this page. When every returned doc was already seen the slice is
+    // empty, so fall back to the oldest doc the query actually returned; using olderThanOrEq there
+    // would leave the cursor parked and page forever over the same rows.
+    const lastDoc = snap.docs.length ? (snap.docs[snap.docs.length - 1].data() as any) : null;
+    const oldestReturned = lastDoc ? toTimestamp(lastDoc.timestamp ?? lastDoc.createdAt) : olderThanOrEq;
+    const nextCursor = pageSlice.length ? pageSlice[pageSlice.length - 1]._timestamp : oldestReturned;
 
-    // Exhausted only when no chunk was truncated AND we didn't fill a page, i.e. there is
-    // provably nothing older left to fetch.
-    const exhausted = anyFulfilled && truncatedFloor === -Infinity && deduped.length < PAGE_SIZE;
+    // A short page means the query hit the end of this reader's audience.
+    const exhausted = snap.docs.length < PAGE_SIZE;
 
     return { posts: pageSlice, nextCursor, exhausted };
   }, []);
@@ -417,9 +408,13 @@ export default function Feed() {
     setLoading(true);
     try {
       seenIdsRef.current = new Set();
-      const uids = Array.from(await loadFriends());
+      // loadFriends still runs: it populates friendUids/fofUids, which the refresh listeners and
+      // the "show mine" filter rely on. The PAGE query no longer needs the uid list, because the
+      // audience now lives on the documents.
+      await loadFriends();
+      const me = auth.currentUser?.uid ?? '';
       // '<=' with a far-future cursor so the newest post is included.
-      const { posts: rawPage, nextCursor, exhausted } = await loadPage(uids, Date.now() + 1000, seenIdsRef.current);
+      const { posts: rawPage, nextCursor, exhausted } = await loadPage(me, Date.now() + 1000, seenIdsRef.current);
       // Resolve Profiles only for the distinct authors actually present in this page.
       await resolveAuthors(Array.from(new Set(rawPage.map((p) => p.authorUid).filter(Boolean))));
       const page = applyAuthorLabels(rawPage);
@@ -429,12 +424,29 @@ export default function Feed() {
       const seen = new Map<string, Post>();
       page.forEach((p) => seen.set(p.id, p));
       setPosts(Array.from(seen.values()));
+
+      // Fresh-friendship self-heal: right after adding a friend (the add-Brian first-friend path
+      // especially), the server needs a few seconds to restamp audienceUids onto the new friend's
+      // existing posts, so this first audience-scoped query can legitimately come back empty even
+      // though the friendship exists. Retry quietly a couple of times instead of stranding a brand
+      // new user on an empty feed until they happen to leave and come back.
+      if (seen.size === 0 && friendUids.current.size > 0 && emptyRetryRef.current < 2) {
+        emptyRetryRef.current += 1;
+        setTimeout(() => {
+          oldestTs.current = Date.now() + 1000;
+          initialLoadRef.current?.();
+        }, 2500);
+      } else if (seen.size > 0) {
+        emptyRetryRef.current = 0;
+      }
     } catch (err) {
       if (__DEV__) console.error('Feed initial load error:', err);
     } finally {
       setLoading(false);
     }
   }, [loadFriends, resolveAuthors, loadPage, applyAuthorLabels]);
+  const initialLoadRef = useRef<(() => void) | null>(null);
+  useEffect(() => { initialLoadRef.current = initialLoad; }, [initialLoad]);
 
   // ── load more (pagination) ──────────────────────────────────────────────────
   const loadMore = useCallback(async () => {
@@ -444,9 +456,9 @@ export default function Feed() {
     if (loadingMore || refreshing || !hasMore || !oldestTs.current) return;
     setLoadingMore(true);
     try {
-      const uids = Array.from(new Set([...Array.from(friendUids.current), ...Array.from(fofUids.current)]));
+      const me = auth.currentUser?.uid ?? '';
       const prevCursor = oldestTs.current;
-      const { posts: rawPage, nextCursor, exhausted } = await loadPage(uids, prevCursor, seenIdsRef.current);
+      const { posts: rawPage, nextCursor, exhausted } = await loadPage(me, prevCursor, seenIdsRef.current);
       await resolveAuthors(Array.from(new Set(rawPage.map((p) => p.authorUid).filter(Boolean))));
       const page = applyAuthorLabels(rawPage);
       // Advance cursor even on an empty slice so a truncated-but-all-seen page keeps moving.
@@ -525,11 +537,52 @@ export default function Feed() {
   const effectiveShowMine = showMine || forceShowMine;
 
   // ── filter ──────────────────────────────────────────────────────────────────
+  // ── personal author filter (currently Brian-only, see canFilterAuthors) ─────
+  // Hide chosen friends from MY feed view only: pure client-side display preference, persisted
+  // per account. First use case is hiding test accounts; the plan is to open it to everyone as
+  // "curate your feed" (want someone's beacons but not their takes) once it has been lived with.
+  const canFilterAuthors = profile?.username === 'brain';
+  const [hiddenAuthors, setHiddenAuthors] = useState<Set<string>>(new Set());
+  const [filterOpen, setFilterOpen] = useState(false);
+  const hiddenKey = () => `feed_hiddenAuthors:${auth.currentUser?.uid ?? 'anon'}`;
+  useEffect(() => {
+    AsyncStorage.getItem(hiddenKey())
+      .then((v) => { if (v) setHiddenAuthors(new Set(JSON.parse(v))); })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const toggleHiddenAuthor = useCallback((uid: string) => {
+    selection();
+    setHiddenAuthors((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      AsyncStorage.setItem(hiddenKey(), JSON.stringify(Array.from(next))).catch(() => {});
+      return next;
+    });
+  }, []);
+  // Distinct authors present in the loaded feed (the practical filter surface; names come from
+  // the same resolution the cards use).
+  const filterableAuthors = useMemo(() => {
+    const me = auth.currentUser?.uid;
+    const byUid = new Map<string, string>();
+    posts.forEach((p) => {
+      if (!p.authorUid || p.authorUid === me) return;
+      if (!byUid.has(p.authorUid)) byUid.set(p.authorUid, p.authorUsername || 'Friend');
+    });
+    // Keep already-hidden authors listed even if their posts aren't loaded right now,
+    // otherwise a hidden author can never be un-hidden.
+    hiddenAuthors.forEach((uid) => { if (!byUid.has(uid)) byUid.set(uid, authorCache.current[uid]?.label || 'Friend'); });
+    return Array.from(byUid.entries()).map(([uid, name]) => ({ uid, name }));
+  }, [posts, hiddenAuthors]);
+
   const displayedPosts = useMemo(() => {
     const me = auth.currentUser?.uid;
-    const base = effectiveShowMine || !me ? posts : posts.filter((p) => p.authorUid !== me);
-    return blockedUids.size ? base.filter((p) => !blockedUids.has(p.authorUid)) : base;
-  }, [posts, effectiveShowMine, blockedUids]);
+    let base = effectiveShowMine || !me ? posts : posts.filter((p) => p.authorUid !== me);
+    if (blockedUids.size) base = base.filter((p) => !blockedUids.has(p.authorUid));
+    if (canFilterAuthors && hiddenAuthors.size) base = base.filter((p) => !hiddenAuthors.has(p.authorUid));
+    return base;
+  }, [posts, effectiveShowMine, blockedUids, canFilterAuthors, hiddenAuthors]);
 
   // ── deep link: post comment notification ────────────────────────────────────
   // Opens the comments modal for the target post, scrolls feed to it, and
@@ -612,7 +665,50 @@ export default function Feed() {
     }
     if (loading) return;
 
-    // Posts loaded but not in feed (paginated past or hidden by filter). Give up.
+    // Loaded but the target is missing. For a JUST-CREATED post that's expected: the server
+    // audience-stamping trigger hasn't run yet, so the scoped feed query cannot return it even
+    // though we know it exists (we wrote it seconds ago). Never let a data race make the feed
+    // lie to the user about their own post: fetch the doc directly, inject it, and force
+    // "show mine" on; the effect re-runs when the list updates and lands the scroll.
+    if (injectedScrollPostRef.current !== pid) {
+      injectedScrollPostRef.current = pid;
+      (async () => {
+        try {
+          const snap = await getDoc(doc(db, 'Posts', pid));
+          if (!snap.exists()) return;
+          const d: any = snap.data();
+          const authorUid = d?.author ?? d?.authorUid ?? '';
+          const ts = toTimestamp(d?.timestampServer ?? d?.timestamp ?? d?.createdAt) || Date.now();
+          const cached = authorUid ? authorCache.current[authorUid] : undefined;
+          const built: Post = {
+            id: pid,
+            authorUid,
+            authorUsername: cached?.label ?? d?.authorName ?? d?.authorUsername ?? '',
+            authorUsernameSlug: cached?.username ?? d?.authorName ?? d?.authorUsername ?? '',
+            content: d?.content || '',
+            title: d?.title,
+            createdAt: new Date(ts),
+            url: d?.url ?? d?.link,
+            commentsEnabled: d?.commentsEnabled,
+            authorCommentsEnabled: cached?.commentsEnabled,
+            _timestamp: ts,
+          };
+          setForceShowMine(true);
+          setPosts((prev) =>
+            prev.some((p) => p.id === pid)
+              ? prev
+              : [built, ...prev].sort((a, b) => b._timestamp - a._timestamp)
+          );
+        } catch {
+          // Unreadable (deleted?): stop retrying, clear the param.
+          handledScrollIdRef.current = pid;
+          router.setParams({ scrollToPostId: undefined as any });
+        }
+      })();
+      return;
+    }
+
+    // Already injected once and it's STILL not visible: genuinely gone. Give up.
     handledScrollIdRef.current = pid;
     router.setParams({ scrollToPostId: undefined as any });
   }, [params.scrollToPostId, loading, displayedPosts, router]);
@@ -776,18 +872,36 @@ export default function Feed() {
           ListHeaderComponent={
             <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
               <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
-              <Pressable
-                onPress={() => {
-                  tap();
-                  // Toggle the DISPLAYED state. Hiding also clears the transient latch so a post
-                  // just created can be hidden; the saved preference tracks the user's real choice.
-                  if (effectiveShowMine) { setShowMine(false); setForceShowMine(false); }
-                  else setShowMine(true);
-                }}
-                style={({ pressed }) => [styles.toggleBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.toggleBtnText}>{effectiveShowMine ? 'Hide my posts' : 'Show my posts'}</Text>
-              </Pressable>
+              <View style={styles.headerBtnRow}>
+                <Pressable
+                  onPress={() => {
+                    tap();
+                    // Toggle the DISPLAYED state. Hiding also clears the transient latch so a post
+                    // just created can be hidden; the saved preference tracks the user's real choice.
+                    if (effectiveShowMine) { setShowMine(false); setForceShowMine(false); }
+                    else setShowMine(true);
+                  }}
+                  style={({ pressed }) => [styles.toggleBtn, { backgroundColor: tc.primary }, pressed && { opacity: 0.85 }]}
+                >
+                  <Text style={styles.toggleBtnText}>{effectiveShowMine ? 'Hide my posts' : 'Show my posts'}</Text>
+                </Pressable>
+                {canFilterAuthors && (
+                  <Pressable
+                    onPress={() => { tap(); setFilterOpen(true); }}
+                    style={({ pressed }) => [
+                      styles.filterBtn,
+                      { borderColor: hiddenAuthors.size ? tc.primary : tc.border, backgroundColor: tc.inputBg },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Filter which friends show in your feed"
+                  >
+                    <Text style={[styles.filterBtnText, { color: hiddenAuthors.size ? tc.primary : tc.subtle }]}>
+                      {hiddenAuthors.size ? `Filter · ${hiddenAuthors.size}` : 'Filter'}
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
             </View>
           }
           ListEmptyComponent={
@@ -818,7 +932,16 @@ export default function Feed() {
           renderItem={({ item }) => {
             const commentsVisible = item.commentsEnabled !== false && item.authorCommentsEnabled === true;
             return (
-              <View style={[styles.postContainer, { backgroundColor: tc.postBg, borderColor: tc.border }]}>
+              // The whole card opens the thread (inner pressables like the author link and the
+              // menu dots still win their own taps), matching what users expect from a feed.
+              <Pressable
+                onPress={() => { tap(); setSelectedPost(item); }}
+                style={({ pressed }) => [
+                  styles.postContainer,
+                  { backgroundColor: tc.postBg, borderColor: tc.border },
+                  pressed && { opacity: 0.94 },
+                ]}
+              >
                 <View style={styles.postHeaderRow}>
                   <Pressable
                     onPress={() => { tap(); item.authorUsernameSlug && router.push(`/profile/${item.authorUsernameSlug}`); }}
@@ -846,7 +969,11 @@ export default function Feed() {
 
                 {item.url ? <LinkPreview url={item.url} /> : null}
 
-                <Text selectable style={[styles.postContent, { color: tc.text }]}>{item.content}</Text>
+                <LinkifiedText
+                  text={item.content}
+                  style={[styles.postContent, { color: tc.text }]}
+                  linkColor={tc.linkText}
+                />
 
                 <View style={styles.postFooter}>
                   {commentsVisible ? (
@@ -860,7 +987,7 @@ export default function Feed() {
                   ) : <View />}
                   <Text style={[styles.postDate, { color: tc.subtle }]}>{item.createdAt.toLocaleString()}</Text>
                 </View>
-              </View>
+              </Pressable>
             );
           }}
           ListFooterComponent={
@@ -937,14 +1064,69 @@ export default function Feed() {
         </Pressable>
       </Modal>
 
-      {/* Edit Post Modal */}
+      {/* Personal feed filter (Brian-only for now): hide chosen friends from THIS device's feed
+          view. Display preference only, nothing written server-side, friendships untouched. */}
+      <Modal visible={filterOpen} animationType="fade" transparent onRequestClose={() => setFilterOpen(false)}>
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: tc.backdrop }]} onPress={() => setFilterOpen(false)}>
+          <Pressable style={[styles.menuSheet, { backgroundColor: tc.card }]} onPress={(e) => e.stopPropagation()}>
+            <Text style={[styles.filterTitle, { color: tc.text }]}>My feed filter</Text>
+            <Text style={[styles.filterSub, { color: tc.subtle }]}>
+              Hide someone{'’'}s posts from your feed. Only affects what you see, they stay your friend.
+            </Text>
+            <ScrollView style={{ maxHeight: 380 }}>
+              {filterableAuthors.length === 0 ? (
+                <Text style={[styles.filterSub, { color: tc.subtle, paddingVertical: 16 }]}>
+                  No friend posts loaded yet.
+                </Text>
+              ) : (
+                filterableAuthors.map((a) => {
+                  const hidden = hiddenAuthors.has(a.uid);
+                  return (
+                    <Pressable
+                      key={a.uid}
+                      onPress={() => toggleHiddenAuthor(a.uid)}
+                      style={({ pressed }) => [styles.filterRow, { borderBottomColor: tc.border }, pressed && { opacity: 0.7 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${a.name}: ${hidden ? 'hidden from your feed, tap to show' : 'shown in your feed, tap to hide'}`}
+                    >
+                      <Text style={[styles.filterName, { color: hidden ? tc.subtle : tc.text }]} numberOfLines={1}>
+                        {a.name}
+                      </Text>
+                      <Text style={[styles.filterState, { color: hidden ? tc.danger : tc.subtle }]}>
+                        {hidden ? 'Hidden' : 'Shown'}
+                      </Text>
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+            <Pressable style={[styles.menuRow, styles.menuCancel, { borderTopColor: tc.border }]} onPress={() => { tap(); setFilterOpen(false); }}>
+              <Text style={[styles.menuText, { color: tc.text }]}>Done</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Edit Post Modal. Cancel/Save live in a HEADER row so they are always visible above the
+          keyboard (the old bottom action row disappeared behind it, leaving no way out), and the
+          iOS accessory bar adds a Done key to dismiss the keyboard itself. */}
       <Modal visible={!!editingPost} animationType="slide" transparent onRequestClose={() => setEditingPost(null)}>
         <KeyboardAvoidingView
           style={[styles.editBackdrop, { backgroundColor: tc.backdrop }]}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <View style={[styles.editCard, { backgroundColor: tc.card }]}>
-            <Text style={[styles.editModalTitle, { color: tc.text }]}>Edit Post</Text>
+            <View style={styles.editHeaderRow}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); setEditingPost(null); }} hitSlop={8} style={styles.editHeaderBtn}>
+                <Text style={[styles.editCancelTxt, { color: tc.subtle }]}>Cancel</Text>
+              </Pressable>
+              <Text style={[styles.editModalTitle, { color: tc.text }]}>Edit Post</Text>
+              <Pressable onPress={handleSaveEdit} disabled={editSaving} hitSlop={8} style={[styles.editHeaderBtn, styles.editHeaderBtnRight]}>
+                <Text style={[styles.editSaveHeaderTxt, { color: tc.primary }, editSaving && { opacity: 0.6 }]}>
+                  {editSaving ? 'Saving…' : 'Save'}
+                </Text>
+              </Pressable>
+            </View>
             <TextInput
               style={[styles.editInput, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
               placeholder="Title (optional)"
@@ -952,15 +1134,19 @@ export default function Feed() {
               value={editTitle}
               onChangeText={setEditTitle}
               maxLength={200}
+              inputAccessoryViewID={Platform.OS === 'ios' ? EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
-              style={[styles.editInput, { minHeight: 100, textAlignVertical: 'top', backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
+              style={[styles.editInput, { minHeight: 120, maxHeight: 260, textAlignVertical: 'top', backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
               placeholder="What's on your mind?"
               placeholderTextColor={tc.subtle}
               value={editContent}
               onChangeText={setEditContent}
               multiline
-              maxLength={2000}
+              // Same ceiling as create-post (~10k chars): the old 2000 cap could block edits to
+              // long posts that were perfectly legal to write.
+              maxLength={10000}
+              inputAccessoryViewID={Platform.OS === 'ios' ? EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
               style={[styles.editInput, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
@@ -971,17 +1157,21 @@ export default function Feed() {
               autoCapitalize="none"
               keyboardType="url"
               maxLength={500}
+              inputAccessoryViewID={Platform.OS === 'ios' ? EDIT_ACCESSORY_ID : undefined}
             />
-            <View style={styles.editActions}>
-              <Pressable onPress={() => { tap(); setEditingPost(null); }} style={[styles.editCancelBtn, { backgroundColor: tc.inputBg }]}>
-                <Text style={[styles.editCancelTxt, { color: tc.subtle }]}>Cancel</Text>
-              </Pressable>
-              <Pressable onPress={handleSaveEdit} disabled={editSaving} style={[styles.editSaveBtn, { backgroundColor: tc.primary }, editSaving && { opacity: 0.6 }]}>
-                <Text style={styles.editSaveTxt}>{editSaving ? 'Saving...' : 'Save'}</Text>
-              </Pressable>
-            </View>
           </View>
         </KeyboardAvoidingView>
+        {/* Inside the Modal on purpose: a Modal is its own native window, and an accessory view
+            registered outside it never attaches to these inputs. */}
+        {Platform.OS === 'ios' && (
+          <InputAccessoryView nativeID={EDIT_ACCESSORY_ID}>
+            <View style={[styles.iosAccessory, { borderTopColor: tc.border, backgroundColor: tc.card }]}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
+                <Text style={[styles.iosDone, { color: tc.primary }]}>Done</Text>
+              </Pressable>
+            </View>
+          </InputAccessoryView>
+        )}
       </Modal>
     </>
   );
@@ -998,6 +1188,17 @@ const styles = StyleSheet.create({
 
   toggleBtn: { alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#2F6FED' },
   toggleBtnText: { color: '#fff', fontWeight: '800' },
+  headerBtnRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 },
+  filterBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1 },
+  filterBtnText: { fontWeight: '800' },
+  filterTitle: { fontSize: 16, fontWeight: '800', textAlign: 'center', paddingTop: 10, paddingBottom: 4 },
+  filterSub: { fontSize: 13, textAlign: 'center', paddingHorizontal: 16, paddingBottom: 8 },
+  filterRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 13, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  filterName: { fontSize: 15, fontWeight: '600', flex: 1, marginRight: 12 },
+  filterState: { fontSize: 13, fontWeight: '800' },
 
   list: { padding: SCREEN_PAD, backgroundColor: '#fff' },
   postContainer: { marginBottom: 16, padding: 16, backgroundColor: '#f9f9f9', borderRadius: 8, borderWidth: 1, borderColor: '#eee' },
@@ -1061,11 +1262,19 @@ const styles = StyleSheet.create({
     padding: 20,
     maxHeight: '80%',
   },
+  editHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  editHeaderBtn: { minWidth: 60 },
+  editHeaderBtnRight: { alignItems: 'flex-end' },
+  editSaveHeaderTxt: { fontWeight: '800', fontSize: 16 },
   editModalTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: '#111827',
-    marginBottom: 16,
     textAlign: 'center',
   },
   editInput: {
@@ -1078,24 +1287,14 @@ const styles = StyleSheet.create({
     color: '#111827',
     marginBottom: 12,
   },
-  editActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
-    marginTop: 4,
-  },
-  editCancelBtn: {
+  editCancelTxt: { fontWeight: '700', color: '#6B7280', fontSize: 16 },
+
+  // ── iOS keyboard accessory (edit modal) ──
+  iosAccessory: {
+    borderTopWidth: 1,
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: '#F3F4F6',
+    paddingVertical: 8,
+    alignItems: 'flex-end',
   },
-  editCancelTxt: { fontWeight: '700', color: '#6B7280' },
-  editSaveBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: '#2F6FED',
-  },
-  editSaveTxt: { fontWeight: '700', color: '#fff' },
+  iosDone: { fontSize: 16, fontWeight: '600' },
 });

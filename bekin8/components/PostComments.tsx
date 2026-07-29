@@ -1,5 +1,6 @@
 // components/PostComments.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
   Alert,
@@ -31,9 +32,11 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, warning } from '../utils/haptics';
+import LinkifiedText from './LinkifiedText';
 
 type Post = {
   id: string;
@@ -91,15 +94,126 @@ async function resolveMyName(uid: string): Promise<string> {
 }
 
 const ACCESSORY_ID = 'postcomments-accessory';
+// Same cap as the beacon chat composer: the two surfaces should feel like one product.
+const COMMENT_MAX = 500;
+
+// The composer owns its own text state so typing never re-renders the whole comments panel
+// (per-keystroke re-renders of the full thread read as input lag on device), and it persists the
+// draft per post+user so backgrounding the app never loses a half-typed comment.
+type CommentComposerProps = {
+  draftKey: string;
+  sending: boolean;
+  onSend: (body: string) => void;
+  onFocusScroll: () => void;
+  composerFocusedRef: React.MutableRefObject<boolean>;
+};
+
+const CommentComposer = React.memo(function CommentComposer({
+  draftKey, sending, onSend, onFocusScroll, composerFocusedRef,
+}: CommentComposerProps) {
+  const { colors: tc } = useTheme();
+  const [text, setText] = useState('');
+  const [composerContentH, setComposerContentH] = useState(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem(draftKey)
+      .then((v) => { if (alive && v) setText(v); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [draftKey]);
+
+  const persistDraft = (t: string) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      (t.trim() ? AsyncStorage.setItem(draftKey, t) : AsyncStorage.removeItem(draftKey)).catch(() => {});
+    }, 350);
+  };
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+
+  const canSend = text.trim().length > 0 && !sending;
+  const send = () => {
+    if (!canSend) return;
+    const body = text.trim();
+    setText('');
+    setComposerContentH(0);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    AsyncStorage.removeItem(draftKey).catch(() => {});
+    onSend(body);
+  };
+
+  const remaining = COMMENT_MAX - text.length;
+  const composerH = Math.max(40, Math.min(120, Math.ceil(composerContentH)));
+
+  return (
+    <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
+      <View style={styles.inputWrap}>
+        <TextInput
+          value={text}
+          onChangeText={(t) => {
+            // Buzz once when the cap is first hit (maxLength already blocks further input).
+            if (t.length >= COMMENT_MAX && text.length < COMMENT_MAX) warning();
+            setText(t);
+            persistDraft(t);
+          }}
+          placeholder="Add a comment…"
+          placeholderTextColor={tc.subtle}
+          style={[
+            styles.input,
+            { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text, height: composerH },
+          ]}
+          multiline
+          maxLength={COMMENT_MAX}
+          onContentSizeChange={(e) => setComposerContentH(e.nativeEvent.contentSize.height)}
+          inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
+          blurOnSubmit={false}
+          returnKeyType="send"
+          onSubmitEditing={send}
+          onFocus={() => {
+            composerFocusedRef.current = true;
+            onFocusScroll();
+          }}
+          onBlur={() => { composerFocusedRef.current = false; }}
+        />
+        {remaining <= 40 && (
+          <Text
+            style={[
+              styles.charCount,
+              { color: remaining <= 0 ? tc.danger : remaining <= 20 ? '#D97706' : tc.subtle },
+            ]}
+          >
+            {remaining}
+          </Text>
+        )}
+      </View>
+      <Pressable
+        onPress={send}
+        disabled={!canSend}
+        style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5, backgroundColor: tc.primary }]}
+      >
+        {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
+      </Pressable>
+    </View>
+  );
+});
 
 export default function PostComments({ post, onClose, targetCommentId }: Props) {
   const { colors: tc } = useTheme();
   const online = useOnline();
+  const insets = useSafeAreaInsets();
   const me = auth.currentUser;
   const [loading, setLoading] = useState(true);
   const [comments, setComments] = useState<Comment[]>([]);
-  const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  // Track keyboard visibility so the card's bottom margin can collapse while typing (the composer
+  // then sits flush above the keyboard instead of leaving a see-through band, like the beacon chat).
+  const [kbVisible, setKbVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   const [menuFor, setMenuFor] = useState<Comment | null>(null);
   const [postAuthorName, setPostAuthorName] = useState<string>(post.authorUsername);
   const [postAuthorColor, setPostAuthorColor] = useState<string>('#2F6FED');
@@ -144,9 +258,21 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
   }, [post.authorUid]);
 
   const listRef = useRef<FlatList<Comment>>(null);
+  const composerFocusedRef = useRef(false);
   const didInitialScrollRef = useRef(false);
   const pendingScrollRef = useRef(false);
   const lastScrolledTargetRef = useRef<string | undefined>(undefined);
+
+  // Tapping the composer scrolls to the newest comment, but onFocus fires BEFORE the keyboard
+  // opens and the card shrinks, so that first scroll lands short. Snap again once the keyboard is
+  // fully up (same fix as the beacon chat). Focus-guarded so other keyboards can't yank the list.
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', () => {
+      if (!composerFocusedRef.current) return;
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+    });
+    return () => sub.remove();
+  }, []);
 
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [contentHeight, setContentHeight] = useState(0);
@@ -230,32 +356,33 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
   };
   const scrollToTop = () => { tap(); listRef.current?.scrollToOffset({ offset: 0, animated: true }); };
 
-  const canSend = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
-
-  const handleSend = async () => {
+  const handleSendBody = useCallback((body: string) => {
     press();
-    if (!canSend || !me) return;
-    const body = text.trim();
-    try {
-      setSending(true);
-      const authorName = await resolveMyName(me.uid);
-      await addDoc(collection(db, 'Posts', post.id, 'comments'), {
-        text: body,
-        authorUid: me.uid,
-        authorName,
-        createdAt: serverTimestamp(),
-        deleted: false,
-      });
-      // Clear only after a confirmed write, so a failure never loses the draft.
-      setText('');
-      pendingScrollRef.current = true;
-    } catch (e: any) {
-      // Preserve the typed text and tell the user, instead of a silent forever-spin.
-      Alert.alert('Comment failed', e?.message ?? 'Could not send your comment. Please try again.');
-    } finally {
-      setSending(false);
-    }
-  };
+    const meNow = auth.currentUser;
+    if (!meNow) return;
+    (async () => {
+      try {
+        setSending(true);
+        const authorName = await resolveMyName(meNow.uid);
+        await addDoc(collection(db, 'Posts', post.id, 'comments'), {
+          text: body,
+          authorUid: meNow.uid,
+          authorName,
+          createdAt: serverTimestamp(),
+          deleted: false,
+        });
+        pendingScrollRef.current = true;
+      } catch (e: any) {
+        Alert.alert('Comment failed', e?.message ?? 'Could not send your comment. Please try again.');
+      } finally {
+        setSending(false);
+      }
+    })();
+  }, [post.id]);
+
+  const focusScroll = useCallback(() => {
+    listRef.current?.scrollToEnd({ animated: true });
+  }, []);
 
   const doReport = (comment: Comment) => {
     setMenuFor(null);
@@ -349,14 +476,21 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
       {/* Full-screen backdrop, tap outside card to close */}
       <Pressable style={[StyleSheet.absoluteFill, styles.backdrop, { backgroundColor: tc.backdrop }]} onPress={onClose} />
 
-      {/* Floating card, centered; KeyboardAvoidingView shrinks available space
-          when the composer is focused so the card sits above the keyboard. */}
+      {/* Near-fullscreen card (beacon-chat parity: comments deserve the whole screen, not a 480px
+          box). The KeyboardAvoidingView shrinks it from the bottom when the composer is focused,
+          so the header stays pinned at the top and the composer sits above the keyboard; the
+          card's bottom margin collapses while typing so the composer lands flush on the keyboard. */}
       <KeyboardAvoidingView
-        style={styles.cardOuter}
+        style={[styles.cardOuter, { paddingTop: insets.top + 8 }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         pointerEvents="box-none"
       >
-        <View style={[styles.card, { backgroundColor: tc.card, borderColor: tc.border }]}>
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: tc.card, borderColor: tc.border, marginBottom: kbVisible ? 0 : insets.bottom + 8 },
+          ]}
+        >
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
           <View style={styles.headerLeft}>
@@ -451,9 +585,17 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                                 return ' · ' + (isToday ? time : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + time);
                               })()}
                             </Text>
-                            <Text selectable style={[styles.msgText, { color: tc.text }, deleted && styles.deletedText]}>
-                              {deleted ? '[deleted]' : item.text}
-                            </Text>
+                            {deleted ? (
+                              <Text selectable style={[styles.msgText, { color: tc.text }, styles.deletedText]}>
+                                [deleted]
+                              </Text>
+                            ) : (
+                              <LinkifiedText
+                                text={item.text}
+                                style={[styles.msgText, { color: tc.text }]}
+                                linkColor={tc.linkText ?? '#2F6FED'}
+                              />
+                            )}
                           </View>
                           {mine && !deleted && (
                             <Pressable
@@ -475,29 +617,15 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
               )}
             </View>
 
-            {/* Composer */}
-            <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
-              <TextInput
-                value={text}
-                onChangeText={setText}
-                placeholder="Add a comment…"
-                placeholderTextColor={tc.subtle}
-                style={[styles.input, { borderColor: tc.border, backgroundColor: tc.inputBg, color: tc.text }]}
-                multiline
-                inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
-                blurOnSubmit={false}
-                returnKeyType="send"
-                onSubmitEditing={handleSend}
-                onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
-              />
-              <Pressable
-                onPress={handleSend}
-                disabled={!canSend}
-                style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5, backgroundColor: tc.primary }]}
-              >
-                {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>Send</Text>}
-              </Pressable>
-            </View>
+            {/* Composer: memoized child with its own text state (typing never re-renders the
+                thread) + per-post draft persistence, beacon-chat parity throughout. */}
+            <CommentComposer
+              draftKey={`@bekin_comment_draft_${me?.uid ?? 'anon'}:${post.id}`}
+              sending={sending}
+              onSend={handleSendBody}
+              onFocusScroll={focusScroll}
+              composerFocusedRef={composerFocusedRef}
+            />
           </>
         ) : (
           /* Comments are off, hide thread, show banner only */
@@ -552,19 +680,15 @@ const styles = StyleSheet.create({
   cardOuter: {
     position: 'absolute',
     top: 0, left: 0, right: 0, bottom: 0,
-    justifyContent: 'center',
-    padding: 16,
+    paddingHorizontal: 12,
   },
   card: {
     backgroundColor: '#fff',
     borderRadius: 16,
     overflow: 'hidden',
-    // Card flexes naturally up to ~480px tall in normal use, but is allowed to
-    // shrink when the keyboard takes vertical space (via KeyboardAvoidingView
-    // padding). Without flex:1 the fixed height punches through and the
-    // composer ends up under the keyboard.
+    // Full height between the safe-area paddings: the thread gets the whole screen (beacon-chat
+    // parity), and flex lets the KeyboardAvoidingView shrink it from the bottom while typing.
     flex: 1,
-    maxHeight: 480,
     shadowColor: '#000',
     shadowOpacity: 0.12,
     shadowRadius: 16,
@@ -631,16 +755,20 @@ const styles = StyleSheet.create({
   deletedText: { color: '#94A3B8', fontStyle: 'italic' },
 
   inputRow: {
-    flexDirection: 'row', gap: 8,
+    flexDirection: 'row', gap: 8, alignItems: 'flex-end',
     borderTopWidth: 1, borderTopColor: '#E5E7EB',
     padding: 10, backgroundColor: '#FAFBFF',
   },
+  inputWrap: { flex: 1, position: 'relative' },
   input: {
-    flex: 1, minHeight: 40, maxHeight: 100,
     borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12,
     paddingHorizontal: 12, paddingVertical: 10,
     textAlignVertical: 'top', color: '#0B1426',
     backgroundColor: '#FFFFFF', fontSize: 15,
+  },
+  charCount: {
+    position: 'absolute', right: 10, bottom: 8,
+    fontSize: 11, fontWeight: '700',
   },
   sendBtn: {
     backgroundColor: '#2F6FED', paddingHorizontal: 16, paddingVertical: 10,

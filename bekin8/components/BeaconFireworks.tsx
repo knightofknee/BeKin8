@@ -318,10 +318,19 @@ export type BeaconFireworksProps = {
   anchorY: number;
   measured: boolean;
   focused?: boolean;
+  /** Stage-size override (px). Default: the window. The style-picker preview passes its box so
+   *  launches and bursts are choreographed within it. */
+  frameW?: number;
+  frameH?: number;
 };
 
-export default function BeaconFireworks({ skin, active, anchorX, anchorY, measured, focused = true }: BeaconFireworksProps) {
-  const { width: W, height: H } = useWindowDimensions();
+export default function BeaconFireworks({ skin, active, anchorX, anchorY, measured, focused = true, frameW, frameH }: BeaconFireworksProps) {
+  // The show is choreographed against the "screen" size (burst altitude band = fractions of u_h,
+  // x spread on u_w). frameW/frameH override it so an embedded run (the style-picker preview)
+  // stages the whole arc inside its own box instead of at full-screen altitudes.
+  const { width: winW, height: winH } = useWindowDimensions();
+  const W = frameW ?? winW;
+  const H = frameH ?? winH;
   const reduce = useReducedMotion();
 
   // Show intensity from the skin's smoke.opacity knob (0.5 -> 1.0 for the stock fireworks skin).

@@ -1,5 +1,6 @@
 // components/ChatRoom.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View,
   Text,
@@ -33,6 +34,7 @@ import {
   serverTimestamp,
   Timestamp,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
@@ -153,6 +155,122 @@ const CHAT_ACCESSORY_ID = 'chatroom-accessory';
 const CHAT_MESSAGE_MAX = 500;
 const REACTION_EMOJIS = ['🔥', '❤️', '😂', '👍', '🎉', '😮'];
 
+// The composer owns its own text state so typing NEVER re-renders the whole chat panel (the
+// per-keystroke re-render of a 300-message list was a visible input delay on device). It also
+// persists the draft per beacon+user, so backgrounding the app (or Android killing the activity)
+// never loses what was typed: the draft is restored on the next open and cleared on send.
+type ChatComposerProps = {
+  draftKey: string;
+  sending: boolean;
+  onSend: (body: string) => void;
+  onOpenGif: () => void;
+  onFocusScroll: () => void;
+  composerFocusedRef: React.MutableRefObject<boolean>;
+};
+
+const ChatComposer = React.memo(function ChatComposer({
+  draftKey, sending, onSend, onOpenGif, onFocusScroll, composerFocusedRef,
+}: ChatComposerProps) {
+  const { colors: tc } = useTheme();
+  const [text, setText] = useState('');
+  // Measured content height of the input. iOS keeps a multiline TextInput at its grown height
+  // after a PROGRAMMATIC clear (sending), so height is driven from this and reset on send.
+  const [composerContentH, setComposerContentH] = useState(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore any saved draft once per room.
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem(draftKey)
+      .then((v) => { if (alive && v) setText(v); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [draftKey]);
+
+  const persistDraft = (t: string) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      (t.trim() ? AsyncStorage.setItem(draftKey, t) : AsyncStorage.removeItem(draftKey)).catch(() => {});
+    }, 350);
+  };
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+
+  const canSend = text.trim().length > 0 && !sending;
+  const send = () => {
+    if (!canSend) return;
+    const body = text.trim();
+    setText('');
+    setComposerContentH(0);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    AsyncStorage.removeItem(draftKey).catch(() => {});
+    onSend(body);
+  };
+
+  const remaining = CHAT_MESSAGE_MAX - text.length;
+  // contentSize already INCLUDES the input's vertical padding (one line reports ~36).
+  const composerH = Math.max(36, Math.min(120, Math.ceil(composerContentH)));
+
+  return (
+    <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
+      <View style={[styles.composerPill, { borderColor: tc.border, backgroundColor: tc.inputBg }]}>
+        <TextInput
+          value={text}
+          onChangeText={(t) => {
+            // Buzz once when the cap is first hit (maxLength already blocks further input).
+            if (t.length >= CHAT_MESSAGE_MAX && text.length < CHAT_MESSAGE_MAX) warning();
+            setText(t);
+            persistDraft(t);
+          }}
+          placeholder="Message"
+          placeholderTextColor={tc.subtle}
+          editable
+          style={[styles.composerInput, { color: tc.text, height: composerH }]}
+          onContentSizeChange={(e) => setComposerContentH(e.nativeEvent.contentSize.height)}
+          multiline
+          maxLength={CHAT_MESSAGE_MAX}
+          onFocus={() => {
+            composerFocusedRef.current = true;
+            onFocusScroll();
+          }}
+          onBlur={() => { composerFocusedRef.current = false; }}
+          inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
+          blurOnSubmit={false}
+          returnKeyType="send"
+          onSubmitEditing={send}
+        />
+        {remaining <= 40 && (
+          <Text
+            style={[
+              styles.charCount,
+              { color: remaining <= 0 ? tc.danger : remaining <= 20 ? '#D97706' : tc.subtle },
+            ]}
+          >
+            {remaining}
+          </Text>
+        )}
+        <Pressable
+          onPress={onOpenGif}
+          hitSlop={8}
+          style={({ pressed }) => [styles.gifBtn, { borderColor: tc.border }, pressed && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Add a GIF"
+        >
+          <Text style={[styles.gifBtnText, { color: tc.subtle }]}>GIF</Text>
+        </Pressable>
+      </View>
+      <Pressable
+        onPress={send}
+        disabled={!canSend}
+        style={[styles.sendCircle, { backgroundColor: tc.primary, opacity: canSend ? 1 : 0.4 }]}
+        accessibilityRole="button"
+        accessibilityLabel="Send message"
+      >
+        {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-up" size={20} color="#fff" />}
+      </Pressable>
+    </View>
+  );
+});
+
 export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId }: ChatRoomProps) {
   const { colors: tc } = useTheme();
   const online = useOnline();
@@ -161,11 +279,6 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [loading, setLoading] = useState(true);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [text, setText] = useState('');
-  // Measured content height of the composer input. iOS keeps a multiline TextInput at its grown
-  // height after a PROGRAMMATIC clear (sending), so the height is driven explicitly from this and
-  // reset to 0 on send, snapping the box back to one line.
-  const [composerContentH, setComposerContentH] = useState(0);
   const [sending, setSending] = useState(false);
   const [gifOpen, setGifOpen] = useState(false);
   const [gifViewer, setGifViewer] = useState<string | null>(null);
@@ -181,8 +294,13 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [msgExpanded, setMsgExpanded] = useState(false);
   const [msgTruncated, setMsgTruncated] = useState(false);
   const expiresAtRef = useRef<number | null>(null);
+  // Parent beacon's audience, mirrored onto every message we write. The ChatMessages create rule
+  // requires an exact match against the beacon's own array, so this is a copy, never a choice:
+  // it is what scopes chat reads without a get() per message at read time.
+  const beaconAudienceRef = useRef<string[]>([]);
 
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  const composerFocusedRef = useRef(false);
   const pendingScrollRef = useRef(false);
   const didInitialScrollRef = useRef(false);
   const lastScrolledTargetRef = useRef<string | undefined>(undefined);
@@ -216,6 +334,20 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     didInitialScrollRef.current = false;
     lastScrolledTargetRef.current = undefined;
   }, [beaconId]);
+
+  // Tapping the composer scrolls to the newest message, but onFocus fires BEFORE the
+  // keyboard opens and the parent KeyboardAvoidingView shrinks the list, so that first
+  // scroll lands short. Snap to the end again once the keyboard is fully up so the latest
+  // message and its timestamp sit right above the composer. Focus-guarded so a keyboard
+  // opened by an overlay (e.g. GIF search) doesn't yank the thread. The user can still
+  // scroll back up freely afterwards; this only fires on keyboard open.
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', () => {
+      if (!composerFocusedRef.current) return;
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+    });
+    return () => sub.remove();
+  }, []);
 
   // Keyboard handling is owned by the parent modal via KeyboardAvoidingView
   // (see app/home.tsx beacon-details modal). Translating the panel here would
@@ -258,6 +390,9 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         const msg = typeof data?.message === 'string' ? data.message.trim() : '';
         setBeaconMessage(msg);
 
+        // Mirror the beacon's audience so outgoing messages can copy it verbatim.
+        beaconAudienceRef.current = Array.isArray(data?.audienceUids) ? data.audienceUids : [];
+
         // Resolve owner display name
         const oUid = data?.ownerUid;
         setOwnerUid(typeof oUid === 'string' ? oUid : '');
@@ -284,7 +419,16 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
     // Track the NEWEST 300 messages: query descending, then reverse to ascending
     // for render, so a thread past 300 messages still shows new arrivals.
-    const q = query(col, orderBy('createdAt', 'desc'), limit(300));
+    //
+    // The array-contains filter is REQUIRED, not an optimization. Firestore rules are not filters:
+    // a query is rejected unless its own constraints prove the read rule, and the ChatMessages read
+    // rule is `uid in resource.data.audienceUids`. Without this the whole listener is denied.
+    const q = query(
+      col,
+      where('audienceUids', 'array-contains', me?.uid ?? '__none__'),
+      orderBy('createdAt', 'desc'),
+      limit(300)
+    );
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -398,41 +542,47 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     return { count: 1 + byUid.size, names };
   }, [messages, ownerUid, ownerName]);
 
-  const canSendMsg = useMemo(() => !!me && text.trim().length > 0 && !sending, [me, text, sending]);
+  // Copy of the parent beacon's audience for outgoing writes. OMITTED (not sent as []) until the
+  // beacon doc has delivered a real list: the create rule allows an ABSENT copy (the trigger
+  // stamps it) but rejects a present one that mismatches, and an empty-array copy against a
+  // stamped beacon is a guaranteed permission-denied.
+  const audienceCopy = () =>
+    beaconAudienceRef.current.length ? { audienceUids: beaconAudienceRef.current } : {};
 
-  const handleSend = async () => {
+  const handleSendBody = useCallback((body: string) => {
     press();
-    if (!canSendMsg || !me) return;
-    const body = text.trim();
-    try {
-      setSending(true);
-      const authorName = await resolveMyName(me.uid);
-      const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
-      const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
+    const meNow = auth.currentUser;
+    if (!meNow) return;
+    (async () => {
+      try {
+        setSending(true);
+        const authorName = await resolveMyName(meNow.uid);
+        const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
+        const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
 
-      // Do NOT await the server ack: offline it never resolves and would lock
-      // the composer + wipe the draft. Firestore queues the write offline and the
-      // local snapshot echo confirms delivery. Only surface hard failures.
-      addDoc(col, {
-        text: body,
-        authorUid: me.uid,
-        authorName,
-        type: 'user',
-        createdAt: serverTimestamp(),
-        ...(expiresAt ? { expiresAt } : {}),
-      }).catch(() => {
+        // Do NOT await the server ack: offline it never resolves and would lock
+        // the composer. Firestore queues the write offline and the local snapshot
+        // echo confirms delivery. Only surface hard failures.
+        addDoc(col, {
+          text: body,
+          authorUid: meNow.uid,
+          authorName,
+          type: 'user',
+          ...(beaconAudienceRef.current.length ? { audienceUids: beaconAudienceRef.current } : {}),
+          createdAt: serverTimestamp(),
+          ...(expiresAt ? { expiresAt } : {}),
+        }).catch(() => {
+          Alert.alert('Send failed', 'Please try again.');
+        });
+
+        pendingScrollRef.current = true;
+      } catch {
         Alert.alert('Send failed', 'Please try again.');
-      });
-
-      setText('');
-      setComposerContentH(0); // snap the input back to one line (see composerContentH above)
-      pendingScrollRef.current = true;
-    } catch (e) {
-      Alert.alert('Send failed', 'Please try again.');
-    } finally {
-      setSending(false);
-    }
-  };
+      } finally {
+        setSending(false);
+      }
+    })();
+  }, [beaconId]);
 
   const handleSendGif = (gif: PickedGif) => {
     setGifOpen(false);
@@ -451,6 +601,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           kind: 'gif',
           authorUid: me.uid,
           authorName,
+          ...audienceCopy(),
           text: '',
           media: {
             provider: 'giphy',
@@ -487,6 +638,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         // the ChatMessages delete rule keys off authorUid. It's inert everywhere
         // else (roster, notifications, and the account sweep all read actorUid).
         authorUid: me.uid,
+        ...audienceCopy(),
         text: `${actorName} is in`,
         createdAt: serverTimestamp(),
         ...(expiresAt ? { expiresAt } : {}),
@@ -494,6 +646,8 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
       pendingScrollRef.current = true;
     } catch {
+      // Generic on purpose: if someone can see this chat, telling them the beacon "isn't shared
+      // with them" reads as an accusation and is usually OUR stamping bug, not their standing.
       Alert.alert("Couldn't set status", 'Please try again.');
     }
   };
@@ -615,64 +769,25 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   };
 
 
-  const remaining = CHAT_MESSAGE_MAX - text.length;
-  // Explicit input height clamped to the same 120 cap as before. The reported contentSize already
-  // INCLUDES the input's vertical padding (one line reports ~36); adding it again held the box at
-  // two-line height permanently. 36 = the single-line height (20pt line + 16 padding on iOS).
-  const composerH = Math.max(36, Math.min(120, Math.ceil(composerContentH)));
+  const openGif = useCallback(() => {
+    tap();
+    Keyboard.dismiss();
+    setGifOpen(true);
+  }, []);
+  const focusScroll = useCallback(() => {
+    listRef.current?.scrollToEnd({ animated: true });
+  }, []);
+
+  // Stable props + memoized component = typing in the composer never re-renders this panel.
   const ComposerRow = (
-    <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
-      <View style={[styles.composerPill, { borderColor: tc.border, backgroundColor: tc.inputBg }]}>
-        <TextInput
-          value={text}
-          onChangeText={(t) => {
-            // Buzz once when the cap is first hit (maxLength already blocks further input).
-            if (t.length >= CHAT_MESSAGE_MAX && text.length < CHAT_MESSAGE_MAX) warning();
-            setText(t);
-          }}
-          placeholder="Message"
-          placeholderTextColor={tc.subtle}
-          editable
-          style={[styles.composerInput, { color: tc.text, height: composerH }]}
-          onContentSizeChange={(e) => setComposerContentH(e.nativeEvent.contentSize.height)}
-          multiline
-          maxLength={CHAT_MESSAGE_MAX}
-          onFocus={() => listRef.current?.scrollToEnd({ animated: true })}
-          inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
-          blurOnSubmit={false}
-          returnKeyType="send"
-          onSubmitEditing={handleSend}
-        />
-        {remaining <= 40 && (
-          <Text
-            style={[
-              styles.charCount,
-              { color: remaining <= 0 ? tc.danger : remaining <= 20 ? '#D97706' : tc.subtle },
-            ]}
-          >
-            {remaining}
-          </Text>
-        )}
-        <Pressable
-          onPress={() => { tap(); Keyboard.dismiss(); setGifOpen(true); }}
-          hitSlop={8}
-          style={({ pressed }) => [styles.gifBtn, { borderColor: tc.border }, pressed && { opacity: 0.6 }]}
-          accessibilityRole="button"
-          accessibilityLabel="Add a GIF"
-        >
-          <Text style={[styles.gifBtnText, { color: tc.subtle }]}>GIF</Text>
-        </Pressable>
-      </View>
-      <Pressable
-        onPress={handleSend}
-        disabled={!canSendMsg}
-        style={[styles.sendCircle, { backgroundColor: tc.primary, opacity: canSendMsg ? 1 : 0.4 }]}
-        accessibilityRole="button"
-        accessibilityLabel="Send message"
-      >
-        {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-up" size={20} color="#fff" />}
-      </Pressable>
-    </View>
+    <ChatComposer
+      draftKey={`@bekin_chat_draft_${me?.uid ?? 'anon'}:${beaconId}`}
+      sending={sending}
+      onSend={handleSendBody}
+      onOpenGif={openGif}
+      onFocusScroll={focusScroll}
+      composerFocusedRef={composerFocusedRef}
+    />
   );
 
   const PanelBody = (
@@ -732,14 +847,22 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
       {!!beaconMessage && (
         <View style={[styles.beaconMsgSection, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
+          {/* Hidden unclamped copy, measurement only: onTextLayout on a CLAMPED Text reports the
+              truncated line count (3), never the full one, so "is there more?" must be measured
+              against the full text in a zero-height in-flow wrapper (same width as the visible
+              text). This is why See more never appeared on clamped descriptions. */}
+          <View style={styles.beaconMsgMeasure} pointerEvents="none">
+            <Text
+              style={styles.beaconMsgText}
+              onTextLayout={(e) => setMsgTruncated(e.nativeEvent.lines.length > 3)}
+            >
+              {beaconMessage}
+            </Text>
+          </View>
           <Text
             style={[styles.beaconMsgText, { color: tc.subtle }]}
-            numberOfLines={msgExpanded ? undefined : 5}
-            onTextLayout={(e) => {
-              if (!msgExpanded && e.nativeEvent.lines.length > 5) {
-                setMsgTruncated(true);
-              }
-            }}
+            // 3-line clamp (was 5): long descriptions were eating the thread's space.
+            numberOfLines={msgExpanded ? undefined : 3}
           >
             {beaconMessage}
           </Text>
@@ -1240,6 +1363,8 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#F8FAFF',
   },
+  // zero-height in-flow wrapper: full-width like the visible text, contributes no layout height
+  beaconMsgMeasure: { height: 0, overflow: 'hidden', opacity: 0 },
   beaconMsgText: {
     fontSize: 14,
     color: '#334155',

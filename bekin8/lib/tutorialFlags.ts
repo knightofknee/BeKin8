@@ -17,7 +17,6 @@ export type TutorialFeature =
   | "post"
   | "notifications"
   | "beacon_intro"
-  | "beacon_chat"
   | "skip_hint"
   | "first_tour_done"
   | "beacon_audience_seen";
@@ -28,14 +27,18 @@ const keyFor = (feature: TutorialFeature, uid: string) =>
 
 // Tutorials completed in the CURRENT JS session, so a finished tour (and its resume banner) stays
 // dismissed until the next refresh. A refresh reloads this module, clearing the set.
-const sessionSeen = new Set<TutorialFeature>();
+// Keyed PER USER (`uid:feature`), matching the storage keys: an unscoped cache let one account's
+// flags leak to the next account in the same session, so signing out and signing UP a fresh
+// account on the same device silently skipped the new user's tour auto-pop.
+const sessionSeen = new Set<string>();
+const sessionKey = (feature: TutorialFeature, uid: string) => `${uid}:${feature}`;
 
 /** True once the user has seen (or skipped) the given tutorial. Never throws. */
 export async function getSeen(
   feature: TutorialFeature,
   uid: string = uidOrAnon()
 ): Promise<boolean> {
-  if (sessionSeen.has(feature)) return true;
+  if (sessionSeen.has(sessionKey(feature, uid))) return true;
   try {
     const v = await AsyncStorage.getItem(keyFor(feature, uid));
     return v === "1";
@@ -50,8 +53,8 @@ export async function setSeen(
   seen: boolean = true,
   uid: string = uidOrAnon()
 ): Promise<void> {
-  if (seen) sessionSeen.add(feature);
-  else sessionSeen.delete(feature);
+  if (seen) sessionSeen.add(sessionKey(feature, uid));
+  else sessionSeen.delete(sessionKey(feature, uid));
   try {
     if (seen) await AsyncStorage.setItem(keyFor(feature, uid), "1");
     else await AsyncStorage.removeItem(keyFor(feature, uid));
@@ -65,7 +68,7 @@ export async function resetSeen(
   feature: TutorialFeature,
   uid: string = uidOrAnon()
 ): Promise<void> {
-  sessionSeen.delete(feature);
+  sessionSeen.delete(sessionKey(feature, uid));
   try {
     await AsyncStorage.removeItem(keyFor(feature, uid));
   } catch {

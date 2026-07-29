@@ -3,26 +3,68 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // NOTE: this file is the source of truth for Firestore rules, deployed via
-    // `firebase deploy --only firestore:rules`. Project: waldgrave-profiles. (Escape from Hades IRL
-    // is a SEPARATE Firebase project and is not governed by this file, despite the vacationDays
-    // block below, which is inert leftover.)
+    // `firebase deploy --only firestore:rules`. Project: waldgrave-profiles. Escape from Hades IRL
+    // is a SEPARATE Firebase project (escape-from-hades-irl) with its own rules file in its own
+    // repo; the two are cross-contaminated no longer. The inert `vacationDays` block that used to
+    // sit below was Hades' collection and has been removed.
     //
     // Firestore ORs every matching block: if any one of them allows an operation, it is allowed.
     // That makes the catch-all at the bottom the most dangerous block in the file. Both of its
     // blanket grants have now been closed, `read` in 2026-07-07 and `create` after that grant was
     // found to be quietly defeating every per-collection create guard above.
     //
-    // Shared content (Posts, Profiles, Beacons, ChatMessages, comments, Favorites) requires sign-in
-    // to read, but is NOT audience-scoped at the rules layer: any signed-in user can read any post.
-    // The friends-only / friends-of-friends feed is a CLIENT query convention. It cannot currently
-    // be enforced here, because a query is only permitted when its own filters prove the read rule,
-    // and "the author is my friend" is not provable from `where('author','in',[...])` without a
-    // cross-collection join. Enforcing audience server-side would mean denormalizing a reader list
-    // onto every post and querying it with array-contains.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // AUDIENCE SCOPING — ⚠️ CURRENTLY IN A TRANSITIONAL (PERMISSIVE) STATE. SEE "STEP 2" BELOW.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    //
+    // THE MODEL: every Post, Beacon, ChatMessage and Profile carries an `audienceUids` array =
+    // [owner] + owner's accepted friends + owner's friends-of-friends when BOTH sides have
+    // friendsOfFriendsPosts on. It is written ONLY by the Admin SDK (functions/src/audience.ts) and
+    // kept current by triggers on FriendEdges and on the FoF flag. Clients may never write it: an
+    // author who could set their own audience could name the entire user base.
+    //
+    // WHY IT IS NOT ENFORCED ON READS YET: Firestore rules are not filters. A query is rejected
+    // unless its own filters PROVE the read rule. Builds already on people's phones query
+    // `where('author','in',[friends])` and `where('ownerUid','in',[friends])`, which cannot prove
+    // "I am in audienceUids", so a strict read rule denies those queries outright and blanks the
+    // feed and beacon list on every un-updated install.
+    //
+    // Supporting both shapes at once means the read rule must be satisfiable WITHOUT an audience
+    // filter, i.e. `inAudience() || authed()`, which reduces to `authed()`. So this transition
+    // window buys NO read enforcement: reads are exactly as open as they were before. What it does
+    // buy is safety — the app release and the rules flip are decoupled, so nobody breaks — plus all
+    // the WRITE-side hardening below, which is version-independent and IS live now.
+    //
+    // ┌─ STEP 2: FINISH THIS ─────────────────────────────────────────────────────────────────────┐
+    // │ Once telemetry/Config-gate shows everyone is on 1.2.25+, search this file for the marker   │
+    // │ TRANSITIONAL-AUDIENCE and, at each one, delete the permissive branch so only the audience  │
+    // │ check remains. There are 6 of them: Posts, Posts/comments, Beacons, Beacons/ChatMessages,  │
+    // │ Profiles, Profiles/lists. No client change is needed at that point — the shipped app       │
+    // │ already queries by audienceUids.                                                           │
+    // └───────────────────────────────────────────────────────────────────────────────────────────┘
 
     // -------- users subtree --------
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      function isMe() { return request.auth != null && request.auth.uid == userId; }
+      // `bonusPosts` is CURRENCY: checkPostAllowed spends it to let you past the posting rate
+      // limit. It lives on a doc its own owner can write, so before this a user could simply set
+      // it to 9999 and mint unlimited bonus posts. The client legitimately seeds it exactly once
+      // (3, at signup, in signup.tsx / googleAuth.ts / appleAuth.ts) and NEVER updates it after,
+      // so clients are allowed to set it no higher than the 3 they start with and may never raise
+      // it. Decreases stay legal so nothing that rewrites the doc gets locked out. The Admin SDK
+      // (checkPostAllowed's decrement, dailyBonusAccrual's refill) bypasses rules and is unaffected.
+      function bonusNotInflated() {
+        return !('bonusPosts' in request.resource.data)
+               || (('bonusPosts' in resource.data)
+                     ? request.resource.data.bonusPosts <= resource.data.bonusPosts
+                     : request.resource.data.bonusPosts <= 3);
+      }
+      allow read: if isMe();
+      allow create: if isMe()
+                    && (!('bonusPosts' in request.resource.data)
+                        || request.resource.data.bonusPosts <= 3);
+      allow update: if isMe() && bonusNotInflated();
+      allow delete: if isMe();
 
       match /friends/{friendId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
@@ -130,6 +172,15 @@ service cloud.firestore {
     match /Beacons/{beaconId} {
       function authed()     { return request.auth != null; }
       function isOwner()    { return authed() && resource.data.ownerUid == request.auth.uid; }
+      // Audience gate. The owner is always inside their own audience, but check ownerUid too so a
+      // beacon is never invisible to its creator during the sub-second window between the client
+      // create and the trigger that stamps audienceUids.
+      function inAudience() {
+        return authed()
+               && (resource.data.ownerUid == request.auth.uid
+                   || (resource.data.audienceUids is list
+                       && request.auth.uid in resource.data.audienceUids));
+      }
       function isAllowed()  {
         return authed()
                && resource.data.allowedUids is list
@@ -139,40 +190,179 @@ service cloud.firestore {
         return (resource.data.inUids is list) ? resource.data.inUids : [];
       }
 
-      allow read: if authed();
+      // TRANSITIONAL-AUDIENCE (Beacons): old builds list beacons with where('ownerUid','in',[...]),
+      // which cannot prove inAudience(). Drop `|| authed()` at step 2 to enforce.
+      allow read: if inAudience() || authed();
+      // audienceUids is Admin-SDK territory: a client may not ship one on create, and may not touch
+      // it on update (the owner branch below pins it). Otherwise an author could publish a beacon
+      // naming the whole user base as its audience. Version-independent, enforced NOW.
       allow create: if authed()
-                    && request.resource.data.ownerUid == request.auth.uid;
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && !('audienceUids' in request.resource.data);
       allow update: if authed() && (
-        isOwner() ||
+        // ownerUid is pinned so an edit cannot hand the beacon (and the audience it notifies)
+        // to another user's uid. audienceUids is pinned via changedKeys (rather than an equality
+        // check) so this also holds for a beacon the stamping trigger has not reached yet, where
+        // the field is absent on both sides.
+        (isOwner()
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && !request.resource.data.diff(resource.data).changedKeys().hasAny(['audienceUids'])) ||
         (
           isAllowed() &&
           request.resource.data.diff(resource.data).changedKeys().hasOnly(['inUids','updatedAt']) &&
           request.resource.data.inUids is list &&
           request.resource.data.inUids.hasAll(currentInUids()) &&
-          request.resource.data.inUids.size() >= currentInUids().size()
+          // Append YOURSELF only. The old size()/hasAll pair proved the list only grew, not WHO was
+          // added, so any allowed user could insert arbitrary uids and fake other people's RSVPs.
+          // hasOnly (rather than ==) still permits a no-op re-save, which the client can emit.
+          request.resource.data.inUids.removeAll(currentInUids()).hasOnly([request.auth.uid])
         )
       );
       allow delete: if isOwner();
 
       match /ChatMessages/{msgId} {
-        allow read: if request.auth != null;
-        allow create: if request.auth != null;
+        // Chat inherits the parent beacon's audience. The message carries its OWN copy of
+        // audienceUids so reads are a plain array-contains with no get() at read time: rules cap
+        // document-access calls per request, and a get() of the parent for every message in a page
+        // would blow through that cap on a busy chat.
+        //
+        // The copy is client-written but NOT client-chosen: create requires it to equal the parent
+        // beacon's array exactly, which costs one get() on a single-document write (well inside the
+        // limit) and makes forging an audience impossible. Reads then cost nothing extra.
+        // Repeated get() of the SAME path is cached inside one rule evaluation, so these helpers
+        // cost one document access between them, not one each.
+        function parentBeacon() {
+          return get(/databases/$(database)/documents/Beacons/$(beaconId)).data;
+        }
+        // Owner check first, so chat still works in the sub-second window after a beacon is created
+        // but before the stamping trigger has written its audienceUids.
+        function inParentAudience() {
+          return parentBeacon().ownerUid == request.auth.uid
+                 || (parentBeacon().audienceUids is list
+                     && request.auth.uid in parentBeacon().audienceUids);
+        }
+        // New builds send a copy of the parent's audience; old builds send none. Absent is allowed
+        // (a trigger stamps it server-side), but a PRESENT one must match the parent exactly, so a
+        // client can never widen its own message's audience.
+        function audienceCopyOk() {
+          return !('audienceUids' in request.resource.data)
+                 || request.resource.data.audienceUids == parentBeacon().audienceUids;
+        }
+        // TRANSITIONAL-AUDIENCE (ChatMessages): old builds open a beacon's chat with a plain
+        // orderBy/limit query carrying no audience filter. Drop `|| request.auth != null` at step 2.
+        allow read: if (request.auth != null
+                        && resource.data.audienceUids is list
+                        && request.auth.uid in resource.data.audienceUids)
+                    || request.auth != null;
+        // Identity is pinned to the caller. Without this, `create: if request.auth != null` let any
+        // signed-in user (beacon reads are open, so every beacon id is enumerable) write into a
+        // stranger's chatroom with authorUid/authorName set to a third party. Two distinct forgeries
+        // that closed: a message attributed to someone else, which onBeaconCommentNotify then pushes
+        // to the owner and every RSVPer as attacker-authored text; and a forged RSVP
+        // ({type:'system', subtype:'im-in', actorUid:<victim>}), which getRsvpUids counts as a
+        // recipient and the roster UI renders as the victim attending.
+        // actorUid is optional (only system messages carry it), hence the null branch. All three
+        // client writers (handleSend, handleSendGif, handleImIn) already set both to the caller.
+        allow create: if request.auth != null
+                      && request.resource.data.authorUid == request.auth.uid
+                      && (!('actorUid' in request.resource.data.keys())
+                          || request.resource.data.actorUid == request.auth.uid)
+                      // You must be in the beacon's audience to post in its chat: this is what
+                      // stops a stranger writing into someone else's chatroom, and it holds for old
+                      // and new builds alike (a real participant is in the audience either way).
+                      // Version-independent, enforced NOW.
+                      && inParentAudience()
+                      && audienceCopyOk();
         allow delete: if request.auth != null && resource.data.authorUid == request.auth.uid;
-        // Reactions only: any signed-in user may change the `reactions` map and nothing else.
-        // The hasOnly clause blocks editing an existing message's text/media/author.
+        // Reactions only, and only from inside the audience. The hasOnly clause blocks editing an
+        // existing message's text/media/author, and (with audienceUids excluded from the allowed
+        // keys) also blocks widening the audience through a reaction write.
+        // TRANSITIONAL-AUDIENCE (ChatMessages reactions): messages written by old builds have no
+        // audienceUids until the stamping trigger fills it in, so membership is checked against the
+        // PARENT beacon, which is always stamped. This one needs no step-2 edit; it is already
+        // as tight as the strict version.
         allow update: if request.auth != null
+                      && inParentAudience()
                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']);
       }
     }
 
     // -------- Profiles + lists subcollection --------
     match /Profiles/{userId} {
-      allow read: if request.auth != null;
-      allow create, update: if request.auth != null && request.auth.uid == userId;
-      allow delete: if request.auth != null && request.auth.uid == userId;
+      function isMe() { return request.auth != null && request.auth.uid == userId; }
+
+      // A username on a Profile must be backed by a Usernames/{name} reservation you own.
+      // Previously `username`/`usernameLower` were free-text fields any user could set to anything,
+      // and uniqueness was only a client-side getDocs that a direct SDK call skips. That made every
+      // username-based lookup in the app spoofable, including the Add-Brian onboarding target
+      // (resolveBrianUid) and add-by-username. Usernames is create-only with no update rule, so
+      // first-writer-wins there is real uniqueness; anchoring Profiles to it makes the display
+      // name trustworthy.
+      function ownsReservation(name) {
+        return exists(/databases/$(database)/documents/Usernames/$(name))
+               && get(/databases/$(database)/documents/Usernames/$(name)).data.uid == request.auth.uid;
+      }
+      // `username` is the display-cased copy and several lookups fall back to it, so it must agree
+      // with the reserved lowercase form or the fallback path would still be spoofable.
+      function casingAgrees() {
+        return !('username' in request.resource.data)
+               || !('usernameLower' in request.resource.data)
+               || request.resource.data.username.lower() == request.resource.data.usernameLower;
+      }
+      // Separate create/update variants on purpose: `resource` is null on create, so an update-only
+      // "unchanged" comparison must never be evaluated there.
+      function nameOkOnCreate() {
+        return !('usernameLower' in request.resource.data)
+               || (casingAgrees() && ownsReservation(request.resource.data.usernameLower));
+      }
+      // Existing users predate the reservation (it was best-effort and silently failed), so leaving
+      // the name untouched stays legal and they are never locked out of editing other fields.
+      // Only an actual name CHANGE has to prove a reservation.
+      function nameOkOnUpdate() {
+        return !('usernameLower' in request.resource.data)
+               || (('usernameLower' in resource.data)
+                   && request.resource.data.usernameLower == resource.data.usernameLower)
+               || (casingAgrees() && ownsReservation(request.resource.data.usernameLower));
+      }
+
+      // Audience-scoped, same as Posts and Beacons: your profile is visible to you, to your
+      // friends, and to mutually-opted-in friends-of-friends. Strangers get permission-denied,
+      // which is why username -> uid for add-friend / unblock now goes through the resolveUsername
+      // callable instead of a client Profiles query.
+      // isMe() first so a brand-new account can always read its own profile in the window before
+      // the stamping trigger has written an audience onto it.
+      function profileVisible() {
+        return isMe()
+               || (request.auth != null
+                   && resource.data.audienceUids is list
+                   && request.auth.uid in resource.data.audienceUids);
+      }
+      // audienceUids is Admin-SDK-only. Pinned via changedKeys so it also holds for profiles the
+      // stamping trigger has not reached yet, where the field is absent on both sides.
+      function audienceUntouchedOnUpdate() {
+        return !request.resource.data.diff(resource.data).changedKeys().hasAny(['audienceUids']);
+      }
+
+      // TRANSITIONAL-AUDIENCE (Profiles): old builds resolve strangers by
+      // where('usernameLower','==',x) and read arbitrary profiles by uid. Drop `|| request.auth
+      // != null` at step 2 to enforce (the shipped app already uses the resolveUsername callable).
+      allow read: if profileVisible() || request.auth != null;
+      allow create: if isMe() && nameOkOnCreate()
+                    && !('audienceUids' in request.resource.data);
+      allow update: if isMe() && nameOkOnUpdate() && audienceUntouchedOnUpdate();
+      allow delete: if isMe();
 
       match /lists/{listId} {
-        allow read: if request.auth != null;
+        // Lists live under a profile, so they follow the profile's visibility. get() of the parent
+        // is one document access, and every list query is scoped to a single owner's subcollection,
+        // so the same parent is fetched once per request rather than once per list.
+        // TRANSITIONAL-AUDIENCE (Profiles/lists): drop the trailing `|| request.auth != null` at
+        // step 2 to enforce.
+        allow read: if request.auth != null
+                    && (request.auth.uid == userId
+                        || request.auth.uid in
+                           get(/databases/$(database)/documents/Profiles/$(userId)).data.audienceUids
+                        || request.auth != null);
         allow create, update, delete: if request.auth != null && request.auth.uid == userId;
       }
     }
@@ -204,17 +394,43 @@ service cloud.firestore {
     match /Posts/{postId} {
       function authed()   { return request.auth != null; }
       function isAuthor() { return authed() && resource.data.author == request.auth.uid; }
+      // Audience gate. author first, so a post is never invisible to its own author during the
+      // window between the client create and the trigger that stamps audienceUids.
+      function inAudience() {
+        return authed()
+               && (resource.data.author == request.auth.uid
+                   || (resource.data.audienceUids is list
+                       && request.auth.uid in resource.data.audienceUids));
+      }
 
-      allow read: if authed();
+      // TRANSITIONAL-AUDIENCE (Posts): old builds page the feed with where('author','in',[...]),
+      // which cannot prove inAudience(). Drop `|| authed()` at step 2 to enforce.
+      allow read: if inAudience() || authed();
       // Pinning `author` to the caller is what makes attribution trustworthy. This was previously
       // unenforceable no matter what was written here: the catch-all's blanket
       // `allow create: if request.auth != null` ORed with this block and granted the write anyway,
       // so any signed-in user could publish a post attributed to anyone. The catch-all is now closed.
-      allow create: if authed() && request.resource.data.author == request.auth.uid;
+      // `timestampServer` is pinned to the server clock. checkPostAllowed counts a user's posts
+      // inside today/yesterday windows to enforce the posting rate limit, and it used to count on
+      // the sibling numeric `timestamp`, which is a plain client-written Date.now(). Backdating
+      // that field moved a post out of both windows and made the limit unenforceable. Pinning the
+      // field the limiter reads means the window can no longer be dodged. The numeric `timestamp`
+      // stays unpinned on purpose: it is the skew-tolerant fallback the feed uses for optimistic
+      // ordering, and it is no longer trusted for anything that gates behavior.
+      // audienceUids is Admin-SDK territory (functions/src/audience.ts): a client may not ship one
+      // on create, or an author could publish a post naming the entire user base as its audience.
+      allow create: if authed()
+                    && request.resource.data.author == request.auth.uid
+                    && request.resource.data.timestampServer == request.time
+                    && !('audienceUids' in request.resource.data);
       // Posts had NO update/delete rule of their own and leaned on the catch-all's author guard.
       // With the catch-all closed they need explicit ones. `author` is pinned on update so an edit
       // cannot reassign a post to somebody else.
-      allow update: if isAuthor() && request.resource.data.author == resource.data.author;
+      // audienceUids pinned via changedKeys, so this also holds for posts the stamping trigger has
+      // not reached yet, where the field is absent on both sides.
+      allow update: if isAuthor()
+                    && request.resource.data.author == resource.data.author
+                    && !request.resource.data.diff(resource.data).changedKeys().hasAny(['audienceUids']);
       allow delete: if isAuthor();
 
       match /comments/{commentId} {
@@ -224,9 +440,27 @@ service cloud.firestore {
         function createsAsSelf() {
           return authed() && request.resource.data.authorUid == request.auth.uid;
         }
-        allow read: if authed();
-        allow create: if createsAsSelf();
-        allow update: if commentAuthor();
+        // Comments inherit the parent post's audience via a get(). Unlike ChatMessages this needs
+        // no per-comment copy: a comment list is always scoped to ONE post, so the same parent is
+        // fetched once per request rather than once per document.
+        function postAudience() {
+          return get(/databases/$(database)/documents/Posts/$(postId)).data.audienceUids;
+        }
+        function inPostAudience() {
+          return authed()
+                 && (get(/databases/$(database)/documents/Posts/$(postId)).data.author == request.auth.uid
+                     || request.auth.uid in postAudience());
+        }
+        // TRANSITIONAL-AUDIENCE (comments): old builds read a post's comments with no audience
+        // filter. Drop `|| authed()` at step 2 to enforce.
+        allow read: if inPostAudience() || authed();
+        // Create keeps the audience check: a real commenter is in the post's audience on any build,
+        // so this is version-independent and enforced NOW.
+        allow create: if createsAsSelf() && inPostAudience();
+        // authorUid pinned on update, mirroring the parent Posts rule: without it an author could
+        // edit their own comment and reassign it to somebody else.
+        allow update: if commentAuthor()
+                      && request.resource.data.authorUid == resource.data.authorUid;
         allow delete: if commentAuthor();
       }
     }
@@ -250,9 +484,23 @@ service cloud.firestore {
     // UPDATE, which no rule allows, so uniqueness holds. Owners may delete their own reservation to
     // release a name on rename.
     match /Usernames/{name} {
-      allow read: if false;
+      // Owner-only GET, so the client can distinguish "this reservation is already mine" (a
+      // re-save, or a retry after a partially-completed rename) from "taken by someone else".
+      // A get on another user's reservation is denied exactly like a get on a nonexistent one,
+      // and there is still no list permission, so this cannot be used to enumerate or probe names.
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
       allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
       allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // -------- Config (remote app config: minimum-version gate) --------
+    // World-readable ON PURPOSE, and the ONLY unauthenticated read left in this file. It holds a
+    // version string and public store URLs, nothing user-related, and the update gate has to work
+    // on the sign-in screen where there is no auth yet. Console/Admin writes only: a client that
+    // could write this could brick every install by raising minVersion.
+    match /Config/{docId} {
+      allow read: if true;
+      allow write: if false;
     }
 
     // -------- ClientErrors (crash / error logs) --------
@@ -265,20 +513,6 @@ service cloud.firestore {
     // -------- PushTokens --------
     match /PushTokens/{uid} {
       allow read, create, update, delete: if request.auth != null && request.auth.uid == uid;
-    }
-
-    // -------- Vacation Days (habit-tracking breaks) --------
-    // Doc id: `${userId}_${date}`. Each doc stores userId for queries.
-    match /vacationDays/{docId} {
-      function authed()    { return request.auth != null; }
-      function isOwner()   { return authed() && resource.data.userId == request.auth.uid; }
-      function ownsNew()   { return authed() && request.resource.data.userId == request.auth.uid; }
-
-      allow read: if isOwner();
-      allow create: if ownsNew();
-      allow update: if isOwner()
-                    && request.resource.data.userId == resource.data.userId;
-      allow delete: if isOwner();
     }
 
     // -------- Catch-all --------

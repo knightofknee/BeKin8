@@ -138,7 +138,10 @@ export default function SignUp() {
         setError(CROSS_PROVIDER_COLLISION_MSG);
         return;
       }
-      setError("Google sign-in failed. Please try again.");
+      // Keep the code visible: "failed (DEVELOPER_ERROR)" vs a bare "failed" is the
+      // difference between a fixable config report and a shrug.
+      const code = e?.code != null ? String(e.code) : "";
+      setError(code ? `Google sign-in failed (${code}). Please try again.` : "Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
     }
@@ -375,27 +378,31 @@ export default function SignUp() {
                   )}
                 </Pressable>
 
-                <Pressable
-                  onPress={handleAppleSignIn}
-                  disabled={anyLoading}
-                  style={({ pressed }) => [
-                    styles.appleBtn,
-                    { backgroundColor: isDark ? "#FFFFFF" : "#000" },
-                    pressed && { opacity: 0.85 },
-                    anyLoading && { opacity: 0.7 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Continue with Apple"
-                >
-                  {appleLoading ? (
-                    <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
-                  ) : (
-                    <View style={styles.ssoBtnInner}>
-                      <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
-                      <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
-                    </View>
-                  )}
-                </Pressable>
+                {/* Apple Sign-In is iOS-only (expo-apple-authentication has no Android
+                    implementation); on Android the button did nothing, so don't show it. */}
+                {Platform.OS === "ios" && (
+                  <Pressable
+                    onPress={handleAppleSignIn}
+                    disabled={anyLoading}
+                    style={({ pressed }) => [
+                      styles.appleBtn,
+                      { backgroundColor: isDark ? "#FFFFFF" : "#000" },
+                      pressed && { opacity: 0.85 },
+                      anyLoading && { opacity: 0.7 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Continue with Apple"
+                  >
+                    {appleLoading ? (
+                      <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
+                    ) : (
+                      <View style={styles.ssoBtnInner}>
+                        <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
+                        <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
+                      </View>
+                    )}
+                  </Pressable>
+                )}
               </View>
 
               {/* Terms / Privacy notice */}

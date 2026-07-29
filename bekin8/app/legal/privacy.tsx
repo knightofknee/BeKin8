@@ -41,7 +41,7 @@ export default function Privacy() {
         </Text>
         <Text style={[s.p, { color: colors.text }]}>
           Your posts are shown to the friends you have added. If you turn on the optional
-          "Friends of friends" setting, your posts are also shown to friends of your friends who
+          &quot;Friends of friends&quot; setting, your posts are also shown to friends of your friends who
           turned that same setting on, and their posts appear in your feed. That sharing is mutual,
           it never reaches past a friend of a friend, and switching the setting off ends it in both
           directions.

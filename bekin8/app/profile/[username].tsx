@@ -15,6 +15,8 @@ import {
   Animated,
   Platform,
   Keyboard,
+  KeyboardAvoidingView,
+  InputAccessoryView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -38,11 +40,13 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import PostComments from '../../components/PostComments';
+import LinkifiedText from '../../components/LinkifiedText';
 import { useTheme } from '../../providers/ThemeProvider';
 import { useOnline } from '../../providers/NetworkProvider';
 import { tap, press, warning, selection } from '../../utils/haptics';
 
 const PAGE_SIZE = 15;
+const PROFILE_EDIT_ACCESSORY_ID = 'profile-edit-post-accessory'; // iOS Done bar for the edit-post inputs
 
 function SkeletonBlock({ width, height, style, color }: { width: number | string; height: number; style?: any; color?: string }) {
   const anim = useRef(new Animated.Value(0.3)).current;
@@ -218,8 +222,12 @@ export default function ProfileScreen() {
     if (!username) return;
     const lower = String(username).toLowerCase();
     getDocs(
+      // Same rules-are-not-filters constraint: the Profiles read rule is audience-based, so a
+      // lookup by username alone would be denied outright. With the audience filter, a profile
+      // outside my audience simply returns nothing, which renders as "not found".
       query(
         collection(db, 'Profiles'),
+        where('audienceUids', 'array-contains', auth.currentUser?.uid ?? '__none__'),
         where('usernameLower', '==', lower),
         limit(1)
       )
@@ -239,10 +247,17 @@ export default function ProfileScreen() {
       setProfileColor(data.profileColor || data.avatarColor || '#2F6FED');
       setBio(data.bio || '');
       setAuthorCommentsEnabled(data.commentsEnabled === true);
-    }).catch(() => {
-      // A fetch failure here is a network/permission error, not proof the user
-      // doesn't exist. Flag it as a load error so the UI can show the right
-      // message (offline vs. real not-found is decided at render time).
+    }).catch((err: any) => {
+      // Profiles are audience-scoped, so a profile outside my audience (not a friend, and not a
+      // mutually-opted-in friend-of-friend) comes back permission-denied. Surface that as plain
+      // "not found" rather than an error: it is the correct answer for this viewer, and it avoids
+      // confirming to a stranger that the account exists.
+      if (err?.code === 'permission-denied') {
+        setNotFound(true);
+        setLoading(false);
+        return;
+      }
+      // Anything else is a genuine network/load failure, not proof the user doesn't exist.
       setLoadError(true);
       setLoading(false);
     });
@@ -280,8 +295,11 @@ export default function ProfileScreen() {
     commentsOn: boolean,
     after: QueryDocumentSnapshot | null
   ): Promise<Post[]> => {
+    // audienceUids array-contains is required for the query to be permitted at all (rules are not
+    // filters), and it is also what makes a non-friend's profile show no posts rather than erroring.
     const base = query(
       collection(db, 'Posts'),
+      where('audienceUids', 'array-contains', auth.currentUser?.uid ?? '__none__'),
       where('author', '==', uid),
       orderBy('timestamp', 'desc'),
       limit(PAGE_SIZE),
@@ -845,7 +863,7 @@ export default function ProfileScreen() {
             <Text style={{ fontSize: 36, marginBottom: 8, color: colors.text }}>?</Text>
             <Text style={[styles.emptyText, { color: colors.subtle }]}>User not found</Text>
             <Text style={{ color: colors.subtle, fontSize: 13, marginTop: 4 }}>
-              This profile doesn't exist or may have been removed.
+              This profile doesn&apos;t exist or may have been removed.
             </Text>
           </View>
         ) : (
@@ -873,7 +891,17 @@ export default function ProfileScreen() {
               const commentsVisible =
                 item.commentsEnabled !== false && item.authorCommentsEnabled === true;
               return (
-                <View style={[styles.postContainer, { backgroundColor: colors.postBg, borderColor: colors.border }]}>
+                // The whole card opens the thread (inner pressables like the link and the menu
+                // dots still win their own taps); profile posts used to be static, which read
+                // as broken next to the tappable feed.
+                <Pressable
+                  onPress={() => { tap(); setSelectedPost(item); }}
+                  style={({ pressed }) => [
+                    styles.postContainer,
+                    { backgroundColor: colors.postBg, borderColor: colors.border },
+                    pressed && { opacity: 0.94 },
+                  ]}
+                >
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <View style={{ flex: 1 }}>
                       {item.title ? (
@@ -902,7 +930,11 @@ export default function ProfileScreen() {
                     </Pressable>
                   ) : null}
 
-                  <Text style={[styles.postContent, { color: colors.text }]}>{item.content}</Text>
+                  <LinkifiedText
+                    text={item.content}
+                    style={[styles.postContent, { color: colors.text }]}
+                    linkColor={colors.linkText}
+                  />
 
                   <View style={styles.postFooter}>
                     {commentsVisible ? (
@@ -916,7 +948,7 @@ export default function ProfileScreen() {
                     ) : <View />}
                     <Text style={[styles.postDate, { color: colors.subtle }]}>{item.createdAt.toLocaleString()}</Text>
                   </View>
-                </View>
+                </Pressable>
               );
             }}
             ListFooterComponent={
@@ -1141,10 +1173,26 @@ export default function ProfileScreen() {
       </Modal>
 
       {/* Edit post modal */}
+      {/* Edit Post Modal. Cancel/Save live in a HEADER row so they are always visible above the
+          keyboard (the old bottom action row disappeared behind it, leaving no way out), and the
+          iOS accessory bar adds a Done key to dismiss the keyboard itself. */}
       <Modal visible={!!editingPost} animationType="slide" transparent onRequestClose={() => setEditingPost(null)}>
-        <View style={[styles.modalBackdrop, { backgroundColor: colors.backdrop }]}>
+        <KeyboardAvoidingView
+          style={[styles.modalBackdrop, { backgroundColor: colors.backdrop }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Post</Text>
+            <View style={styles.editPostHeaderRow}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); setEditingPost(null); }} hitSlop={8} style={styles.editPostHeaderBtn}>
+                <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
+              </Pressable>
+              <Text style={[styles.modalTitle, { color: colors.text, marginBottom: 0 }]}>Edit Post</Text>
+              <Pressable onPress={handleSaveEdit} disabled={editPostSaving} hitSlop={8} style={[styles.editPostHeaderBtn, styles.editPostHeaderBtnRight]}>
+                <Text style={[styles.editPostSaveTxt, { color: colors.primary }, editPostSaving && { opacity: 0.6 }]}>
+                  {editPostSaving ? 'Saving…' : 'Save'}
+                </Text>
+              </Pressable>
+            </View>
             <TextInput
               style={[styles.modalInput, { marginBottom: 10, borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
               placeholder="Title (optional)"
@@ -1152,15 +1200,19 @@ export default function ProfileScreen() {
               value={editPostTitle}
               onChangeText={setEditPostTitle}
               maxLength={200}
+              inputAccessoryViewID={Platform.OS === 'ios' ? PROFILE_EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
-              style={[styles.modalInput, { minHeight: 80, textAlignVertical: 'top', marginBottom: 10, borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
+              style={[styles.modalInput, { minHeight: 120, maxHeight: 260, textAlignVertical: 'top', marginBottom: 10, borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
               placeholder="What's on your mind?"
               placeholderTextColor={colors.subtle}
               value={editPostContent}
               onChangeText={setEditPostContent}
               multiline
-              maxLength={2000}
+              // Same ceiling as create-post (~10k chars): the old 2000 cap could block edits to
+              // long posts that were perfectly legal to write.
+              maxLength={10000}
+              inputAccessoryViewID={Platform.OS === 'ios' ? PROFILE_EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
               style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
@@ -1171,17 +1223,21 @@ export default function ProfileScreen() {
               autoCapitalize="none"
               keyboardType="url"
               maxLength={500}
+              inputAccessoryViewID={Platform.OS === 'ios' ? PROFILE_EDIT_ACCESSORY_ID : undefined}
             />
-            <View style={styles.modalActions}>
-              <Pressable onPress={() => { tap(); setEditingPost(null); }} style={[styles.modalCancelBtn, { borderColor: colors.border }]}>
-                <Text style={[styles.modalCancelTxt, { color: colors.subtle }]}>Cancel</Text>
-              </Pressable>
-              <Pressable onPress={handleSaveEdit} disabled={editPostSaving} style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, editPostSaving && { opacity: 0.6 }]}>
-                <Text style={styles.modalSaveTxt}>{editPostSaving ? 'Saving...' : 'Save'}</Text>
+          </View>
+        </KeyboardAvoidingView>
+        {/* Inside the Modal on purpose: a Modal is its own native window, and an accessory view
+            registered outside it never attaches to these inputs. */}
+        {Platform.OS === 'ios' && (
+          <InputAccessoryView nativeID={PROFILE_EDIT_ACCESSORY_ID}>
+            <View style={[styles.editPostAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
+              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
+                <Text style={[styles.editPostDone, { color: colors.primary }]}>Done</Text>
               </Pressable>
             </View>
-          </View>
-        </View>
+          </InputAccessoryView>
+        )}
       </Modal>
     </>
   );
@@ -1502,6 +1558,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14,
   },
+  // ── edit-post modal header (Cancel / title / Save, always above the keyboard) ──
+  editPostHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  editPostHeaderBtn: { minWidth: 60 },
+  editPostHeaderBtnRight: { alignItems: 'flex-end' },
+  editPostSaveTxt: { fontWeight: '800', fontSize: 16 },
+  editPostAccessory: {
+    borderTopWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    alignItems: 'flex-end',
+  },
+  editPostDone: { fontSize: 16, fontWeight: '600' },
+
   modalActions: {
     flexDirection: 'row',
     gap: 12,

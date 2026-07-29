@@ -73,7 +73,10 @@ export async function clearPendingInvite(): Promise<void> {
 
 export type RedeemResult = {
   ok: boolean;
-  error?: "BAD_CODE" | "NOT_FOUND" | "SELF" | string;
+  // RATE_LIMITED is deliberately NOT handled as terminal in _layout.tsx: it means the caller
+  // burned the hourly redeem-failure budget, so the pending code should stay stashed and retry
+  // later rather than being discarded like a BAD_CODE.
+  error?: "BAD_CODE" | "NOT_FOUND" | "SELF" | "RATE_LIMITED" | string;
   already?: boolean;
   inviterUid?: string;
   inviterUsername?: string;

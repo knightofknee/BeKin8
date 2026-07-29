@@ -185,6 +185,13 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
 
   const step = steps[index];
   const isLast = index === steps.length - 1;
+  // In-flight guard: onBeforeNext made this async (permission checks, confirm alerts), so a
+  // double-tap could queue TWO advances and even finish a tour a step early. One at a time.
+  // Declared up here with the other hooks, NOT next to goNext below: goNext sits after the
+  // `if (!step) return null` early return, and a useRef down there changes the hook count between
+  // renders whenever `index` walks off the end of `steps`, which makes React throw
+  // "Rendered more hooks than during the previous render" and takes the tour down with it.
+  const nextBusyRef = useRef(false);
   // Step numbering ignores branch steps (optional side-steps), so jumping into one doesn't make the
   // "Step X of N" count leap.
   const total = steps.filter((s) => !s.branch).length;
@@ -339,9 +346,6 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
 
   if (!step) return null;
 
-  // In-flight guard: onBeforeNext made this async (permission checks, confirm alerts), so a
-  // double-tap could queue TWO advances and even finish a tour a step early. One at a time.
-  const nextBusyRef = useRef(false);
   const goNext = async () => {
     if (nextBusyRef.current) return;
     nextBusyRef.current = true;

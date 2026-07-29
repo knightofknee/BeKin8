@@ -1,6 +1,6 @@
 // functions/src/checkPostAllowed.ts
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
 
@@ -53,11 +53,14 @@ export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPos
     const startToday     = startOfCentralDay(0);
     const startYesterday = startOfCentralDay(-1);
 
-    // Count posts today
+    // Count on `timestampServer`, NOT the sibling numeric `timestamp`. That one is a client-written
+    // Date.now(), so it was both forgeable (backdate a post out of both windows and the rate limit
+    // never applied) and, per create-post.tsx's own comment, unreliable on skewed device clocks.
+    // The Posts create rule now pins timestampServer to request.time, so this is server truth.
     const todaySnap = await db
       .collection('Posts')
       .where('author', '==', uid)
-      .where('timestamp', '>=', startToday)
+      .where('timestampServer', '>=', Timestamp.fromMillis(startToday))
       .get();
     const todayCount = todaySnap.size;
 
@@ -65,8 +68,8 @@ export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPos
     const yesterdaySnap = await db
       .collection('Posts')
       .where('author', '==', uid)
-      .where('timestamp', '>=', startYesterday)
-      .where('timestamp', '<', startToday)
+      .where('timestampServer', '>=', Timestamp.fromMillis(startYesterday))
+      .where('timestampServer', '<', Timestamp.fromMillis(startToday))
       .get();
     const yesterdayCount = yesterdaySnap.size;
 

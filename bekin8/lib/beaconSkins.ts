@@ -33,12 +33,16 @@ export type BeaconStructureKind =
 
 /** Which full-screen overlay renders in home's FIRE slot (topmost, pointerEvents none). 'beam'
  *  routes by structure (lighthouse sweep vs the premiere searchlight's shaft); 'bolt' is the storm
- *  skin's ignition lightning strike (a short-lived front layer, not a persistent fire). */
-export type BeaconFireKind = 'flame' | 'beam' | 'bolt' | 'none';
+ *  skin's ignition lightning strike (a short-lived front layer, not a persistent fire); 'print' is
+ *  a retired stepped-frame experiment (kept dispatchable); 'pyre' is the bonfire's bespoke tongue
+ *  flame, which home mounts BEHIND the structure (behind-tiles slot) so the wood sits INSIDE the
+ *  fire, with the structure drawing its own front licks. */
+export type BeaconFireKind = 'flame' | 'beam' | 'bolt' | 'print' | 'pyre' | 'none';
 /** Which full-screen overlay renders in home's SMOKE slot. Despite the name this is really the
  *  "behind-the-friend-tiles effect" slot: the smoke-signal puffs, the fireworks launches/bursts,
- *  and the sky-lantern field render here too, so tiles (priority info) always read over them. */
-export type BeaconSmokeKind = 'ambient' | 'signal' | 'fireworks' | 'lanterns' | 'none';
+ *  the sky-lantern field, and the bonfire's spiraling ember column render here too, so tiles
+ *  (priority info) always read over them. */
+export type BeaconSmokeKind = 'ambient' | 'signal' | 'fireworks' | 'lanterns' | 'embers' | 'none';
 
 export type BeaconSkin = {
   id: string;
@@ -67,8 +71,10 @@ export type BeaconSkin = {
   flicker: { sy: number; sx: number; rot: number; period: number };
   ember: { color: string; count: number };
   spark: { color: string; count: number };
-  /** Ignition spring + dramatic extras (screen shake + expanding shockwave ring). */
-  ignition: { damping: number; stiffness: number; shake: boolean; shockwave: boolean };
+  /** Ignition spring + dramatic extras (screen shake + expanding shockwave ring). delayMs holds the
+   *  flame back after the lit edge so a structure one-shot can land first (the bonfire's thrown
+   *  torch travels 900ms; the flame, bloom, shock, and shake all wait for the impact). */
+  ignition: { damping: number; stiffness: number; shake: boolean; shockwave: boolean; delayMs?: number };
   smoke: {
     tintLow: string; // warm, near the fire (SVG fallback smoke only; Skia smoke is neutral)
     tintHigh: string; // cool, up high
@@ -132,17 +138,29 @@ const OLD_GUARD: BeaconSkin = {
   tap: { noun: 'watchfire', tint: '#F1E6CE' },
 };
 
-// Bonfire: a DUSK FESTIVAL blaze. Bright warm dusk even while unlit (never a dark screen); a big
-// stacked teepee pyre that goes up with a boom: spring overshoot + screen shake + shockwave ring.
+// Bonfire, round 4 (2026-07-29): a BIG COUNTRY BONFIRE UNDER THE SETTING SUN. What makes a
+// bonfire read as one (researched + user verdicts): visible BROWN logs and branches in a wide
+// criss-crossed cone, flames physically ENGULFING the wood (not perched on it), warm fuel
+// colors, and the pyre sitting flush on real ground. The failed rounds broke all of that
+// (navy/cream "crates", top-lit, 3-frame flame). This round: proper wood-toned wide pyre
+// (structure), the app-standard RANDOMIZED Skia flame (never a repeating frame loop) sized wide,
+// standard ambient smoke, and a sunset farmland scene, the only daylight-warm backdrop besides
+// the mesa, with the ground plane anchored flush to the pyre's base. KEPT: the thrown torch
+// (wood-toned now) and the wide base + wide flame proportions.
+// TIMING CONTRACT (t=0 = lit edge): torch flies 0-0.9s (BonfirePyre one-shot) -> impact 0.9s =
+// flame spring + shockwave + shake (ignition.delayMs) + the ignite clip's WHUMP -> scene dusk
+// deepen + ground light from 0.9s. The ignite m4a is authored to this timeline.
 const BONFIRE: BeaconSkin = {
   ...CAMPFIRE,
   id: 'bonfire',
   label: 'Bonfire',
-  blurb: 'A towering festival blaze that lights with a boom.',
+  blurb: 'A big country bonfire under the setting sun.',
   structure: 'bonfire',
-  origin: 0.66, // seat deep in the stack: a real bonfire's flames engulf most of the pyre
-  flameScale: 1.35,
-  flameShape: { width: 0.23, turb: 1.35, speed: 3.2 }, // base ~90px = pole spread at the seat; wild + fast
+  fire: 'pyre', // bespoke tongue flame behind the wood + front licks in the structure: same plane
+  smokeKind: 'ambient',
+  origin: 0.78, // seat low in the wide log cone (y=78), where the wood spans ~57 units (~103px)
+  flameScale: 1.45, // feeds the tour spotlight pad; the tongue flame tops out ~230px
+  flameShape: { width: 0.24, turb: 1.3, speed: 3.0 }, // unused by the tongue flame (sane fallback values)
   outer: ['#FF7A14', '#C81E0E'],
   mid: ['#FFB347', '#FF6A14'],
   core: ['#FFF4D0', '#FFC23D'],
@@ -150,10 +168,10 @@ const BONFIRE: BeaconSkin = {
   flicker: { sy: 0.18, sx: 0.08, rot: 4, period: 1.0 },
   ember: { color: '#FFB24A', count: 5 },
   spark: { color: '#FFE0A0', count: 20 },
-  ignition: { damping: 7, stiffness: 195, shake: true, shockwave: true }, // explosive
-  smoke: { tintLow: '#8A8078', tintHigh: '#9AA0A8', opacity: 0.55, plumes: 10, rise: 1.0, drift: 30 },
+  ignition: { damping: 7, stiffness: 195, shake: true, shockwave: true, delayMs: 900 }, // explosive, on torch impact
+  smoke: { tintLow: '#8A8078', tintHigh: '#9AA0A8', opacity: 0.5, plumes: 9, rise: 1.0, drift: 30 },
   sound: { ignite: require('../assets/sounds/bonfire-ignite.m4a'), crackle: require('../assets/sounds/bonfire-crackle.m4a') },
-  tap: { noun: 'bonfire', tint: '#FFE3C0' },
+  tap: { noun: 'bonfire', tint: '#FFF2D9' },
 };
 
 // The Beacons: the LOTR SIGNAL CHAIN. Cold pre-dawn ridgelines receding into haze; lighting your

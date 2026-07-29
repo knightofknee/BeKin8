@@ -1,27 +1,26 @@
 // components/scenes/BonfireScene.tsx
-// Full-screen BACKDROP for the Bonfire skin: a DUSK FESTIVAL FIELD in bold poster gradients.
-// Critically NOT dark while unlit: deep violet sky up top (calm, for tile legibility) melting
-// through plum into a glowing amber-rose horizon band, with a low rolling field/treeline
-// silhouette that meets the pyre structure. Lighting the bonfire deepens the sky a touch
-// (translucent dim over 600ms), cools the horizon band, and releases three slow warm ember
-// motes near the pyre (loopNoise wander, only while lit + focused). Extinguishing returns to
-// the bright dusk over 700ms. The pyre stands on a NEAR foreground land plane (a full-width
-// dark band cresting under the structure base, rim-lit by the dusk); the rolling hills and
-// their tiny trees sit clearly behind and above it, so nothing distant ever cuts through the
-// pyre. A soft contact shadow pins the base. Pure procedural SVG, no photos.
+// Full-screen BACKDROP for the Bonfire skin, round 4: OPEN FARMLAND UNDER A SETTING SUN. The one
+// warm-daylight scene besides the mesa, and deliberately nothing like the app's night scenes: a
+// big low sun half-set on the horizon, hazy hills, banded fields with hedgerows, a distant
+// farmhouse, fence posts along the near ground. The pyre sits FLUSH on the land: the foreground
+// ground plane is anchored to the structure's base (anchor-aware), so the woodpile stands ON the
+// dirt, never floating in front of scenery. Lighting the fire deepens the sky toward dusk and
+// pools warm light on the ground around the pyre (flat shapes, no glow balls). Pure procedural
+// SVG; static apart from the lit ramp.
+//
+// TIMING CONTRACT (t=0 = lit edge): the torch flies 0-0.9s, so the dusk deepen + ground light
+// wait for the impact; extinguish fades back to full sunset with no delay.
 import React, { useEffect } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Ellipse, Path, G } from 'react-native-svg';
+import Svg, { Defs, LinearGradient, Stop, Rect, Path, Ellipse, Circle, G } from 'react-native-svg';
 import Animated, {
   useSharedValue,
   useAnimatedProps,
   withTiming,
+  withDelay,
   cancelAnimation,
   useReducedMotion,
-  type SharedValue,
 } from 'react-native-reanimated';
-import { loopNoiseSigned, makeSeed, type NoiseSeed } from '../../lib/beaconNoise';
-import { useGatedClock } from '../../lib/useGatedClock';
 import type { BeaconSkin } from '../../lib/beaconSkins';
 
 const AnimatedG = Animated.createAnimatedComponent(G);
@@ -29,56 +28,14 @@ const AnimatedRect = Animated.createAnimatedComponent(Rect);
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
-// Early evening stars, high in the violet (all above the 12% tile line, under the top scrim).
-const STARS = [
-  { x: 0.16, y: 0.05, r: 1.3, o: 0.75 },
-  { x: 0.38, y: 0.09, r: 1.0, o: 0.55 },
-  { x: 0.63, y: 0.04, r: 1.4, o: 0.8 },
-  { x: 0.85, y: 0.08, r: 1.1, o: 0.6 },
-];
-
-// Distant birds heading home: tiny dark silhouettes, dim enough to sit inside the tile band.
+// Homeward birds, high in the evening blue.
 const BIRDS = [
-  { x: 0.2, y: 0.3, s: 1.0 },
-  { x: 0.27, y: 0.27, s: 0.75 },
-  { x: 0.74, y: 0.34, s: 0.85 },
+  { x: 0.22, y: 0.07, s: 1.0 },
+  { x: 0.3, y: 0.055, s: 0.75 },
+  { x: 0.72, y: 0.08, s: 0.9 },
 ];
 const birdPath = (x: number, y: number, s: number) =>
   `M${x - 7 * s} ${y} Q${x - 3.5 * s} ${y - 5 * s} ${x} ${y} Q${x + 3.5 * s} ${y - 5 * s} ${x + 7 * s} ${y}`;
-
-// Ember motes released while the bonfire burns: each loops its own rise cycle (offset phases,
-// incommensurate periods) with a gentle loopNoise side-to-side wander. Fixed count: fixed hooks.
-type EmberCfg = { dx: number; ph: number; period: number; rise: number; r: number; sx: NoiseSeed };
-const EMBERS: EmberCfg[] = [
-  { dx: -26, ph: 0.0, period: 6.4, rise: 132, r: 2.5, sx: makeSeed(4.2, 8.8, 1.3, 9.7) },
-  { dx: 16, ph: 0.37, period: 7.9, rise: 150, r: 2.1, sx: makeSeed(9.1, 3.4, 1.4, 11.3) },
-  { dx: 34, ph: 0.71, period: 5.7, rise: 108, r: 1.7, sx: makeSeed(2.7, 12.6, 1.3, 8.9) },
-];
-
-function EmberMote({
-  clock, lit, x0, y0, cfg, still,
-}: { clock: SharedValue<number>; lit: SharedValue<number>; x0: number; y0: number; cfg: EmberCfg; still: boolean }) {
-  const props = useAnimatedProps(() => {
-    const t = clock.value;
-    const c = (t / cfg.period + cfg.ph) % 1; // 0 at the seat, 1 fully risen
-    // Quick fade-in leaving the fire, slow fade-out near the top of the rise.
-    let fade = Math.min(c * 5, (1 - c) * 2.2);
-    fade = fade < 0 ? 0 : fade > 1 ? 1 : fade;
-    return {
-      opacity: still ? 0 : fade * 0.9 * lit.value, // reduced motion: no frozen dots, hide entirely
-      transform: [
-        { translateX: x0 + loopNoiseSigned(t, cfg.sx, 18) },
-        { translateY: y0 - c * cfg.rise },
-      ],
-    };
-  }, [x0, y0, still]);
-  return (
-    <AnimatedG animatedProps={props}>
-      <Circle cx={0} cy={0} r={cfg.r * 2.4} fill="url(#bfsEmber)" />
-      <Circle cx={0} cy={0} r={cfg.r * 0.9} fill="#FFD9A0" />
-    </AnimatedG>
-  );
-}
 
 export type BonfireSceneProps = {
   skin: BeaconSkin;
@@ -92,150 +49,173 @@ export type BonfireSceneProps = {
 export default function BonfireScene({ skin, active, focused = true, anchorX, anchorY, measured = false }: BonfireSceneProps) {
   const { width: W, height: H } = useWindowDimensions();
   const reduce = useReducedMotion();
+  void focused; // static scene apart from the lit ramp
 
-  // Anchor the ground to the structure: the pyre stands ON a near foreground plane whose crest
-  // sits just under the structure base. Everything else (hills, trees, glow) is distant.
   const hasAnchor = measured && typeof anchorY === 'number';
-  const seatY = hasAnchor ? (anchorY as number) : H * 0.7;
+  const seatY = hasAnchor ? (anchorY as number) : H * 0.62;
   const ax = measured && typeof anchorX === 'number' ? anchorX : W * 0.5;
   const structureBottom = seatY - skin.origin * 180 + 180;
 
-  // Foreground land band: full width, cresting at (ax, structureBottom - 10) and easing down
-  // ~26px toward both screen edges, filled to the bottom of the screen. Unmeasured fallback
-  // composition puts the crest at ~0.78H so the default stack still reads correctly.
-  const foreCrest = clamp(hasAnchor ? structureBottom - 10 : H * 0.78, H * 0.64, H * 0.88);
-  const foreEdge = foreCrest + 26;
-  const foreTopEdge =
-    `M0 ${foreEdge}` +
-    ` C${ax * 0.42} ${foreEdge} ${ax * 0.62} ${foreCrest} ${ax} ${foreCrest}` +
-    ` C${ax + (W - ax) * 0.38} ${foreCrest} ${ax + (W - ax) * 0.58} ${foreEdge} ${W} ${foreEdge}`;
+  // The land the pyre stands ON: foreground ground plane cresting flush at the structure's base.
+  const groundTop = clamp(hasAnchor ? structureBottom - 6 : H * 0.76, H * 0.55, H * 0.9);
+  const groundPath =
+    `M0 ${groundTop + 16}` +
+    ` C${ax * 0.45} ${groundTop + 16} ${ax * 0.65} ${groundTop} ${ax} ${groundTop}` +
+    ` C${ax + (W - ax) * 0.35} ${groundTop} ${ax + (W - ax) * 0.55} ${groundTop + 16} ${W} ${groundTop + 16}`;
 
-  // Distant rolling hills reference line: the hills' lowest silhouette point is fieldTop + 12,
-  // held at least 25px ABOVE the foreground crest so the hills read far away and never cut
-  // through the pyre standing on the near plane.
-  const fieldTop = foreCrest - 37;
+  // Field bands stack up from the ground to the horizon; the sun sets right on the horizon line.
+  const horizonY = groundTop - clamp(H * 0.17, 96, 160);
+  const hFrac = clamp(horizonY / H, 0.25, 0.85);
+  const band1 = horizonY + (groundTop - horizonY) * 0.32; // far wheat
+  const band2 = horizonY + (groundTop - horizonY) * 0.66; // near field
 
-  // The amber-rose horizon band hugs the hill line; everything above stays plum-dark for tiles.
-  const bandBot = clamp(fieldTop / H, 0.66, 0.86);
-  const bandTop = bandBot - 0.08;
-
-  // Lit progress: 0 bright dusk, 1 flame owns the scene. Mounting already-active jumps straight
-  // to the lit state (no ignition replay); edges tween 600ms in, 700ms out.
-  const litP = useSharedValue(active ? 1 : 0);
+  // Lit ramp: dusk deepen + ground light, waiting for the torch impact.
+  const ramp = useSharedValue(active ? 1 : 0);
   useEffect(() => {
-    if (reduce) { litP.value = active ? 1 : 0; return; }
-    litP.value = withTiming(active ? 1 : 0, { duration: active ? 600 : 700 });
+    cancelAnimation(ramp);
+    if (reduce) {
+      ramp.value = active ? 1 : 0;
+      return;
+    }
+    if (active) ramp.value = withDelay(900, withTiming(1, { duration: 550 }));
+    else ramp.value = withTiming(0, { duration: 500 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, reduce]);
+  useEffect(() => () => cancelAnimation(ramp), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Ember clock (shared gated clock: registered + paused while gated off). The motes only exist
-  // while lit, so `active` gates motion too (same pattern as BeaconScene's firefly clock).
-  const { clock } = useGatedClock(active && focused && !reduce);
-  useEffect(() => () => { cancelAnimation(litP); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const duskProps = useAnimatedProps(() => ({ opacity: ramp.value * 0.22 }));
+  const poolProps = useAnimatedProps(() => ({ opacity: ramp.value }));
 
-  const dimProps = useAnimatedProps(() => ({ opacity: litP.value * 0.22 }));
-  const coolProps = useAnimatedProps(() => ({ opacity: litP.value * 0.5 }));
+  // The sun SETS with the fire: once lit it sinks slowly (~7s) from ~45% showing to ~25% above
+  // the hills, and climbs back when the beacon goes out. Its own ramp so the slow sink doesn't
+  // drag the dusk/pool timing.
+  const sunP = useSharedValue(active ? 1 : 0);
+  useEffect(() => {
+    cancelAnimation(sunP);
+    if (reduce) {
+      sunP.value = active ? 1 : 0;
+      return;
+    }
+    if (active) sunP.value = withDelay(900, withTiming(1, { duration: 7000 }));
+    else sunP.value = withTiming(0, { duration: 2600 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, reduce]);
+  useEffect(() => () => cancelAnimation(sunP), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const sunProps = useAnimatedProps(() => ({ transform: [{ translateY: sunP.value * 16 }] }));
 
-  const emberY = seatY - 10;
-  const coolY = bandTop * H - 12;
+  // Fence posts along the near ground curve (skip the middle where the pyre stands).
+  const groundAt = (x: number) => {
+    // sample the two-segment ground curve loosely: crest at ax, edges 16px lower
+    const d = Math.abs(x - ax) / Math.max(ax, W - ax);
+    return groundTop + 16 * Math.min(1, d * 1.4);
+  };
+  const FENCE_X = [0.06, 0.16, 0.26, 0.74, 0.84, 0.94];
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.base]}>
       <Svg pointerEvents="none" style={styles.fill} width={W} height={H}>
         <Defs>
-          {/* Poster dusk: violet holds through the tile band, warmth only below ~62%. */}
+          {/* evening sky: pale blue high up melting to gold and ember at the horizon */}
           <LinearGradient id="bfsSky" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset={0} stopColor="#2E2350" />
-            <Stop offset={clamp(bandTop - 0.3, 0.2, 1)} stopColor="#43285A" />
-            <Stop offset={bandTop - 0.12} stopColor="#5A2E63" />
-            <Stop offset={bandTop - 0.035} stopColor="#9C4756" />
-            <Stop offset={bandTop} stopColor="#E86A4A" />
-            <Stop offset={bandBot} stopColor="#FFB067" />
-            <Stop offset={clamp(bandBot + 0.06, 0, 1)} stopColor="#F09A5C" />
+            <Stop offset={0} stopColor="#8FB0D8" />
+            <Stop offset={clamp(hFrac - 0.28, 0.1, 1)} stopColor="#C9C08E" />
+            <Stop offset={clamp(hFrac - 0.1, 0.15, 1)} stopColor="#EFC077" />
+            <Stop offset={hFrac} stopColor="#EA8A50" />
           </LinearGradient>
-          {/* Lit-state overlay that cools the horizon glow toward rose. */}
-          <LinearGradient id="bfsCool" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset={0} stopColor="#5A2E63" stopOpacity={0} />
-            <Stop offset={0.5} stopColor="#A85568" stopOpacity={0.7} />
-            <Stop offset={1} stopColor="#C77E62" stopOpacity={0.85} />
+          {/* dusk overlay while lit: the evening leans toward night as the fire takes over */}
+          <LinearGradient id="bfsDusk" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset={0} stopColor="#2A1E3E" />
+            <Stop offset={1} stopColor="#3A2210" />
           </LinearGradient>
-          <RadialGradient id="bfsAfter" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor="#FFC98A" stopOpacity={0.5} />
-            <Stop offset="60%" stopColor="#FFB067" stopOpacity={0.18} />
-            <Stop offset="100%" stopColor="#FFB067" stopOpacity={0} />
-          </RadialGradient>
-          <RadialGradient id="bfsEmber" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor="#FFC97A" stopOpacity={0.9} />
-            <Stop offset="60%" stopColor="#FF8A3C" stopOpacity={0.28} />
-            <Stop offset="100%" stopColor="#FF8A3C" stopOpacity={0} />
-          </RadialGradient>
-          {/* contact shadow under the pyre base: black fading to nothing, a shadow, not a glow */}
-          <RadialGradient id="bfsShadow" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor="#000" stopOpacity={0.35} />
-            <Stop offset="55%" stopColor="#000" stopOpacity={0.16} />
-            <Stop offset="100%" stopColor="#000" stopOpacity={0} />
-          </RadialGradient>
-          {/* Legibility scrim: darken the status area and the button row, leave the dusk between. */}
           <LinearGradient id="bfsScrim" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0%" stopColor="#000" stopOpacity={0.5} />
+            <Stop offset="0%" stopColor="#000" stopOpacity={0.42} />
             <Stop offset="22%" stopColor="#000" stopOpacity={0} />
             <Stop offset="78%" stopColor="#000" stopOpacity={0} />
-            <Stop offset="100%" stopColor="#000" stopOpacity={0.58} />
+            <Stop offset="100%" stopColor="#000" stopOpacity={0.42} />
           </LinearGradient>
         </Defs>
 
         <Rect x={0} y={0} width={W} height={H} fill="url(#bfsSky)" />
 
-        {/* soft sun afterglow pooled on the horizon behind the pyre */}
-        <Ellipse cx={ax} cy={fieldTop} rx={W * 0.55} ry={H * 0.1} fill="url(#bfsAfter)" />
+        {/* the setting sun; it sinks lower while the beacon burns */}
+        <AnimatedG animatedProps={sunProps}>
+          <Circle cx={W * 0.5} cy={horizonY + 6} r={58} fill="#FFE9B8" opacity={0.32} />
+          <Circle cx={W * 0.5} cy={horizonY + 6} r={42} fill="#FFEDBC" opacity={0.95} />
+        </AnimatedG>
 
-        {/* horizon band cooling overlay (fades in while lit) */}
-        <AnimatedRect animatedProps={coolProps} x={0} y={coolY} width={W} height={fieldTop - coolY + 4} fill="url(#bfsCool)" />
-
-        {STARS.map((st, i) => (
-          <Circle key={`bfs${i}`} cx={W * st.x} cy={H * st.y} r={st.r} fill="#FFF3DE" opacity={st.o} />
-        ))}
         {BIRDS.map((b, i) => (
-          <Path key={`bfb${i}`} d={birdPath(W * b.x, H * b.y, b.s)} stroke="#1A1335" strokeWidth={1.6} fill="none" opacity={0.7} />
+          <Path key={`bfb${i}`} d={birdPath(W * b.x, H * b.y, b.s)} stroke="#5A4634" strokeWidth={1.5} fill="none" opacity={0.65} />
         ))}
 
-        {/* far treeline ridge, slightly lifted so the glow rims it */}
+        {/* hazy far hills cut across the sun */}
         <Path
-          d={`M0 ${fieldTop - 6} Q${W * 0.14} ${fieldTop - 22} ${W * 0.3} ${fieldTop - 10} T${W * 0.56} ${fieldTop - 16} T${W * 0.82} ${fieldTop - 6} T${W * 1.02} ${fieldTop - 14} L${W} ${H} L0 ${H} Z`}
-          fill="#1D1533"
-        />
-        {/* little tree clusters on the far ridge, kept clear of the pyre at center */}
-        {[
-          { cx: W * 0.1, s: 7 }, { cx: W * 0.17, s: 9 }, { cx: W * 0.8, s: 8 }, { cx: W * 0.88, s: 6 },
-        ].map((tr, i) => (
-          <Path
-            key={`bft${i}`}
-            d={`M${tr.cx - tr.s} ${fieldTop - 8} L${tr.cx} ${fieldTop - 8 - tr.s * 2.2} L${tr.cx + tr.s} ${fieldTop - 8} Z`}
-            fill="#1D1533"
-          />
-        ))}
-        {/* distant rolling hills: their lowest dip (fieldTop + 12) stays 25px above the
-            foreground crest, so they read as far scenery behind the pyre, never through it */}
-        <Path
-          d={`M0 ${fieldTop + 12} Q${W * 0.22} ${fieldTop - 8} ${W * 0.46} ${fieldTop + 6} T${W * 0.8} ${fieldTop + 2} T${W * 1.04} ${fieldTop + 10} L${W} ${H} L0 ${H} Z`}
-          fill="#140F22"
+          d={`M0 ${horizonY + 2} Q${W * 0.2} ${horizonY - 14} ${W * 0.42} ${horizonY - 2} T${W * 0.78} ${horizonY - 8} T${W * 1.05} ${horizonY} L${W} ${groundTop + 20} L0 ${groundTop + 20} Z`}
+          fill="#B08468"
         />
 
-        {/* FOREGROUND land plane the pyre stands on: full-width band, near-black warm earth,
-            cresting under the structure base and easing down toward both edges (static) */}
-        <Path d={`${foreTopEdge} L${W} ${H} L0 ${H} Z`} fill="#100B1E" />
-        {/* dusk rim light along the ground edge: backlit land tying the plane to the sky */}
-        <Path d={foreTopEdge} stroke="#D99055" strokeWidth={1.5} fill="none" opacity={0.25} />
-        {/* soft elliptical contact shadow pinning the pyre base to the foreground plane */}
-        <Ellipse cx={ax} cy={structureBottom - 6} rx={72} ry={11} fill="url(#bfsShadow)" />
-
-        {/* lit: the sky steps back so the flame owns the scene */}
-        <AnimatedRect animatedProps={dimProps} x={0} y={0} width={W} height={H} fill="#0F0A1E" />
-
-        {/* warm ember motes drifting up off the blaze (above the dim, under the scrim) */}
-        {EMBERS.map((cfg, i) => (
-          <EmberMote key={`bfe${i}`} clock={clock} lit={litP} x0={ax + cfg.dx} y0={emberY} cfg={cfg} still={reduce} />
+        {/* far wheat band with a hedgerow on its edge */}
+        <Rect x={0} y={band1} width={W} height={groundTop + 20 - band1} fill="#D8AE66" />
+        {[0.1, 0.2, 0.55, 0.86].map((fx, i) => (
+          <Ellipse key={`hg${i}`} cx={W * fx} cy={band1 + 2} rx={22 + (i % 2) * 10} ry={9} fill="#4E5A34" />
         ))}
+        {/* distant farmhouse on the wheat band, one warm window */}
+        <G>
+          <Rect x={W * 0.72} y={band1 - 15} width={26} height={15} fill="#5C4534" />
+          <Path d={`M${W * 0.72 - 3} ${band1 - 15} L${W * 0.72 + 13} ${band1 - 26} L${W * 0.72 + 29} ${band1 - 15} Z`} fill="#4A3628" />
+          <Rect x={W * 0.72 + 9} y={band1 - 10} width={5} height={6} rx={1} fill="#FFD98C" opacity={0.9} />
+        </G>
+
+        {/* near field band */}
+        <Rect x={0} y={band2} width={W} height={groundTop + 20 - band2} fill="#B99450" />
+        {[0.32, 0.68].map((fx, i) => (
+          <Ellipse key={`hg2${i}`} cx={W * fx} cy={band2 + 1} rx={30} ry={11} fill="#55603A" />
+        ))}
+
+        {/* THE GROUND the pyre stands on, flush at its base, filled to the screen bottom */}
+        <Path d={`${groundPath} L${W} ${H} L0 ${H} Z`} fill="#7C6B42" />
+        {/* dirt patch + warm contact shadow right under the woodpile */}
+        <Ellipse cx={ax} cy={structureBottom - 2} rx={86} ry={12} fill="#6B5433" />
+        <Ellipse cx={ax} cy={structureBottom - 3} rx={64} ry={8} fill="#4A3A22" opacity={0.5} />
+
+        {/* lit: warm firelight pooling on the dirt (flat shapes, under the structure layer) */}
+        <AnimatedG animatedProps={poolProps}>
+          <Ellipse cx={ax} cy={structureBottom + 2} rx={120} ry={16} fill="#FFB35C" opacity={0.16} />
+          <Ellipse cx={ax} cy={structureBottom + 1} rx={78} ry={10} fill="#FFD98C" opacity={0.14} />
+        </AnimatedG>
+
+        {/* fence posts + rail along the near ground, framing the site */}
+        {FENCE_X.map((fx, i) => {
+          const x = W * fx;
+          const y = groundAt(x) + 10;
+          return (
+            <G key={`fp${i}`}>
+              <Rect x={x - 1.6} y={y - 14} width={3.2} height={16} rx={1.4} fill="#5A4634" />
+              {i % 3 !== 2 && (
+                <Rect x={x} y={y - 10} width={W * 0.1} height={2.2} rx={1.1} fill="#5A4634" opacity={0.85} />
+              )}
+            </G>
+          );
+        })}
+        {/* grass tufts on the ground line */}
+        {[0.1, 0.3, 0.7, 0.9].map((fx, i) => {
+          const gx = W * fx;
+          const gy = groundAt(gx) + 4;
+          const lean = fx < 0.5 ? -3 : 3;
+          return (
+            <Path
+              key={`gt${i}`}
+              d={`M${gx} ${gy} L${gx + lean} ${gy - 8} M${gx + 5} ${gy + 1} L${gx + 5 + lean * 0.6} ${gy - 5}`}
+              stroke="#55603A"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              fill="none"
+              opacity={0.8}
+            />
+          );
+        })}
+
+        {/* lit: the sky steps toward dusk so the blaze owns the scene */}
+        <AnimatedRect animatedProps={duskProps} x={0} y={0} width={W} height={H} fill="url(#bfsDusk)" />
 
         <Rect x={0} y={0} width={W} height={H} fill="url(#bfsScrim)" />
       </Svg>
@@ -245,5 +225,5 @@ export default function BonfireScene({ skin, active, focused = true, anchorX, an
 
 const styles = StyleSheet.create({
   fill: { position: 'absolute', top: 0, left: 0 },
-  base: { backgroundColor: '#05070C' },
+  base: { backgroundColor: '#3A2210' },
 });

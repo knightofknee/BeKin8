@@ -13,6 +13,7 @@ import {
   withTiming,
   withSpring,
   withSequence,
+  withDelay,
   cancelAnimation,
   useReducedMotion,
 } from 'react-native-reanimated';
@@ -184,26 +185,34 @@ export default function BeaconFireSkia({ skin, active, anchorX, anchorY, measure
       if (first) {
         progress.value = 1; // cold mount into an already-lit beacon
       } else if (justLit) {
-        progress.value = withSpring(1, { damping: skin.ignition.damping, stiffness: skin.ignition.stiffness, mass: 0.8 });
-        ignite.value = withSequence(withTiming(1, { duration: 70 }), withTiming(0, { duration: 620 }));
+        // Some skins stage a structure one-shot first (the bonfire's thrown torch): delayMs holds
+        // the whole ignition payload (spring, bloom, shock, shake) until that impact frame.
+        const wait = skin.ignition.delayMs ?? 0;
+        const staged = <T,>(anim: T): T => (wait > 0 ? (withDelay(wait, anim as any) as T) : anim);
+        progress.value = staged(withSpring(1, { damping: skin.ignition.damping, stiffness: skin.ignition.stiffness, mass: 0.8 }));
+        ignite.value = staged(withSequence(withTiming(1, { duration: 70 }), withTiming(0, { duration: 620 })));
         if (skin.ignition.shockwave) {
           shock.value = 0;
-          shock.value = withTiming(1, { duration: 560 });
+          shock.value = staged(withTiming(1, { duration: 560 }));
         }
         if (skin.ignition.shake) {
-          shakeX.value = withSequence(
+          shakeX.value = staged(withSequence(
             withTiming(-9, { duration: 45 }), withTiming(8, { duration: 45 }), withTiming(-5, { duration: 45 }),
             withTiming(4, { duration: 45 }), withTiming(-2, { duration: 45 }), withTiming(0, { duration: 50 })
-          );
-          shakeY.value = withSequence(
+          ));
+          shakeY.value = staged(withSequence(
             withTiming(7, { duration: 45 }), withTiming(-5, { duration: 45 }), withTiming(3, { duration: 45 }),
             withTiming(-2, { duration: 45 }), withTiming(0, { duration: 50 })
-          );
+          ));
         }
       } else {
         progress.value = withTiming(1, { duration: 220 });
       }
     } else if (!first) {
+      // Extinguish also disarms any STAGED ignition payload (delayMs skins): putting the fire out
+      // mid-torch-flight must not detonate a ghost bloom/shock/shake over the fading flame.
+      cancelAnimation(ignite); cancelAnimation(shock); cancelAnimation(shakeX); cancelAnimation(shakeY);
+      ignite.value = 0; shock.value = 0; shakeX.value = 0; shakeY.value = 0;
       progress.value = withTiming(0, { duration: 480 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
