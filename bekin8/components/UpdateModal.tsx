@@ -1,19 +1,27 @@
 // components/UpdateModal.tsx
-// Root-mounted nudge shown when the installed binary is behind the App Store version.
-// App Store updates aren't actually automatic for everyone (auto-update can be off or
+// Root-mounted nudge shown when the installed binary is behind Config/app.latestVersion
+// (see lib/appUpdate.ts for why the source of truth is our own config doc, not the store).
+// Store updates aren't actually automatic for everyone (auto-update can be off or
 // delayed), and the goal is getting fixes to active users fast: so this checks at launch
-// AND on every app foreground (throttled), not just at cold start. iOS apps stay resident
-// for days; waiting for a cold start would add days on top of Apple review.
+// AND on every app foreground (throttled), not just at cold start. Apps stay resident
+// for days; waiting for a cold start would add days on top of store review.
 //
-// Purely a suggestion: Update deep-links to the store listing, Close dismisses that store
-// version for the rest of the session (a later, newer release re-prompts). The Update
-// button is deliberately the loudest element on the card.
+// Purely a suggestion: Update deep-links to the store listing, and either button snoozes
+// the nudge for a day (persisted across relaunches; a later, newer release re-prompts
+// immediately). One nag per day, but nagging resumes until the user is actually current.
+// The Update button is deliberately the loudest element on the card.
 import React, { useEffect, useRef, useState } from "react";
 import { AppState, Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { useTour } from "../providers/TourProvider";
-import { checkForAppUpdate, type AppUpdateInfo } from "../lib/appUpdate";
+import {
+  checkForAppUpdate,
+  isSnoozed,
+  loadDismissRecord,
+  saveDismissRecord,
+  type AppUpdateInfo,
+} from "../lib/appUpdate";
 
 // Minimum gap between store checks. Foreground events fire constantly during normal use;
 // one check per half hour keeps the prompt near-immediate once a release propagates
@@ -25,7 +33,6 @@ export default function UpdateModal() {
   const { user } = useAuth();
   const { isActive: tourActive } = useTour();
   const [info, setInfo] = useState<AppUpdateInfo | null>(null);
-  const dismissedVersionRef = useRef<string | null>(null);
   const lastCheckRef = useRef(0);
 
   useEffect(() => {
@@ -36,7 +43,8 @@ export default function UpdateModal() {
       lastCheckRef.current = Date.now();
       const result = await checkForAppUpdate();
       if (unmounted || !result) return;
-      if (result.storeVersion === dismissedVersionRef.current) return;
+      const dismissed = await loadDismissRecord();
+      if (unmounted || isSnoozed(result.latestVersion, dismissed, Date.now())) return;
       setInfo(result);
     }
 
@@ -56,11 +64,15 @@ export default function UpdateModal() {
   if (!info || !user || tourActive) return null;
 
   function openStore() {
-    if (info) Linking.openURL(info.storeUrl).catch(() => {});
+    if (!info) return;
+    // A store visit earns the same day of quiet as Close: whether they update or bail,
+    // re-nagging sooner is noise.
+    saveDismissRecord(info.latestVersion);
+    Linking.openURL(info.storeUrl).catch(() => {});
   }
 
   function dismiss() {
-    if (info) dismissedVersionRef.current = info.storeVersion;
+    if (info) saveDismissRecord(info.latestVersion);
     setInfo(null);
   }
 
@@ -71,8 +83,7 @@ export default function UpdateModal() {
           <Text style={styles.emoji}>⬆️</Text>
           <Text style={[styles.title, { color: colors.text }]}>Update available</Text>
           <Text style={[styles.body, { color: colors.subtle }]}>
-            A newer version of BeKin (v{info.storeVersion}) is on the App Store. Update now to get
-            the latest fixes and features.
+            A newer version of BeKin is out. Update now to get the latest fixes and features.
           </Text>
           <Pressable
             onPress={openStore}

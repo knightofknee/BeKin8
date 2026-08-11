@@ -22,7 +22,7 @@ import { Platform } from 'react-native';
 import { db } from '../firebase.config';
 
 export type UpdateGateConfig = {
-  /** Lowest marketing version allowed to run, e.g. "1.2.25". Blank/absent disables the gate. */
+  /** Lowest binary version allowed to run, e.g. "1.2.25". Blank/absent disables the gate. */
   minVersion: string;
   message: string;
   storeUrl: string | null;
@@ -46,7 +46,7 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** The running build's marketing version ("1.2.24"), or '' when unavailable. */
+/** The running build's binary version ("1.2.24"), or '' when unavailable. */
 export function currentAppVersion(): string {
   return Application.nativeApplicationVersion ?? '';
 }
@@ -55,11 +55,12 @@ export function currentAppVersion(): string {
  * Reads Config/app and decides whether this build must be updated.
  *
  * Doc shape (all optional, admin/console-written only):
- *   minVersion   string   lowest allowed marketing version
- *   message      string   copy shown on the screen
- *   iosUrl       string   App Store link
- *   androidUrl   string   Play Store link
- *   required     boolean  true = hard block, false/absent = dismissible nudge
+ *   minVersion     string   lowest allowed binary version (hard block, this gate)
+ *   latestVersion  string   latest released binary version (soft nudge, lib/appUpdate.ts)
+ *   message        string   copy shown on the screen
+ *   iosUrl         string   App Store link
+ *   androidUrl     string   Play Store link
+ *   required       boolean  true = hard block, false/absent = dismissible nudge
  */
 export async function fetchUpdateGate(): Promise<UpdateGateConfig | null> {
   try {
@@ -81,11 +82,11 @@ export async function fetchUpdateGate(): Promise<UpdateGateConfig | null> {
         : typeof data?.androidUrl === 'string' && data.androidUrl ? data.androidUrl : null;
 
     // HARD BLOCKS ONLY. The dismissible "a new version is available" nudge is already handled by
-    // components/UpdateModal.tsx, which detects the live App Store version automatically via the
-    // iTunes lookup and needs no config doc at all. Two overlapping prompts would both render, so
-    // this gate stays silent unless `required` is explicitly true — i.e. the case UpdateModal
-    // cannot cover, where the old build is genuinely broken against the backend and must not be
-    // dismissible. Leave `required` false/absent during a transition window.
+    // components/UpdateModal.tsx, driven by this same doc's `latestVersion` field (see
+    // lib/appUpdate.ts). Two overlapping prompts would both render, so this gate stays silent
+    // unless `required` is explicitly true — i.e. the case UpdateModal cannot cover, where the
+    // old build is genuinely broken against the backend and must not be dismissible. Leave
+    // `required` false/absent during a transition window.
     if (data?.required !== true) return null;
     const required = true;
     return {
