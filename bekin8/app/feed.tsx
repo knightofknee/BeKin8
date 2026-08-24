@@ -14,7 +14,6 @@ import {
   TextInput,
   RefreshControl,
   KeyboardAvoidingView,
-  InputAccessoryView,
   Keyboard,
   Platform,
   ScrollView,
@@ -42,6 +41,7 @@ import {
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SCREEN_PAD } from '../components/ui/layout';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import PostComments from '../components/PostComments';
@@ -53,7 +53,6 @@ import LinkifiedText from '../components/LinkifiedText';
 import { tap, press, warning, selection } from '../utils/haptics';
 
 const PAGE_SIZE = 10; // posts per page
-const EDIT_ACCESSORY_ID = 'feed-edit-post-accessory'; // iOS Done bar for the edit-post inputs
 
 interface Post {
   id: string;
@@ -170,6 +169,14 @@ export default function Feed() {
 
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
+  // Shows the edit modal's dismiss-keyboard icon (the old iOS InputAccessoryView Done bar
+  // renders blank on the new architecture).
+  const [kbVisible, setKbVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
   const [editUrl, setEditUrl] = useState('');
@@ -1134,7 +1141,6 @@ export default function Feed() {
               value={editTitle}
               onChangeText={setEditTitle}
               maxLength={200}
-              inputAccessoryViewID={Platform.OS === 'ios' ? EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
               style={[styles.editInput, { minHeight: 120, maxHeight: 260, textAlignVertical: 'top', backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
@@ -1146,7 +1152,6 @@ export default function Feed() {
               // Same ceiling as create-post (~10k chars): the old 2000 cap could block edits to
               // long posts that were perfectly legal to write.
               maxLength={10000}
-              inputAccessoryViewID={Platform.OS === 'ios' ? EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
               style={[styles.editInput, { backgroundColor: tc.inputBg, borderColor: tc.border, color: tc.text }]}
@@ -1157,21 +1162,23 @@ export default function Feed() {
               autoCapitalize="none"
               keyboardType="url"
               maxLength={500}
-              inputAccessoryViewID={Platform.OS === 'ios' ? EDIT_ACCESSORY_ID : undefined}
             />
+            {/* Dismiss-keyboard icon, in flow so it never overlaps an input (the card is centered,
+                not keyboard-flush). Replaces the iOS InputAccessoryView Done bar, which renders
+                blank on the new architecture. */}
+            {kbVisible && (
+              <Pressable
+                onPress={() => { tap(); Keyboard.dismiss(); }}
+                hitSlop={12}
+                style={styles.kbDismissBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss keyboard"
+              >
+                <MaterialCommunityIcons name="keyboard-close-outline" size={26} color={tc.subtle} />
+              </Pressable>
+            )}
           </View>
         </KeyboardAvoidingView>
-        {/* Inside the Modal on purpose: a Modal is its own native window, and an accessory view
-            registered outside it never attaches to these inputs. */}
-        {Platform.OS === 'ios' && (
-          <InputAccessoryView nativeID={EDIT_ACCESSORY_ID}>
-            <View style={[styles.iosAccessory, { borderTopColor: tc.border, backgroundColor: tc.card }]}>
-              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
-                <Text style={[styles.iosDone, { color: tc.primary }]}>Done</Text>
-              </Pressable>
-            </View>
-          </InputAccessoryView>
-        )}
       </Modal>
     </>
   );
@@ -1288,13 +1295,5 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   editCancelTxt: { fontWeight: '700', color: '#6B7280', fontSize: 16 },
-
-  // ── iOS keyboard accessory (edit modal) ──
-  iosAccessory: {
-    borderTopWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    alignItems: 'flex-end',
-  },
-  iosDone: { fontSize: 16, fontWeight: '600' },
+  kbDismissBtn: { alignSelf: 'flex-end', marginTop: 10 },
 });

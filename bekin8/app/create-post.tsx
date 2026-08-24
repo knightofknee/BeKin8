@@ -12,11 +12,11 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  InputAccessoryView,
   Keyboard,
   Animated,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
 import { collection, addDoc, doc, onSnapshot, serverTimestamp } from 'firebase/firestore';
@@ -34,21 +34,17 @@ import { getSeen, setSeen } from '../lib/tutorialFlags';
 
 // BottomBar's row is 64pt; its bottom padding (max(insets.bottom, 8)) is added at the call site.
 const BOTTOM_BAR_HEIGHT = 64;
-const ACCESSORY_ID_TITLE = 'create-post-accessory-title';
-const ACCESSORY_ID_LINK  = 'create-post-accessory-link';
-const ACCESSORY_ID_BODY  = 'create-post-accessory-body';
 const DRAFT_KEY = '@bekin_post_draft';
 
 // ─── Floating-label field ───────────────────────────────────────────────────
 type FloatFieldProps = TextInputProps & {
   label: string;
   value: string;
-  accessoryID?: string;
   fieldStyle?: object;
   themeColors?: { primary: string; subtle: string; text: string; border: string; inputBg: string };
 };
 
-function FloatField({ label, value, accessoryID, fieldStyle, themeColors, ...rest }: FloatFieldProps) {
+function FloatField({ label, value, fieldStyle, themeColors, ...rest }: FloatFieldProps) {
   const [focused, setFocused] = useState(false);
   const anim = useRef(new Animated.Value(value ? 1 : 0)).current;
   const PRIMARY = themeColors?.primary ?? '#2F6FED';
@@ -88,7 +84,6 @@ function FloatField({ label, value, accessoryID, fieldStyle, themeColors, ...res
         value={value}
         style={[styles.floatInput, { color: TEXT }, rest.multiline && styles.floatInputMulti]}
         placeholderTextColor="transparent"
-        inputAccessoryViewID={Platform.OS === 'ios' ? accessoryID : undefined}
         onFocus={(e) => { setFocused(true); rest.onFocus?.(e); }}
         onBlur={(e)  => { setFocused(false); rest.onBlur?.(e); }}
       />
@@ -102,6 +97,17 @@ export default function CreatePostScreen() {
   const insets = useSafeAreaInsets();
   const { profile, profileLoaded } = useAuth();
   const { colors } = useTheme();
+
+  // Floating dismiss-keyboard icon (the old iOS InputAccessoryView Done bars render blank on
+  // the new architecture). iOS keeps its keyboard over the window, so the icon offsets by the
+  // tracked keyboard height; Android resizes the window, so it sits at the window bottom.
+  const [kbVisible, setKbVisible] = useState(false);
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (e) => { setKbVisible(true); setKbHeight(e.endCoordinates?.height ?? 0); });
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => { setKbVisible(false); setKbHeight(0); });
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   const [title, setTitle]           = useState('');
   const [link, setLink]             = useState('');
@@ -401,7 +407,6 @@ export default function CreatePostScreen() {
                 onChangeText={setTitle}
                 returnKeyType="next"
                 maxLength={150}
-                accessoryID={ACCESSORY_ID_TITLE}
                 themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
@@ -413,7 +418,6 @@ export default function CreatePostScreen() {
                 keyboardType="url"
                 returnKeyType="next"
                 maxLength={500}
-                accessoryID={ACCESSORY_ID_LINK}
                 themeColors={{ primary: colors.primary, subtle: colors.subtle, text: colors.text, border: colors.border, inputBg: colors.inputBg }}
               />
 
@@ -427,9 +431,8 @@ export default function CreatePostScreen() {
                 autoCapitalize="sentences"
                 // Enter must insert a NEWLINE: with returnKeyType="done", Android replaces the
                 // Enter key with a Done action key, making paragraphs impossible to type. The
-                // iOS accessory bar's Done button is the dismiss affordance instead.
+                // floating dismiss icon is the dismiss affordance instead.
                 submitBehavior="newline"
-                accessoryID={ACCESSORY_ID_BODY}
                 // flex absorbs the leftover height; the MIN is deliberately small so that on
                 // shorter screens (or when rate-limited, with the extra bonus UI below) the whole
                 // page still fits WITHOUT scrolling: nobody should scroll here except inside
@@ -509,34 +512,19 @@ export default function CreatePostScreen() {
         </KeyboardAvoidingView>
 
         <BottomBar />
-      </SafeAreaView>
 
-      {/* iOS Done bar, one per field */}
-      {Platform.OS === 'ios' && (
-        <>
-          <InputAccessoryView nativeID={ACCESSORY_ID_TITLE}>
-            <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
-                <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
-              </Pressable>
-            </View>
-          </InputAccessoryView>
-          <InputAccessoryView nativeID={ACCESSORY_ID_LINK}>
-            <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
-                <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
-              </Pressable>
-            </View>
-          </InputAccessoryView>
-          <InputAccessoryView nativeID={ACCESSORY_ID_BODY}>
-            <View style={[styles.iosAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
-                <Text style={[styles.iosDone, { color: colors.primary }]}>Done</Text>
-              </Pressable>
-            </View>
-          </InputAccessoryView>
-        </>
-      )}
+        {kbVisible && (
+          <Pressable
+            onPress={() => { tap(); Keyboard.dismiss(); }}
+            hitSlop={12}
+            style={[styles.kbDismissBtn, { bottom: (Platform.OS === 'ios' ? kbHeight : 0) + 12 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss keyboard"
+          >
+            <MaterialCommunityIcons name="keyboard-close-outline" size={26} color={colors.subtle} />
+          </Pressable>
+        )}
+      </SafeAreaView>
 
     </>
   );
@@ -642,15 +630,5 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // ── iOS accessory ──
-  iosAccessory: {
-    borderTopWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    alignItems: 'flex-end',
-  },
-  iosDone: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
+  kbDismissBtn: { position: 'absolute', right: 16, zIndex: 10 },
 });

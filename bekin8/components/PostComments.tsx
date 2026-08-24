@@ -14,7 +14,6 @@ import {
   ActionSheetIOS,
   NativeSyntheticEvent,
   NativeScrollEvent,
-  InputAccessoryView,
   Keyboard,
   KeyboardAvoidingView,
 } from 'react-native';
@@ -37,6 +36,7 @@ import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, warning } from '../utils/haptics';
 import LinkifiedText from './LinkifiedText';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 type Post = {
   id: string;
@@ -93,7 +93,6 @@ async function resolveMyName(uid: string): Promise<string> {
   return 'Me';
 }
 
-const ACCESSORY_ID = 'postcomments-accessory';
 // Same cap as the beacon chat composer: the two surfaces should feel like one product.
 const COMMENT_MAX = 500;
 
@@ -166,7 +165,6 @@ const CommentComposer = React.memo(function CommentComposer({
           multiline
           maxLength={COMMENT_MAX}
           onContentSizeChange={(e) => setComposerContentH(e.nativeEvent.contentSize.height)}
-          inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
           blurOnSubmit={false}
           returnKeyType="send"
           onSubmitEditing={send}
@@ -615,6 +613,20 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
                   />
                 </>
               )}
+              {/* Keyboard-dismiss, floating over the list's bottom-right just above the composer.
+                  Replaces the iOS InputAccessoryView Done bar, which renders blank on the new
+                  architecture; this also gives Android a dismiss affordance. */}
+              {kbVisible && (
+                <Pressable
+                  onPress={() => { tap(); Keyboard.dismiss(); }}
+                  hitSlop={12}
+                  style={styles.kbDismissBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Dismiss keyboard"
+                >
+                  <MaterialCommunityIcons name="keyboard-close-outline" size={26} color={tc.subtle} />
+                </Pressable>
+              )}
             </View>
 
             {/* Composer: memoized child with its own text state (typing never re-renders the
@@ -660,15 +672,6 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
         </Pressable>
       )}
 
-      {Platform.OS === 'ios' && (
-        <InputAccessoryView nativeID={ACCESSORY_ID}>
-          <View style={[styles.iosAccessory, { borderTopColor: tc.border, backgroundColor: tc.card }]}>
-            <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
-              <Text style={[styles.iosDoneText, { color: tc.text }]}>Done</Text>
-            </Pressable>
-          </View>
-        </InputAccessoryView>
-      )}
     </>
   );
 }
@@ -796,13 +799,5 @@ const styles = StyleSheet.create({
   menuTextDestructive: { color: '#DC2626', fontWeight: '700' },
   menuDivider: { height: 1, backgroundColor: '#E5E7EB' },
 
-  iosAccessory: {
-    borderTopWidth: 1, borderTopColor: '#E5E7EB',
-    backgroundColor: '#FFFFFF', paddingHorizontal: 8, paddingTop: 4, paddingBottom: 6,
-  },
-  iosDoneBtn: {
-    alignSelf: 'flex-end', paddingHorizontal: 10, paddingVertical: 6,
-    borderRadius: 8, backgroundColor: 'rgba(15,23,42,0.08)',
-  },
-  iosDoneText: { fontWeight: '700', color: '#0B1426' },
+  kbDismissBtn: { position: 'absolute', right: 12, bottom: 8, zIndex: 5 },
 });

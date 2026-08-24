@@ -17,7 +17,6 @@ import {
   StyleProp,
   ViewStyle,
   Keyboard,
-  InputAccessoryView,
 } from 'react-native';
 import { auth, db } from '../firebase.config';
 import { SCREEN_PAD } from './ui/layout';
@@ -41,7 +40,7 @@ import { useOnline } from '../providers/NetworkProvider';
 import { formatTimeHHmmDisplay } from '../lib/beaconTime';
 import { tap, press, warning, selection } from '../utils/haptics';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import GifPicker, { PickedGif } from './GifPicker';
 import * as Clipboard from 'expo-clipboard';
 
@@ -151,7 +150,6 @@ async function resolveMyName(uid: string): Promise<string> {
   return 'Me';
 }
 
-const CHAT_ACCESSORY_ID = 'chatroom-accessory';
 const CHAT_MESSAGE_MAX = 500;
 const REACTION_EMOJIS = ['🔥', '❤️', '😂', '👍', '🎉', '😮'];
 
@@ -233,7 +231,6 @@ const ChatComposer = React.memo(function ChatComposer({
             onFocusScroll();
           }}
           onBlur={() => { composerFocusedRef.current = false; }}
-          inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_ACCESSORY_ID : undefined}
           blurOnSubmit={false}
           returnKeyType="send"
           onSubmitEditing={send}
@@ -282,6 +279,14 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const [sending, setSending] = useState(false);
   const [gifOpen, setGifOpen] = useState(false);
   const [gifViewer, setGifViewer] = useState<string | null>(null);
+  // Shows the floating dismiss-keyboard button over the thread (the old iOS InputAccessoryView
+  // Done bar renders blank on the new architecture).
+  const [kbVisible, setKbVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
 
@@ -1065,6 +1070,17 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             );
           }}
         />
+        {kbVisible && (
+          <Pressable
+            onPress={() => { tap(); Keyboard.dismiss(); }}
+            hitSlop={12}
+            style={styles.kbDismissBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss keyboard"
+          >
+            <MaterialCommunityIcons name="keyboard-close-outline" size={26} color={tc.subtle} />
+          </Pressable>
+        )}
       </View>
 
       {ComposerRow}
@@ -1190,16 +1206,6 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
 
   // ----- Render (apply only-overlap lift) -----
 
-  const DoneAccessory = Platform.OS === 'ios' ? (
-    <InputAccessoryView nativeID={CHAT_ACCESSORY_ID}>
-      <View style={[styles.iosAccessory, { borderTopColor: tc.border, backgroundColor: tc.card }]}>
-        <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={styles.iosDoneBtn}>
-          <Text style={[styles.iosDoneText, { color: tc.text }]}>Done</Text>
-        </Pressable>
-      </View>
-    </InputAccessoryView>
-  ) : null;
-
   if (onClose) {
     return (
       <>
@@ -1216,7 +1222,6 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             <View style={[styles.wrap, maxHeight ? { height: maxHeight } : { flex: 1 }, { backgroundColor: tc.card, borderColor: tc.border }, style]}>{PanelBody}</View>
           </View>
         </View>
-        {DoneAccessory}
       </>
     );
   }
@@ -1236,29 +1241,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       >
         {PanelBody}
       </View>
-      {DoneAccessory}
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  // iOS input accessory
-  iosAccessory: {
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 8,
-    paddingTop: 4,
-    paddingBottom: 6,
-  },
-  iosDoneBtn: {
-    alignSelf: 'flex-end',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: 'rgba(15,23,42,0.08)',
-  },
-  iosDoneText: { fontWeight: '700', color: '#0B1426' },
+  kbDismissBtn: { position: 'absolute', right: 12, bottom: 8, zIndex: 5 },
 
   modalShim: {
     flex: 1,

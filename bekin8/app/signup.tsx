@@ -14,7 +14,6 @@ import {
   TextInput,
   TouchableWithoutFeedback,
   View,
-  InputAccessoryView,
 } from "react-native";
 import { useRouter, Link } from "expo-router";
 import { createUserWithEmailAndPassword } from "firebase/auth";
@@ -31,8 +30,6 @@ import { useTheme } from "../providers/ThemeProvider";
 import { sendInitialVerification } from "../lib/emailVerification";
 
 const TOP_OFFSET = 64; // match login offset
-const PW_ACCESSORY_ID = "signup-password-accessory";
-const CONFIRM_ACCESSORY_ID = "signup-confirm-accessory";
 
 // One-account-per-email collisions: Google sign-in against an existing same-email
 // account is auto-resolved by Firebase to the SAME account (project-level
@@ -280,7 +277,6 @@ export default function SignUp() {
                     style={{ color: colors.text }}
                     placeholder="••••••••"
                     placeholderTextColor={colors.subtle}
-                    inputAccessoryViewID={Platform.OS === "ios" ? PW_ACCESSORY_ID : undefined}
                     disableFullscreenUI={Platform.OS === "android"}
                     textContentType="newPassword"
                     autoComplete="new-password"
@@ -314,7 +310,6 @@ export default function SignUp() {
                     style={{ color: colors.text }}
                     placeholder="••••••••"
                     placeholderTextColor={colors.subtle}
-                    inputAccessoryViewID={Platform.OS === "ios" ? CONFIRM_ACCESSORY_ID : undefined}
                     disableFullscreenUI={Platform.OS === "android"}
                     textContentType="newPassword"
                     autoComplete="new-password"
@@ -418,17 +413,6 @@ export default function SignUp() {
           </ScrollView>
         </TouchableWithoutFeedback>
 
-        {/* iOS-only: tiny accessories to remove predictive bar/strong password UI */}
-        {Platform.OS === "ios" && (
-          <>
-            <InputAccessoryView nativeID={PW_ACCESSORY_ID}>
-              <View style={{ height: 1, backgroundColor: "transparent" }} />
-            </InputAccessoryView>
-            <InputAccessoryView nativeID={CONFIRM_ACCESSORY_ID}>
-              <View style={{ height: 1, backgroundColor: "transparent" }} />
-            </InputAccessoryView>
-          </>
-        )}
       </SafeAreaView>
     </KeyboardAvoidingView>
   );

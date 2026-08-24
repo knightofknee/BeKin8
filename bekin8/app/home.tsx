@@ -13,7 +13,6 @@ import {
   Platform,
   KeyboardAvoidingView,
   Keyboard,
-  InputAccessoryView,
   ScrollView,
   Animated,
   BackHandler,
@@ -21,7 +20,7 @@ import {
   AccessibilityInfo,
   AppState,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import BeaconStructure from '../components/BeaconStructure';
 import BeaconScene from '../components/BeaconScene';
 import BeaconFire from '../components/BeaconFireSkia';
@@ -145,7 +144,6 @@ const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 // Pre-filled into the very first beacon during the onboarding tutorial so new users
 // announce that they've joined. Only used for the guided first beacon, never the default.
 const FIRST_BEACON_INTRO = 'Testing out my beacon';
-const MSG_ACCESSORY_ID = 'beacon-msg-accessory';
 const BEACON_MESSAGE_MAX = 1000;
 
 // --- Friend groups ---
@@ -177,6 +175,25 @@ export default function HomeScreen() {
   const [reduceMotion, setReduceMotion] = useState(false);
   const optionsAnim = useRef(new Animated.Value(0)).current;
   const [kbVisible, setKbVisible] = useState(false);
+  const [kbHeight, setKbHeight] = useState(0);
+  const optionsScrollRef = useRef<ScrollView | null>(null);
+  // Bring the focused field into view once the keyboard has shrunk the sheet's ScrollView
+  // (the 250ms lets the kbVisible re-render land first). Plain ScrollView doesn't auto-scroll
+  // to a focused TextInput, so without this you'd type into an input scrolled off-screen.
+  const scrollSheetFieldIntoView = (fieldRef: React.RefObject<View | null>) => {
+    setTimeout(() => {
+      const scroll = optionsScrollRef.current as any;
+      const field = fieldRef.current as any;
+      if (!scroll || !field) return;
+      const inner = scroll.getInnerViewRef?.();
+      if (!inner) { scroll.scrollToEnd({ animated: true }); return; }
+      field.measureLayout(
+        inner,
+        (_x: number, y: number) => scroll.scrollTo({ y: Math.max(0, y - 12), animated: true }),
+        () => scroll.scrollToEnd({ animated: true })
+      );
+    }, 250);
+  };
   const [dayOffset, setDayOffset] = useState<number>(0); // 0..6 selected chip
   const [timeHourInput, setTimeHourInput] = useState<string>("");   // 1..12 as typed
   const [timeMinuteInput, setTimeMinuteInput] = useState<string>(""); // 00..59 as typed
@@ -1136,8 +1153,8 @@ export default function HomeScreen() {
   // Track keyboard visibility so the options sheet can drop its home-indicator padding while
   // typing, keeps the Save/Cancel row tight to the keyboard's Done bar.
   useEffect(() => {
-    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
-    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (e) => { setKbVisible(true); setKbHeight(e.endCoordinates?.height ?? 0); });
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => { setKbVisible(false); setKbHeight(0); });
     return () => { show.remove(); hide.remove(); };
   }, []);
 
@@ -1710,7 +1727,13 @@ export default function HomeScreen() {
                   </Pressable>
                 </View>
 
+                {/* maxHeight is load-bearing: the KAV (behavior "position") slides the whole card up
+                    without resizing it, so without a cap the ScrollView still thinks its content fits
+                    and rubber-bands instead of scrolling, leaving the style grid unreachable above the
+                    screen while typing. Cap = window minus keyboard, top inset, and the card chrome. */}
                 <ScrollView
+                  ref={optionsScrollRef}
+                  style={{ maxHeight: winH - insets.top - (kbVisible ? kbHeight : insets.bottom) - 140 }}
                   keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingBottom: 12 }}
                   showsVerticalScrollIndicator={false}
@@ -1762,7 +1785,7 @@ export default function HomeScreen() {
                   </View>
 
                   {/* Time (optional) */}
-                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Time (optional)</Text>
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Time</Text>
                   <View ref={timeRef} collapsable={false} style={styles.timeRow}>
                     <TextInput
                       style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
@@ -1772,10 +1795,9 @@ export default function HomeScreen() {
                       placeholderTextColor={colors.subtle}
                       value={timeHourInput}
                       onChangeText={(s) => setTimeHourInput(s.replace(/\D/g, '').slice(0, 2))}
+                      onFocus={() => scrollSheetFieldIntoView(timeRef)}
                       returnKeyType="next"
-                      accessibilityLabel="Hour"
-                      inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
-                    />
+                      accessibilityLabel="Hour"                    />
                     <Text style={[styles.timeColon, { color: colors.text }]}>:</Text>
                     <TextInput
                       style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
@@ -1785,10 +1807,9 @@ export default function HomeScreen() {
                       placeholderTextColor={colors.subtle}
                       value={timeMinuteInput}
                       onChangeText={(s) => setTimeMinuteInput(s.replace(/\D/g, '').slice(0, 2))}
+                      onFocus={() => scrollSheetFieldIntoView(timeRef)}
                       returnKeyType="done"
-                      accessibilityLabel="Minute"
-                      inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
-                    />
+                      accessibilityLabel="Minute"                    />
                     <Pressable
                       onPress={() => { selection(); setTimeMeridiem((m) => (m === 'AM' ? 'PM' : 'AM')); }}
                       style={[styles.meridiemBtn, { backgroundColor: colors.inputBg, borderColor: colors.border }]}
@@ -1858,9 +1879,9 @@ export default function HomeScreen() {
                     placeholderTextColor={colors.subtle}
                     value={message}
                     onChangeText={setMessage}
+                    onFocus={() => scrollSheetFieldIntoView(messageRef)}
                     maxLength={BEACON_MESSAGE_MAX}
                     multiline
-                    inputAccessoryViewID={Platform.OS === 'ios' ? MSG_ACCESSORY_ID : undefined}
                     returnKeyType="default"
                     blurOnSubmit={false}
                   />
@@ -1887,20 +1908,25 @@ export default function HomeScreen() {
                   </View>
                   </View>
                 </ScrollView>
+                {/* Keyboard-dismiss button, floating in the card's bottom-right corner (absolute, so
+                    it adds no height). This used to be an iOS InputAccessoryView, which renders its
+                    content blank on the new architecture (the bar reserved space above the keyboard
+                    but the Done button never drew). The card's bottom edge sits flush on the
+                    keyboard (KAV "position"), so the button lands just above the keyboard's top
+                    right, and it works on Android too. */}
+                {kbVisible && (
+                  <Pressable
+                    onPress={() => { tap(); Keyboard.dismiss(); }}
+                    hitSlop={12}
+                    style={{ position: 'absolute', right: 16, bottom: 14 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Dismiss keyboard"
+                  >
+                    <MaterialCommunityIcons name="keyboard-close-outline" size={26} color={colors.subtle} />
+                  </Pressable>
+                )}
               </Animated.View>
             </KeyboardAvoidingView>
-            {Platform.OS === 'ios' && (
-              <InputAccessoryView nativeID={MSG_ACCESSORY_ID}>
-                <View style={{ borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.card }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', padding: 8 }}>
-                    <View style={{ flex: 1 }} />
-                    <Pressable onPress={() => Keyboard.dismiss()} hitSlop={8} style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
-                      <Text style={{ fontWeight: '700', color: colors.text }}>Done</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </InputAccessoryView>
-            )}
           </View>
         )}
 

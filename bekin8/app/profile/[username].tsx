@@ -16,7 +16,6 @@ import {
   Platform,
   Keyboard,
   KeyboardAvoidingView,
-  InputAccessoryView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -40,13 +39,13 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import PostComments from '../../components/PostComments';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import LinkifiedText from '../../components/LinkifiedText';
 import { useTheme } from '../../providers/ThemeProvider';
 import { useOnline } from '../../providers/NetworkProvider';
 import { tap, press, warning, selection } from '../../utils/haptics';
 
 const PAGE_SIZE = 15;
-const PROFILE_EDIT_ACCESSORY_ID = 'profile-edit-post-accessory'; // iOS Done bar for the edit-post inputs
 
 function SkeletonBlock({ width, height, style, color }: { width: number | string; height: number; style?: any; color?: string }) {
   const anim = useRef(new Animated.Value(0.3)).current;
@@ -210,6 +209,14 @@ export default function ProfileScreen() {
   // Post menu
   const [menuFor, setMenuFor] = useState<Post | null>(null);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
+  // Shows the edit modal's dismiss-keyboard icon (the old iOS InputAccessoryView Done bar
+  // renders blank on the new architecture).
+  const [kbVisible, setKbVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   const [editPostTitle, setEditPostTitle] = useState('');
   const [editPostContent, setEditPostContent] = useState('');
   const [editPostUrl, setEditPostUrl] = useState('');
@@ -1200,7 +1207,6 @@ export default function ProfileScreen() {
               value={editPostTitle}
               onChangeText={setEditPostTitle}
               maxLength={200}
-              inputAccessoryViewID={Platform.OS === 'ios' ? PROFILE_EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
               style={[styles.modalInput, { minHeight: 120, maxHeight: 260, textAlignVertical: 'top', marginBottom: 10, borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
@@ -1212,7 +1218,6 @@ export default function ProfileScreen() {
               // Same ceiling as create-post (~10k chars): the old 2000 cap could block edits to
               // long posts that were perfectly legal to write.
               maxLength={10000}
-              inputAccessoryViewID={Platform.OS === 'ios' ? PROFILE_EDIT_ACCESSORY_ID : undefined}
             />
             <TextInput
               style={[styles.modalInput, { borderColor: colors.border, color: colors.text, backgroundColor: colors.inputBg }]}
@@ -1223,21 +1228,23 @@ export default function ProfileScreen() {
               autoCapitalize="none"
               keyboardType="url"
               maxLength={500}
-              inputAccessoryViewID={Platform.OS === 'ios' ? PROFILE_EDIT_ACCESSORY_ID : undefined}
             />
+            {/* Dismiss-keyboard icon, in flow so it never overlaps an input (the card is centered,
+                not keyboard-flush). Replaces the iOS InputAccessoryView Done bar, which renders
+                blank on the new architecture. */}
+            {kbVisible && (
+              <Pressable
+                onPress={() => { tap(); Keyboard.dismiss(); }}
+                hitSlop={12}
+                style={styles.kbDismissBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss keyboard"
+              >
+                <MaterialCommunityIcons name="keyboard-close-outline" size={26} color={colors.subtle} />
+              </Pressable>
+            )}
           </View>
         </KeyboardAvoidingView>
-        {/* Inside the Modal on purpose: a Modal is its own native window, and an accessory view
-            registered outside it never attaches to these inputs. */}
-        {Platform.OS === 'ios' && (
-          <InputAccessoryView nativeID={PROFILE_EDIT_ACCESSORY_ID}>
-            <View style={[styles.editPostAccessory, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
-              <Pressable onPress={() => { tap(); Keyboard.dismiss(); }} hitSlop={10}>
-                <Text style={[styles.editPostDone, { color: colors.primary }]}>Done</Text>
-              </Pressable>
-            </View>
-          </InputAccessoryView>
-        )}
       </Modal>
     </>
   );
@@ -1568,13 +1575,7 @@ const styles = StyleSheet.create({
   editPostHeaderBtn: { minWidth: 60 },
   editPostHeaderBtnRight: { alignItems: 'flex-end' },
   editPostSaveTxt: { fontWeight: '800', fontSize: 16 },
-  editPostAccessory: {
-    borderTopWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    alignItems: 'flex-end',
-  },
-  editPostDone: { fontSize: 16, fontWeight: '600' },
+  kbDismissBtn: { alignSelf: 'flex-end', marginTop: 10 },
 
   modalActions: {
     flexDirection: 'row',
