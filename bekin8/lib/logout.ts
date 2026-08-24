@@ -7,7 +7,15 @@ import { removePushTokenForThisDevice } from "./push";
 
 export async function logout(): Promise<void> {
   try {
-    await removePushTokenForThisDevice(auth.currentUser?.uid);
+    // Cap the wait: on a dead connection Firestore's deleteDoc never settles, and an
+    // unbounded await here left the Log out button doing nothing. After the cap we sign
+    // out anyway; the delete stays in Firestore's offline queue and flushes if the
+    // connection returns before the app dies. Worst case an orphaned token doc lingers,
+    // which was already the accepted outcome of the swallowed-failure path below.
+    await Promise.race([
+      removePushTokenForThisDevice(auth.currentUser?.uid),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
   } catch {
     // non-fatal: sign out regardless of token cleanup outcome
   }
