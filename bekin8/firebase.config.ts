@@ -5,6 +5,7 @@ import { initializeAuth, type Auth } from "firebase/auth";
 import { getReactNativePersistence } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { startAppCheck } from "./lib/appCheck";
 
 // ---- Avoid duplicate inits across Fast Refresh (HMR) ----
 declare global {
@@ -33,6 +34,10 @@ const firebaseConfig = {
 const app: FirebaseApp =
   g.__BEKIN_FIREBASE__.app ??
   (g.__BEKIN_FIREBASE__.app = (getApps().length ? getApps()[0] : initializeApp(firebaseConfig)));
+
+// ---- App Check (monitor mode): must start BEFORE auth/firestore issue their first request so
+// those requests carry a token. Never throws; see lib/appCheck.ts. ----
+startAppCheck(app);
 
 // ---- Auth singleton (RN persistence) ----
 const auth: Auth =

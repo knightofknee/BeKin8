@@ -2,7 +2,7 @@
   "expo": {
     "name": "BeKin",
     "slug": "bekin8",
-    "version": "1.2.26",
+    "version": "1.2.28",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "bekin8",
@@ -56,11 +56,14 @@
           }
         ],
         "NSPrivacyTracking": false
+      },
+      "entitlements": {
+        "com.apple.developer.devicecheck.appattest-environment": "production"
       }
     },
     "android": {
       "package": "com.waldgrave.bekin",
-      "versionCode": 11,
+      "versionCode": 13,
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "POST_NOTIFICATIONS"
@@ -125,7 +128,21 @@
       ],
       "expo-asset",
       "expo-font",
-      "expo-image"
+      "expo-image",
+      "@react-native-firebase/app",
+      "@react-native-firebase/app-check",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static",
+            "forceStaticLinking": [
+              "RNFBApp",
+              "RNFBAppCheck"
+            ]
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

@@ -73,6 +73,7 @@ import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, selection, success } from '../utils/haptics';
 import TutorialResumeBanner from '../components/tutorial/TutorialResumeBanner';
+import WackyWednesday from '../components/WackyWednesday';
 import {
   buildBeaconTour,
   buildSpeedTour,
@@ -1610,6 +1611,10 @@ export default function HomeScreen() {
                   </Pressable>
                 )}
 
+                {/* Wacky Wednesday: Wednesdays only, stacked just above the help button. Hidden
+                    while a tour runs, like the help button, so coach marks stay uncluttered. */}
+                {!isActive && <WackyWednesday today={todayStart} style={styles.wackyBtn} />}
+
                 {/* Small discreet fire-sound mute (sound is ON by default for the centerpiece). */}
                 <Pressable
                   onPress={() => { tap(); setFireSoundEnabled(!fireSoundOn); }}
@@ -2105,6 +2110,10 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingTop: 4, // was styles.page.paddingTop; kept here so tiles don't shift up
     paddingHorizontal: 0,
+    // Tiles are priority info: the FIRE layer is the last child of this screen (so it paints over
+    // the structure), which also let a tall flame paint over the lower tiles. Lift the list above it.
+    zIndex: 5,
+    elevation: 5,
   },
   // Clears the floating email-verify banner (VerifyEmailGate) above the resume banner so they
   // don't overlap for pending email/password signups. Sized to clear its one/two-line height.
@@ -2130,6 +2139,12 @@ const styles = StyleSheet.create({
     right: -34,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Same column as helpBtn, one button-height (28) + 10 gap higher.
+  wackyBtn: {
+    position: 'absolute',
+    bottom: 46,
+    right: -34,
   },
   muteBtn: {
     position: 'absolute',

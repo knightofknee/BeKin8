@@ -15,6 +15,8 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-native-firebase/app": "^26.4.0",
+    "@react-native-firebase/app-check": "^26.4.0",
     "@react-native-google-signin/google-signin": "^16.1.2",
     "@react-navigation/bottom-tabs": "^7.3.10",
     "@react-navigation/elements": "^2.3.8",
@@ -25,6 +27,7 @@
     "expo-application": "~55.0.17",
     "expo-asset": "~55.0.17",
     "expo-audio": "~55.0.14",
+    "expo-build-properties": "~55.0.18",
     "expo-clipboard": "~55.0.13",
     "expo-constants": "~55.0.16",
     "expo-crypto": "~55.0.15",

@@ -6,6 +6,7 @@
 // Lighthouse keeps its animated Skia sea (BeaconSeaScene).
 import React from 'react';
 import BeaconSeaScene from './BeaconSeaScene';
+import LakeshoreScene from './scenes/LakeshoreScene';
 import CampfireScene from './scenes/CampfireScene';
 import OldGuardScene from './scenes/OldGuardScene';
 import BonfireScene from './scenes/BonfireScene';
@@ -31,6 +32,8 @@ export type BeaconSceneProps = {
 
 function BeaconScene(props: BeaconSceneProps) {
   switch (props.skin.structure) {
+    case 'lakeshore':
+      return <LakeshoreScene {...props} />;
     case 'logs':
       return <CampfireScene {...props} />;
     case 'brazier':

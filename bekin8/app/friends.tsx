@@ -14,6 +14,7 @@ import {
   Share,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { auth, db } from "../firebase.config";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import {
@@ -1145,7 +1146,10 @@ export default function FriendsScreen() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: tc.bg }}>
+    // Safe-area wrapper (same as the feed): the list used to be a bare full-height scroller that
+    // faked the notch clearance with paddingTop 70, so rows scrolled up BEHIND the status bar and
+    // collided with the clock. Clipping at the top inset keeps the clock clear at every offset.
+    <SafeAreaView style={{ flex: 1, backgroundColor: tc.bg }} edges={["top", "left", "right"]}>
       <FlatList
         ref={listRef}
         data={visibleFriends}
@@ -1317,7 +1321,7 @@ export default function FriendsScreen() {
         ListFooterComponent={<View ref={listEndTarget} collapsable={false} style={{ height: 16 }} />}
         contentContainerStyle={{
           padding: SCREEN_PAD,
-          paddingTop: 70,
+          paddingTop: 10, // the top inset now comes from the SafeAreaView above
           paddingBottom: BOTTOM_BAR_SPACE, // ✅ ensures the last row clears BottomBar
           rowGap: 14,
         }}
@@ -1352,7 +1356,7 @@ export default function FriendsScreen() {
         onDone={() => setCelebrateFirstFriend(false)}
       />
       <BottomBar />
-    </View>
+    </SafeAreaView>
   );
 }
 

@@ -3,8 +3,8 @@
 // smoke / sound layers just read a skin and render; adding or retuning a skin never touches engine
 // code. Each skin is a full bespoke procedural scene (SVG + Skia, no photos) in its own art style:
 //   campfire    - storybook night clearing (DEFAULT)
+//   lakeshore   - driftwood fire on a still lake; the far bank answers and lantern canoes cross
 //   oldguard    - castle battlement watchfire
-//   bonfire     - dusk festival blaze (explosive ignition)
 //   beacons     - LOTR signal chain across a mountain range
 //   aurora      - arctic rune stone that lights the northern sky (replaces the old wisp)
 //   tower       - Paul Revere's two lanterns, close up
@@ -18,6 +18,7 @@
 // is hardcoded per structure anymore.
 
 export type BeaconStructureKind =
+  | 'lakeshore'
   | 'logs'
   | 'brazier'
   | 'bonfire'
@@ -121,6 +122,42 @@ const CAMPFIRE: BeaconSkin = {
   tap: { noun: 'campfire', tint: '#FFE7B0' },
 };
 
+// Lakeshore: a DRIFTWOOD FIRE ON A STILL LAKE at nightfall, and the one skin that acts
+// out the whole app: light your shore fire and you are ANSWERED. Beats (t=0 = lit edge): the flame
+// catches and warm firelight starts dancing on the near water -> ~3s the FAR BANK answers with a
+// tiny fire of its own (thin glint on the water) -> lantern-lit canoes push off the far shore and
+// cross the lake to you over the next few minutes, beaching beside your fire and STAYING. Arrivals
+// accumulate while the beacon burns (u_lt-driven, never loops or replays; cold lit mounts show
+// everyone already arrived). The structure is a pale driftwood teepee flanked by two empty sitting
+// logs: seats kept for the friends the fire is calling. Scene: LakeshoreScene (one Skia shader:
+// dusk sky, stars, moon glint, mist, treeline, animated water, the answer fire + canoes).
+const LAKESHORE: BeaconSkin = {
+  ...CAMPFIRE,
+  id: 'lakeshore',
+  label: 'Lakeshore',
+  blurb: 'A shore fire on a still lake. Light it, and the far bank answers.',
+  structure: 'lakeshore',
+  fire: 'flame',
+  smokeKind: 'ambient',
+  // Cone-from-wood: seat y=62 inside the driftwood teepee, where the log spread is ~32 units
+  // (~58px). Flame base = 1.74 * width * 170 * flameScale = ~58px at width 0.21, scale 0.95.
+  origin: 0.62,
+  flameScale: 0.95,
+  flameShape: { width: 0.21, turb: 0.95, speed: 2.3 },
+  outer: ['#FF8E2A', '#D14A18'],
+  mid: ['#FFC24A', '#FF7E1E'],
+  core: ['#FFF7DC', '#FFD24A'],
+  glow: { center: '#FFD9A0', edge: '#FF8A2A', cy: -60, rx: 50, ry: 78 },
+  ember: { color: '#FFCF7A', count: 3 },
+  spark: { color: '#FFE0A0', count: 8 },
+  // Confident cozy catch: quick spring with a touch of overshoot, no shake (this is the default
+  // everyone meets first; the delight lands in the scene's answer beats, not in violence).
+  ignition: { damping: 13, stiffness: 165, shake: false, shockwave: false },
+  smoke: { tintLow: '#C7A98A', tintHigh: '#9AA3B2', opacity: 0.3, plumes: 5, rise: 1.0, drift: 22 },
+  sound: { ignite: require('../assets/sounds/lakeshore-ignite.m4a'), crackle: require('../assets/sounds/lakeshore-crackle.m4a') },
+  tap: { noun: 'driftwood', tint: '#FFE7C2' },
+};
+
 // Old Guard: a WATCHFIRE ON THE CASTLE WALL. Battlement parapet spans the bottom, the beacon is a
 // forged-iron fire basket on a stone plinth; lighting it washes the stonework warm.
 const OLD_GUARD: BeaconSkin = {
@@ -170,7 +207,9 @@ const BONFIRE: BeaconSkin = {
   spark: { color: '#FFE0A0', count: 20 },
   ignition: { damping: 7, stiffness: 195, shake: true, shockwave: true, delayMs: 900 }, // explosive, on torch impact
   smoke: { tintLow: '#8A8078', tintHigh: '#9AA0A8', opacity: 0.5, plumes: 9, rise: 1.0, drift: 30 },
-  sound: { ignite: require('../assets/sounds/bonfire-ignite.m4a'), crackle: require('../assets/sounds/bonfire-crackle.m4a') },
+  // HIDDEN: point at the already-shipped campfire clips so the bespoke bonfire m4a drops out of
+  // the bundle while this skin is withdrawn. Restore the bonfire-*.m4a requires if it is revived.
+  sound: { ignite: require('../assets/sounds/campfire-ignite.m4a'), crackle: require('../assets/sounds/campfire-crackle.m4a') },
   tap: { noun: 'bonfire', tint: '#FFF2D9' },
 };
 
@@ -399,13 +438,19 @@ const STORM: BeaconSkin = {
 //                   sound is bad.
 //   Storm Caller  - the rain/storm ambience is good, but the LIT state reads as random: nothing looks
 //                   actually lit when you light it.
+//   Bonfire       - withdrawn 2026-08-30: the weakest of the visible set after four redesign
+//                   rounds never landed; replaced by Lakeshore as part of the new-default push. A
+//                   persisted 'bonfire' selection self-heals to the default via getSkin.
 // Kept referenced here (not merged into BEACON_SKINS) so they stay live, type-checked code.
-export const HIDDEN_BEACON_SKINS: BeaconSkin[] = [SKY_LANTERNS, SEARCHLIGHT, STORM];
+export const HIDDEN_BEACON_SKINS: BeaconSkin[] = [SKY_LANTERNS, SEARCHLIGHT, STORM, BONFIRE];
 
-export const BEACON_SKINS: BeaconSkin[] = [CAMPFIRE, OLD_GUARD, BONFIRE, BEACONS, AURORA, TOWER, LIGHTHOUSE, SMOKE_SIGNAL, FIREWORKS];
+// Campfire is the DEFAULT (the home screen every new user meets). Lakeshore was tried as the default
+// on 2026-08-30 and rejected by Brian on 2026-09-17 before it ever shipped; it stays as an option.
+export const BEACON_SKINS: BeaconSkin[] = [CAMPFIRE, LAKESHORE, OLD_GUARD, BEACONS, AURORA, TOWER, LIGHTHOUSE, SMOKE_SIGNAL, FIREWORKS];
 export const DEFAULT_SKIN_ID = 'campfire';
 
 export function getSkin(id: string | null | undefined): BeaconSkin {
-  // Unknown ids (including the retired 'wisp') fall back to the default campfire.
+  // Unknown ids (including the retired 'wisp' and the withdrawn 'bonfire') fall back to the
+  // default campfire.
   return BEACON_SKINS.find((s) => s.id === id) ?? CAMPFIRE;
 }

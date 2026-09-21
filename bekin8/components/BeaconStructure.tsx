@@ -5,6 +5,7 @@
 // (lanterns, rune stone, lighthouse) receive `lit` and kindle themselves; the flame skins leave the
 // fire to the full-screen Skia flame anchored at skin.origin.
 import React from 'react';
+import DriftwoodPyre from './structures/DriftwoodPyre';
 import CampfireLogs from './structures/CampfireLogs';
 import GuardBrazier from './structures/GuardBrazier';
 import BonfirePyre from './structures/BonfirePyre';
@@ -23,6 +24,8 @@ type Props = { skin: BeaconSkin; size?: number; lit?: boolean; focused?: boolean
 
 function BeaconStructure({ skin, size = 180, lit = false, focused = true }: Props) {
   switch (skin.structure) {
+    case 'lakeshore':
+      return <DriftwoodPyre size={size} lit={lit} focused={focused} />;
     case 'logs':
       return <CampfireLogs size={size} lit={lit} focused={focused} />;
     case 'brazier':

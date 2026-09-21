@@ -20,6 +20,12 @@ ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1' if podfile_properties['ios.buildReactNati
 ENV['RCT_HERMES_V1_ENABLED'] ||= '1' if podfile_properties['expo.useHermesV1'] == 'true'
 platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 
+# react-native-firebase 26 resolves the Firebase iOS SDK through Swift Package Manager by default,
+# which cannot be combined with `use_frameworks! :linkage => :static` (each RNFB pod embeds its own
+# copy and they collide as duplicate symbols at link time). Static frameworks are required here, so
+# opt RNFB back into plain CocoaPods resolution. Must be set before any target block.
+$RNFirebaseDisableSPM = true
+
 prepare_react_native_project!
 
 target 'BeKin' do
