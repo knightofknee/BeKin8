@@ -2,10 +2,10 @@
 // Data-driven beacon SKINS. Every per-skin knob is config here, so the scene / structure / fire /
 // smoke / sound layers just read a skin and render; adding or retuning a skin never touches engine
 // code. Each skin is a full bespoke procedural scene (SVG + Skia, no photos) in its own art style:
-//   campfire    - storybook night clearing (DEFAULT)
+//   campfire    - storybook night clearing
 //   lakeshore   - driftwood fire on a still lake; the far bank answers and lantern canoes cross
 //   oldguard    - castle battlement watchfire
-//   beacons     - LOTR signal chain across a mountain range
+//   beacons     - LOTR signal chain across a mountain range; each distant fire is a real friend (DEFAULT)
 //   aurora      - arctic rune stone that lights the northern sky (replaces the old wisp)
 //   tower       - Paul Revere's two lanterns, close up
 //   lighthouse  - coastal tower + sweeping beam over an animated sea
@@ -58,6 +58,9 @@ export type BeaconSkin = {
   origin: number;
   /** Overall flame scale: Skia flame height = 170 * flameScale px. */
   flameScale: number;
+  /** The scene shows the people going BY NAME (The Beacons' chain), so home leaves the names off
+   *  the chat pill. Set on any future skin that does the same. */
+  showsPeople?: boolean;
   /** Skia flame CHARACTER, so each skin's fire moves differently (not just recolored):
    *  width = half-width as a fraction of flame height (base shader used 0.42),
    *  turb  = sway/turbulence multiplier (1 = base), speed = vertical noise scroll (base 2.4). */
@@ -219,6 +222,7 @@ const BEACONS: BeaconSkin = {
   ...CAMPFIRE,
   id: 'beacons',
   label: 'The Beacons',
+  showsPeople: true,
   blurb: 'Light yours, and watch the mountains answer.',
   structure: 'mountains',
   origin: 0.54, // seat at the upper course, so the crown burns inside the flame
@@ -429,7 +433,7 @@ const STORM: BeaconSkin = {
 // HIDDEN / WORK IN PROGRESS (Round 50, 2026-07-06): Sky Lanterns, Searchlight, and Storm Caller are
 // built end to end (registry entries here + their scene/structure/effect components + dispatch cases
 // in BeaconScene/BeaconStructure/home + sounds) but WITHDRAWN from users pending rework, so they are
-// NOT in BEACON_SKINS and never appear in the picker. getSkin() falls back to campfire for their ids,
+// NOT in BEACON_SKINS and never appear in the picker. getSkin() falls back to the default for their ids,
 // so a persisted selection self-heals. Re-enable by moving one back into BEACON_SKINS. User feedback
 // that must be addressed first:
 //   Sky Lanterns  - the "field" reads as a bunch of random light dots, not actual lantern shapes; the
@@ -444,13 +448,15 @@ const STORM: BeaconSkin = {
 // Kept referenced here (not merged into BEACON_SKINS) so they stay live, type-checked code.
 export const HIDDEN_BEACON_SKINS: BeaconSkin[] = [SKY_LANTERNS, SEARCHLIGHT, STORM, BONFIRE];
 
-// Campfire is the DEFAULT (the home screen every new user meets). Lakeshore was tried as the default
-// on 2026-08-30 and rejected by Brian on 2026-09-17 before it ever shipped; it stays as an option.
-export const BEACON_SKINS: BeaconSkin[] = [CAMPFIRE, LAKESHORE, OLD_GUARD, BEACONS, AURORA, TOWER, LIGHTHOUSE, SMOKE_SIGNAL, FIREWORKS];
-export const DEFAULT_SKIN_ID = 'campfire';
+// The Beacons is the DEFAULT (the home screen every new user meets), chosen by Brian on 2026-10-08
+// once its chain showed real friends (lit beacons / "I'm in" answers). Campfire was the default
+// before that; Lakeshore was tried on 2026-08-30 and rejected before it shipped. Anyone who picked a
+// style keeps it; only people who never chose one move to the new default.
+export const BEACON_SKINS: BeaconSkin[] = [BEACONS, CAMPFIRE, LAKESHORE, OLD_GUARD, AURORA, TOWER, LIGHTHOUSE, SMOKE_SIGNAL, FIREWORKS];
+export const DEFAULT_SKIN_ID = 'beacons';
 
 export function getSkin(id: string | null | undefined): BeaconSkin {
   // Unknown ids (including the retired 'wisp' and the withdrawn 'bonfire') fall back to the
-  // default campfire.
-  return BEACON_SKINS.find((s) => s.id === id) ?? CAMPFIRE;
+  // default, The Beacons.
+  return BEACON_SKINS.find((s) => s.id === id) ?? BEACONS;
 }

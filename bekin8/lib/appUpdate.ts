@@ -9,6 +9,13 @@
 // confirmed live in the store. That also kills the release-day window where Apple's lookup
 // reports a version the store CDN won't actually hand over yet: the field is flipped only once
 // the store really serves the update, so the Update button never leads to a dead end.
+//
+// ANDROID compares the build number (versionCode), not the version name: Android builds only
+// bump versionCode (eas.json autoIncrement), so several Play releases share one version name and
+// a name check never tells Android users a new build is out. Android gets its own dials,
+// androidLatestBuild (warn, here) / androidMinBuild (block, lib/updateGate.ts), which also lets
+// each store be flipped when IT goes live. Android builds up to versionCode 13 predate this and
+// still read latestVersion / minVersion.
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Application from "expo-application";
 import { Platform } from "react-native";
@@ -16,10 +23,15 @@ import { doc, getDoc } from "firebase/firestore";
 import { db } from "../firebase.config";
 
 export type AppUpdateInfo = {
-  /** Latest released binary version (Config/app.latestVersion), e.g. "1.2.25". */
+  /**
+   * The release this build is behind: Config/app.latestVersion on iOS (e.g. "1.2.25"),
+   * "android build N" on Android. Keys the snooze.
+   */
   latestVersion: string;
   /** Link to this platform's store listing. */
   storeUrl: string;
+  /** Config/app.message: an optional per-release line (what's new) that replaces the card's built-in text. */
+  message?: string;
 };
 
 /**
@@ -40,6 +52,28 @@ export function isNewerVersion(latest: string, installed: string): boolean {
     if (x < y) return false;
   }
   return false;
+}
+
+/**
+ * True when a whole-number build `target` (Config/app androidLatestBuild / androidMinBuild) is
+ * above the running build number. Anything that isn't a positive whole number on either side
+ * bails to false: never prompt on garbage data.
+ */
+export function isOlderBuild(target: unknown, installed: string | null | undefined): boolean {
+  const have = Number(installed);
+  if (typeof target !== "number" || !Number.isInteger(target) || target <= 0) return false;
+  if (!installed || !Number.isInteger(have) || have <= 0) return false;
+  return have < target;
+}
+
+/**
+ * Android only: whether this build sits below one of Config/app's build dials ('latest' warns,
+ * 'min' blocks). Resolves "android build N" (the snooze key) when it does, null when current,
+ * the dial is unset, or the data is garbage.
+ */
+export function behindAndroidDial(data: any, dial: "latest" | "min"): string | null {
+  const target = data?.[dial === "latest" ? "androidLatestBuild" : "androidMinBuild"];
+  return isOlderBuild(target, Application.nativeBuildVersion) ? `android build ${target}` : null;
 }
 
 // Dismissing the nudge is a snooze, not a mute: Close (or an Update tap) buys quiet for a day,
@@ -94,10 +128,11 @@ export async function saveDismissRecord(version: string): Promise<void> {
 /**
  * Checks Config/app for a newer released version of the app.
  *
- * Compares the running binary's own version (Application.nativeApplicationVersion,
+ * iOS compares the running binary's own version (Application.nativeApplicationVersion,
  * the same number EAS stamps from app.json) against Config/app.latestVersion,
  * which is on the same scheme. The App Store's public version name never enters
- * the comparison.
+ * the comparison. Android compares its build number (Application.nativeBuildVersion,
+ * the versionCode) against Config/app.androidLatestBuild (see the top of this file).
  *
  * Resolves with the latest version + this platform's store URL when the installed
  * build is behind, or null when up to date / not applicable (dev builds, missing
@@ -105,31 +140,37 @@ export async function saveDismissRecord(version: string): Promise<void> {
  * update nudge is not worth surfacing an error for.
  *
  * Config/app is world-readable by rule, so this works signed-out too. Fields used:
- *   latestVersion  string  latest released binary version; blank/absent disables the nudge
- *   iosUrl         string  App Store listing link
- *   androidUrl     string  Play Store listing link (absent while Android has no public release)
+ *   latestVersion       string  iOS: latest released binary version; blank/absent disables the nudge
+ *   androidLatestBuild  number  Android: latest released versionCode; absent disables the nudge
+ *   iosUrl              string  App Store listing link
+ *   androidUrl          string  Play Store listing link (absent while Android has no public release)
  */
 export async function checkForAppUpdate(): Promise<AppUpdateInfo | null> {
   // Dev builds always report the in-progress version and would nag constantly.
   if (__DEV__) return null;
-
-  const installed = Application.nativeApplicationVersion;
-  if (!installed) return null;
 
   try {
     const snap = await getDoc(doc(db, "Config", "app"));
     if (!snap.exists()) return null;
     const data = snap.data() as any;
 
-    const latestVersion =
-      typeof data?.latestVersion === "string" ? data.latestVersion.trim() : "";
-    if (!latestVersion) return null;
-
     const storeUrl = Platform.OS === "ios" ? data?.iosUrl : data?.androidUrl;
     if (typeof storeUrl !== "string" || !storeUrl) return null;
 
-    if (!isNewerVersion(latestVersion, installed)) return null;
-    return { latestVersion, storeUrl };
+    let latestVersion: string;
+    if (Platform.OS === "android") {
+      const behind = behindAndroidDial(data, "latest");
+      if (!behind) return null;
+      latestVersion = behind;
+    } else {
+      const installed = Application.nativeApplicationVersion;
+      if (!installed) return null;
+      latestVersion = typeof data?.latestVersion === "string" ? data.latestVersion.trim() : "";
+      if (!latestVersion) return null;
+      if (!isNewerVersion(latestVersion, installed)) return null;
+    }
+    const message = typeof data?.message === 'string' ? data.message.trim() : '';
+    return { latestVersion, storeUrl, ...(message ? { message } : {}) };
   } catch {
     return null;
   }

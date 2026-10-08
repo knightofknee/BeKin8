@@ -1,6 +1,7 @@
 // components/UpdateModal.tsx
-// Root-mounted nudge shown when the installed binary is behind Config/app.latestVersion
-// (see lib/appUpdate.ts for why the source of truth is our own config doc, not the store).
+// Root-mounted nudge shown when the installed binary is behind Config/app.latestVersion (iOS)
+// or Config/app.androidLatestBuild, a versionCode (Android). See lib/appUpdate.ts for why the
+// source of truth is our own config doc, not the store, and why Android counts builds.
 // Store updates aren't actually automatic for everyone (auto-update can be off or
 // delayed), and the goal is getting fixes to active users fast: so this checks at launch
 // AND on every app foreground (throttled), not just at cold start. Apps stay resident
@@ -11,7 +12,7 @@
 // immediately). One nag per day, but nagging resumes until the user is actually current.
 // The Update button is deliberately the loudest element on the card.
 import React, { useEffect, useRef, useState } from "react";
-import { AppState, Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Linking, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { useTour } from "../providers/TourProvider";
@@ -22,6 +23,7 @@ import {
   saveDismissRecord,
   type AppUpdateInfo,
 } from "../lib/appUpdate";
+import { fetchUpdateGate } from "../lib/updateGate";
 
 // Minimum gap between store checks. Foreground events fire constantly during normal use;
 // one check per half hour keeps the prompt near-immediate once a release propagates
@@ -43,6 +45,9 @@ export default function UpdateModal() {
       lastCheckRef.current = Date.now();
       const result = await checkForAppUpdate();
       if (unmounted || !result) return;
+      // Below the hard floor UpdateRequiredGate owns the screen. This card is
+      // a native Modal and would sit on top of the gate, so it stands aside.
+      if (await fetchUpdateGate()) return;
       const dismissed = await loadDismissRecord();
       if (unmounted || isSnoozed(result.latestVersion, dismissed, Date.now())) return;
       setInfo(result);
@@ -80,10 +85,10 @@ export default function UpdateModal() {
     <Modal visible transparent animationType="fade" onRequestClose={dismiss}>
       <View style={[styles.backdrop, { backgroundColor: colors.backdrop }]}>
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={styles.emoji}>⬆️</Text>
-          <Text style={[styles.title, { color: colors.text }]}>Update available</Text>
+          <Text style={styles.emoji}>💛</Text>
+          <Text style={[styles.title, { color: colors.text }]}>Something new for you</Text>
           <Text style={[styles.body, { color: colors.subtle }]}>
-            A newer version of BeKin is out. Update now to get the latest fixes and features.
+            {info.message ?? 'We made BeKin a little better. Could you update when you get a sec? Thank you!'}
           </Text>
           <Pressable
             onPress={openStore}
@@ -93,7 +98,7 @@ export default function UpdateModal() {
               pressed && { opacity: 0.9 },
             ]}
             accessibilityRole="button"
-            accessibilityLabel="Update on the App Store"
+            accessibilityLabel={Platform.OS === "android" ? "Update on Google Play" : "Update on the App Store"}
           >
             <Text style={styles.updateBtnTxt}>Update</Text>
           </Pressable>
@@ -101,10 +106,10 @@ export default function UpdateModal() {
             onPress={dismiss}
             style={styles.closeBtn}
             accessibilityRole="button"
-            accessibilityLabel="Close"
+            accessibilityLabel="Not now"
             hitSlop={8}
           >
-            <Text style={[styles.closeBtnTxt, { color: colors.subtle }]}>Close</Text>
+            <Text style={[styles.closeBtnTxt, { color: colors.subtle }]}>Not now</Text>
           </Pressable>
         </View>
       </View>

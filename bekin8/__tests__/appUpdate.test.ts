@@ -1,4 +1,4 @@
-import { DISMISS_SNOOZE_MS, isNewerVersion, isSnoozed } from "../lib/appUpdate";
+import { DISMISS_SNOOZE_MS, isNewerVersion, isOlderBuild, isSnoozed } from "../lib/appUpdate";
 
 // Plain ts-jest environment (no Expo/RN transforms): stub the native modules
 // appUpdate imports for its fetch/storage paths; only the pure helpers are under
@@ -70,5 +70,24 @@ describe("isSnoozed", () => {
 
   it("prompts when nothing was dismissed", () => {
     expect(isSnoozed("1.2.25", null, now)).toBe(false);
+  });
+});
+
+describe("isOlderBuild (Android versionCode dials)", () => {
+  it("prompts only when the running build is below the target", () => {
+    expect(isOlderBuild(14, "13")).toBe(true);
+    expect(isOlderBuild(14, "14")).toBe(false);
+    expect(isOlderBuild(14, "15")).toBe(false);
+    expect(isOlderBuild(100, "99")).toBe(true);
+  });
+
+  it("bails to false on unset or garbage values", () => {
+    expect(isOlderBuild(undefined, "13")).toBe(false);
+    expect(isOlderBuild("14", "13")).toBe(false);
+    expect(isOlderBuild(0, "13")).toBe(false);
+    expect(isOlderBuild(14.5, "13")).toBe(false);
+    expect(isOlderBuild(14, null)).toBe(false);
+    expect(isOlderBuild(14, "")).toBe(false);
+    expect(isOlderBuild(14, "abc")).toBe(false);
   });
 });

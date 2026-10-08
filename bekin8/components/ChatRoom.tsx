@@ -1,5 +1,6 @@
 // components/ChatRoom.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getMillis } from '../lib/millis';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View,
@@ -38,6 +39,9 @@ import {
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { formatTimeHHmmDisplay } from '../lib/beaconTime';
+import { useBeaconGoing } from '../lib/rsvp';
+import RsvpRallyActions from './RsvpRallyActions';
+import { markChatRead } from '../lib/chatRead';
 import { tap, press, warning, selection } from '../utils/haptics';
 import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -63,6 +67,8 @@ type ChatMessage = {
   subtype?: 'im-in' | string;
   actorUid?: string;
   actorName?: string;
+  /** An RSVP made by rallying (the actor lit their own beacon to bring friends). */
+  rally?: boolean;
   kind?: 'text' | 'gif';
   media?: MediaAttachment;
   reactions?: Record<string, string[]>;
@@ -76,15 +82,6 @@ type ChatRoomProps = {
   targetMessageId?: string;
 };
 
-function getMillis(v: any): number {
-  if (!v) return 0;
-  if (typeof v === 'number') return v;
-  if (v instanceof Date) return v.getTime();
-  if (typeof v.toMillis === 'function') return v.toMillis();
-  if (typeof v.toDate === 'function') return v.toDate().getTime();
-  if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
-  return 0;
-}
 
 function formatMsgTime(d: Date): string {
   const now = new Date();
@@ -454,6 +451,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             subtype: data?.subtype ? String(data.subtype) : undefined,
             actorUid: data?.actorUid ? String(data.actorUid) : undefined,
             actorName: data?.actorName ? String(data.actorName) : undefined,
+            rally: data?.rally === true,
             kind: data?.kind === 'gif' ? 'gif' : 'text',
             media:
               data?.media && typeof data.media?.url === 'string'
@@ -528,24 +526,23 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     }
   }, [messages, targetMessageId]);
 
-  const iAmIn = useMemo(() => {
-    if (!me) return false;
-    return messages.some((m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid);
-  }, [messages, me]);
+  // Everything on screen counts as read (home's chat pill shows the unread badge, lib/chatRead).
+  useEffect(() => {
+    let newest = 0;
+    for (const m of messages) newest = Math.max(newest, m.createdAt.getTime());
+    if (newest) markChatRead(beaconId, newest);
+  }, [messages, beaconId]);
 
-  // Roster derived from state: the beacon lighter counts as 1, plus each DISTINCT
-  // im-in actor (excluding the owner so they are never double-counted).
-  const attendees = useMemo(() => {
-    const byUid = new Map<string, string>();
-    for (const m of messages) {
-      if (m.type !== 'system' || m.subtype !== 'im-in') continue;
-      if (!m.actorUid || m.actorUid === ownerUid) continue;
-      if (!byUid.has(m.actorUid)) byUid.set(m.actorUid, (m.actorName || 'Someone').trim() || 'Someone');
-    }
-    const names = ownerName ? [ownerName] : [];
-    for (const n of byUid.values()) names.push(n);
-    return { count: 1 + byUid.size, names };
-  }, [messages, ownerUid, ownerName]);
+  // Roster from the shared RSVP listener (lib/rsvp), the same source as the home tiles and the
+  // owner's going line, so every surface agrees. The lighter counts as 1, plus each distinct RSVP.
+  const rsvp = useBeaconGoing(beaconId, ownerUid || null);
+  const attendees = useMemo(
+    () => ({
+      count: 1 + rsvp.going.length,
+      names: [...(ownerName ? [ownerName] : []), ...rsvp.going.map((g) => g.name)],
+    }),
+    [rsvp.going, ownerName]
+  );
 
   // Copy of the parent beacon's audience for outgoing writes. OMITTED (not sent as []) until the
   // beacon doc has delivered a real list: the create rule allows an ABSENT copy (the trigger
@@ -625,55 +622,6 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         Alert.alert('Send failed', 'Please try again.');
       }
     })();
-  };
-
-  const handleImIn = async () => {
-    if (!me || iAmIn) return;
-    try {
-      const actorName = await resolveMyName(me.uid);
-      const col = collection(db, 'Beacons', beaconId, 'ChatMessages');
-      const expiresAt = expiresAtRef.current ? Timestamp.fromMillis(expiresAtRef.current) : null;
-
-      await addDoc(col, {
-        type: 'system',
-        subtype: 'im-in',
-        actorUid: me.uid,
-        actorName,
-        // authorUid mirrors actorUid so the owner can delete their own RSVP:
-        // the ChatMessages delete rule keys off authorUid. It's inert everywhere
-        // else (roster, notifications, and the account sweep all read actorUid).
-        authorUid: me.uid,
-        ...audienceCopy(),
-        text: `${actorName} is in`,
-        createdAt: serverTimestamp(),
-        ...(expiresAt ? { expiresAt } : {}),
-      });
-
-      pendingScrollRef.current = true;
-    } catch {
-      // Generic on purpose: if someone can see this chat, telling them the beacon "isn't shared
-      // with them" reads as an accusation and is usually OUR stamping bug, not their standing.
-      Alert.alert("Couldn't set status", 'Please try again.');
-    }
-  };
-
-  const handleUndoImIn = async () => {
-    if (!me || !iAmIn) return;
-    tap();
-    // The "going" count, the roster, and the button state all derive from the
-    // im-in system messages, so removing mine reverts all three at once. Delete
-    // every match in case an offline retry ever left a duplicate behind.
-    const mine = messages.filter(
-      (m) => m.type === 'system' && m.subtype === 'im-in' && m.actorUid === me.uid
-    );
-    if (mine.length === 0) return;
-    try {
-      await Promise.all(
-        mine.map((m) => deleteDoc(doc(db, 'Beacons', beaconId, 'ChatMessages', m.id)))
-      );
-    } catch {
-      Alert.alert("Couldn't undo", 'Please try again.');
-    }
   };
 
   const openMenu = (msg: ChatMessage) => {
@@ -824,30 +772,14 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           </Text>
         </Pressable>
 
-        {/* "I'm in" is a fully separate overlay: it does NOT touch the centered title/date/going
-            column (that block is left exactly as it was). It floats in the right half of the header,
-            centered in the gap right of the going chip and bottom-aligned to sit level with it. */}
-        <View style={styles.imInWrap} pointerEvents="box-none">
-          {iAmIn ? (
-            <Pressable
-              onPress={handleUndoImIn}
-              style={({ pressed }) => [styles.imInChip, styles.imInChipDone, pressed && { opacity: 0.85 }]}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="You're in. Tap to undo."
-            >
-              <Text style={[styles.imInText, styles.imInTextDone]}>✓ I&apos;m in</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              onPress={handleImIn}
-              style={({ pressed }) => [styles.imInChip, { backgroundColor: tc.primary }, pressed && { opacity: 0.9 }]}
-              hitSlop={8}
-            >
-              <Text style={styles.imInText}>I&apos;m in</Text>
-            </Pressable>
-          )}
-        </View>
+        {/* RSVP / Rally: a fully separate overlay in the right slice of the header; it does NOT touch
+            the centered title/date/going column. Hidden for the beacon's owner: they're already
+            counted as going. */}
+        {!!ownerUid && ownerUid !== me?.uid && (
+          <View style={styles.imInWrap} pointerEvents="box-none">
+            <RsvpRallyActions ogId={beaconId} ogOwnerUid={ownerUid} ogOwnerName={ownerName} />
+          </View>
+        )}
       </View>
 
       {!!beaconMessage && (
@@ -960,9 +892,9 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                   <View style={[styles.systemRow, { backgroundColor: tc.inputBg }]}>
                     {isRsvp ? (
                       <Text style={styles.systemText}>
-                        <Text>🔥 </Text>
+                        <Text>{item.rally ? '🔥 ' : '✓ '}</Text>
                         <Text style={{ color: tc.primary, fontWeight: '800' }}>{item.actorName || 'Someone'}</Text>
-                        <Text style={{ color: tc.subtle }}> is in</Text>
+                        <Text style={{ color: tc.subtle }}>{item.rally ? ' is rallying their friends' : ' is going'}</Text>
                       </Text>
                     ) : (
                       <Text style={[styles.systemText, { color: tc.subtle }]}>{item.text}</Text>
@@ -973,19 +905,19 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             }
 
             const mine = item.authorUid === me?.uid;
-            // Group consecutive messages from the same sender within 3 minutes: tighter spacing,
-            // sender name only on the first of a THEIR-group, timestamp only on the last of a group.
+            // Compact layout: consecutive messages from the same sender within 10 minutes group
+            // (tight 2px spacing, sender name only on the first of a THEIR-group). A time shows only
+            // when 10+ minutes have passed since the previous message (or a new day starts), riding
+            // on the name line ("Maya · 1:13 AM"), or on its own small line for my messages. No
+            // per-message timestamp row.
             const prev = messages[index - 1];
-            const next = messages[index + 1];
-            const GROUP_MS = 3 * 60 * 1000;
+            const GROUP_MS = 10 * 60 * 1000;
+            const gapMs = prev ? item.createdAt.getTime() - prev.createdAt.getTime() : Infinity;
             const samePrev =
-              !!prev && prev.type !== 'system' && prev.authorUid === item.authorUid &&
-              item.createdAt.getTime() - prev.createdAt.getTime() < GROUP_MS;
-            const sameNext =
-              !!next && next.type !== 'system' && next.authorUid === item.authorUid &&
-              next.createdAt.getTime() - item.createdAt.getTime() < GROUP_MS;
+              !!prev && prev.type !== 'system' && prev.authorUid === item.authorUid && gapMs < GROUP_MS;
             const showName = !mine && !samePrev;
-            const showTime = !sameNext;
+            const showTime = showDay || gapMs >= GROUP_MS;
+            const timeLabel = showTime ? formatMsgTime(item.createdAt) : '';
             const isGif = item.kind === 'gif' && !!item.media?.url;
 
             return (
@@ -995,15 +927,18 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                 style={[
                   styles.msgRow,
                   mine ? styles.msgRowMine : styles.msgRowTheirs,
-                  { marginTop: samePrev ? 2 : 10 },
+                  { marginTop: samePrev ? 2 : 6 },
                 ]}
               >
                 <View style={[styles.msgCol, { alignItems: mine ? 'flex-end' : 'flex-start' }]}>
-                  {showName && (
+                  {showName ? (
                     <Text style={[styles.senderName, { color: tc.subtle }]} numberOfLines={1}>
                       {item.authorName || 'Friend'}
+                      {timeLabel ? <Text style={styles.senderTime}>{`  ·  ${timeLabel}`}</Text> : null}
                     </Text>
-                  )}
+                  ) : timeLabel ? (
+                    <Text style={[styles.senderName, styles.senderTime, { color: tc.subtle }]}>{timeLabel}</Text>
+                  ) : null}
                   <Pressable
                     onPress={isGif ? () => { tap(); setGifViewer(item.media!.url); } : undefined}
                     onLongPress={() => openMenu(item)}
@@ -1035,7 +970,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                     )}
                   </Pressable>
                   {item.reactions && Object.values(item.reactions).some((u) => u.length > 0) && (
-                    <View style={[styles.reactionChipsRow, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
+                    <View style={[styles.reactionChipsRow, mine ? styles.reactionsMine : styles.reactionsTheirs]}>
                       {Object.entries(item.reactions)
                         .filter(([, u]) => u.length > 0)
                         .map(([em, u]) => {
@@ -1060,9 +995,6 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                           );
                         })}
                     </View>
-                  )}
-                  {showTime && (
-                    <Text style={[styles.msgTime, { color: tc.subtle }]}>{formatMsgTime(item.createdAt)}</Text>
                   )}
                 </View>
               </View>
@@ -1282,7 +1214,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E5E7EB',
     backgroundColor: '#F8FAFF',
   },
-  // "I'm in" overlay. Occupies the right slice of the header (left:'65%' -> right:0) and centers its
+  // RSVP / Rally overlay. Occupies the right slice of the header (left:'65%' -> right:0) and centers its
   // content, so the chip sits closer to the right edge (roughly halving the old gap to the container
   // edge) while staying clear of the centered going chip. Bottom padding matches the header's
   // paddingVertical so it sits level with the going chip's bottom. This is a pure overlay: it never
@@ -1333,16 +1265,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 16,
   },
-
-  imInChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: '#2F6FED',
-  },
-  imInText: { color: '#fff', fontWeight: '800', fontSize: 13 },
-  imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
-  imInTextDone: { color: '#065F46' },
 
   beaconMsgSection: {
     paddingHorizontal: 10,
@@ -1496,7 +1418,7 @@ const styles = StyleSheet.create({
 
   msgCol: { maxWidth: '82%' },
   senderName: { fontSize: 11, fontWeight: '600', marginBottom: 2, marginHorizontal: 6 },
-  msgTime: { fontSize: 10, marginTop: 3, marginHorizontal: 4 },
+  senderTime: { fontWeight: '400', fontSize: 10 },
   gifBubble: {
     padding: 3,
     borderRadius: 16,
@@ -1518,7 +1440,10 @@ const styles = StyleSheet.create({
   },
   reactionEmojiBtn: { padding: 8, borderRadius: 999 },
   reactionEmoji: { fontSize: 24 },
-  reactionChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  // Reactions tuck up over the bubble's bottom corner (iMessage-style) instead of taking a row.
+  reactionChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: -8, marginBottom: 2, zIndex: 2 },
+  reactionsMine: { justifyContent: 'flex-end', marginRight: 8 },
+  reactionsTheirs: { justifyContent: 'flex-start', marginLeft: 8 },
   reactionChip: {
     flexDirection: 'row',
     alignItems: 'center',

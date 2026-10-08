@@ -10,7 +10,7 @@ import LakeshoreScene from './scenes/LakeshoreScene';
 import CampfireScene from './scenes/CampfireScene';
 import OldGuardScene from './scenes/OldGuardScene';
 import BonfireScene from './scenes/BonfireScene';
-import BeaconsScene from './scenes/BeaconsScene';
+import BeaconsScene, { type ScenePerson } from './scenes/BeaconsScene';
 import AuroraScene from './scenes/AuroraScene';
 import TowerScene from './scenes/TowerScene';
 import SmokeSignalScene from './scenes/SmokeSignalScene';
@@ -28,6 +28,8 @@ export type BeaconSceneProps = {
   anchorX?: number;
   anchorY?: number;
   measured?: boolean;
+  /** Real people for skins that show them (The Beacons' chain): see BeaconsScene. */
+  people?: ScenePerson[];
 };
 
 function BeaconScene(props: BeaconSceneProps) {

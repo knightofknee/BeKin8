@@ -1,5 +1,6 @@
 // components/PostComments.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getMillis } from '../lib/millis';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
@@ -63,15 +64,6 @@ type Props = {
   targetCommentId?: string;
 };
 
-function getMillis(v: any): number {
-  if (!v) return 0;
-  if (typeof v === 'number') return v;
-  if (v instanceof Date) return v.getTime();
-  if (typeof v.toMillis === 'function') return v.toMillis();
-  if (typeof v.toDate === 'function') return v.toDate().getTime();
-  if (typeof v.seconds === 'number') return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
-  return 0;
-}
 
 async function resolveMyName(uid: string): Promise<string> {
   try {

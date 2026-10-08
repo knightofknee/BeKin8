@@ -1,10 +1,10 @@
 // components/tutorial/DemoChatRoom.tsx
 // A fully LOCAL demo of the beacon chat, opened by tapping the example "Coffee at the park?"
 // beacon card that zero-friend users see. It looks and behaves like the real ChatRoom (header
-// with date + going count, an I'm in / undo chip, message bubbles, a growing composer that
+// with date + going count, RSVP / Rally chips, message bubbles, a growing composer that
 // really "sends") but every message lives in component state: nothing is written anywhere and
-// NO ONE is notified. The point is to let a brand-new user feel the whole loop, RSVP + chat,
-// before they have a single friend.
+// NO ONE is notified. The point is to let a brand-new user feel the whole loop, RSVP / Rally +
+// chat, before they have a single friend. (Rally here is local too: no beacon is lit.)
 import React, { useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -28,6 +28,8 @@ type DemoMsg = {
   author: 'Alex' | 'Sam' | 'You';
   text: string;
   time: string;
+  /** System RSVP line: rallying (lit their own beacon to bring friends) vs plain going. */
+  rally?: boolean;
 };
 
 const nowTime = () =>
@@ -36,7 +38,7 @@ const nowTime = () =>
 // The seeded conversation: enough back-and-forth to show what a live beacon feels like.
 const SEED: DemoMsg[] = [
   { id: 's1', kind: 'user', author: 'Alex', text: 'Coffee at the park? ☕ I brought the thermos and way too many cups', time: '10:02' },
-  { id: 's2', kind: 'system', author: 'Sam', text: 'Sam is in', time: '10:05' },
+  { id: 's2', kind: 'system', author: 'Sam', text: 'Sam is rallying', time: '10:05', rally: true },
   { id: 's3', kind: 'user', author: 'Sam', text: 'omw! grabbing croissants on the way 🥐', time: '10:06' },
   { id: 's4', kind: 'user', author: 'Alex', text: 'Legend. We are by the big oak near the north entrance', time: '10:09' },
 ];
@@ -46,7 +48,7 @@ export default function DemoChatRoom({ visible, onClose }: { visible: boolean; o
   const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<DemoMsg[]>(SEED);
   const [text, setText] = useState('');
-  const [imIn, setImIn] = useState(false);
+  const [mine, setMine] = useState<'none' | 'going' | 'rallying'>('none');
   const scrollRef = useRef<ScrollView>(null);
   const idRef = useRef(0);
 
@@ -55,7 +57,7 @@ export default function DemoChatRoom({ visible, onClose }: { visible: boolean; o
     if (visible) {
       setMessages(SEED);
       setText('');
-      setImIn(false);
+      setMine('none');
     }
   }, [visible]);
 
@@ -71,21 +73,24 @@ export default function DemoChatRoom({ visible, onClose }: { visible: boolean; o
     scrollDown();
   };
 
-  const toggleImIn = () => {
-    if (imIn) {
+  // Same three states as the real chips (components/RsvpRallyActions), all local.
+  const answer = (next: 'none' | 'going' | 'rallying') => {
+    setMessages((prev) => prev.filter((m) => !(m.kind === 'system' && m.author === 'You')));
+    setMine(next);
+    if (next === 'none') {
       tap();
-      setImIn(false);
-      setMessages((prev) => prev.filter((m) => !(m.kind === 'system' && m.author === 'You')));
       return;
     }
     success();
-    setImIn(true);
     idRef.current += 1;
-    setMessages((prev) => [...prev, { id: `i${idRef.current}`, kind: 'system', author: 'You', text: 'You are in', time: nowTime() }]);
+    setMessages((prev) => [
+      ...prev,
+      { id: `i${idRef.current}`, kind: 'system', author: 'You', text: '', time: nowTime(), rally: next === 'rallying' },
+    ]);
     scrollDown();
   };
 
-  const going = 2 + (imIn ? 1 : 0); // Alex + Sam, plus you
+  const going = 2 + (mine !== 'none' ? 1 : 0); // Alex + Sam, plus you
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -103,17 +108,24 @@ export default function DemoChatRoom({ visible, onClose }: { visible: boolean; o
               <Text style={[styles.goingText, { color: tc.text }]}>{going} going</Text>
             </View>
             <View style={styles.imInWrap} pointerEvents="box-none">
-              <Pressable
-                onPress={toggleImIn}
-                hitSlop={8}
-                style={({ pressed }) => [
-                  styles.imInChip,
-                  imIn ? styles.imInChipDone : { backgroundColor: tc.primary },
-                  pressed && { opacity: 0.9 },
-                ]}
-              >
-                <Text style={[styles.imInText, imIn && styles.imInTextDone]}>{imIn ? "✓ I'm in" : "I'm in"}</Text>
-              </Pressable>
+              {mine === 'rallying' ? (
+                <Pressable onPress={() => answer('none')} hitSlop={6} style={[styles.imInChip, styles.rallyingChip]}>
+                  <Text style={[styles.imInText, styles.rallyingText]}>🔥 Rallying</Text>
+                </Pressable>
+              ) : (
+                <>
+                  <Pressable
+                    onPress={() => answer(mine === 'going' ? 'none' : 'going')}
+                    hitSlop={6}
+                    style={[styles.imInChip, mine === 'going' ? styles.imInChipDone : { backgroundColor: tc.primary }]}
+                  >
+                    <Text style={[styles.imInText, mine === 'going' && styles.imInTextDone]}>{mine === 'going' ? '✓ Going' : 'RSVP'}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => answer('rallying')} hitSlop={6} style={[styles.imInChip, styles.rallyChip]}>
+                    <Text style={styles.imInText}>Rally</Text>
+                  </Pressable>
+                </>
+              )}
             </View>
             <Pressable onPress={onClose} hitSlop={10} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close demo chat">
               <Ionicons name="close" size={22} color={tc.subtle} />
@@ -138,9 +150,13 @@ export default function DemoChatRoom({ visible, onClose }: { visible: boolean; o
               m.kind === 'system' ? (
                 <View key={m.id} style={[styles.systemRow, { backgroundColor: tc.inputBg }]}>
                   <Text style={styles.systemText}>
-                    <Text>🔥 </Text>
+                    <Text>{m.rally ? '🔥 ' : '✓ '}</Text>
                     <Text style={{ color: tc.primary, fontWeight: '800' }}>{m.author === 'You' ? 'You' : m.author}</Text>
-                    <Text style={{ color: tc.subtle }}>{m.author === 'You' ? ' are in' : ' is in'}</Text>
+                    <Text style={{ color: tc.subtle }}>
+                      {m.rally
+                        ? m.author === 'You' ? ' are rallying your friends' : ' is rallying their friends'
+                        : m.author === 'You' ? ' are going' : ' is going'}
+                    </Text>
                   </Text>
                 </View>
               ) : (
@@ -226,8 +242,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     paddingBottom: 10,
+    gap: 6,
   },
-  imInChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999 },
+  imInChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, minWidth: 74, alignItems: 'center' },
+  rallyChip: { backgroundColor: '#F97316' },
+  rallyingChip: { backgroundColor: '#FFEDD5', borderWidth: 1, borderColor: '#FDBA74' },
+  rallyingText: { color: '#9A3412' },
   imInText: { color: '#fff', fontWeight: '800', fontSize: 13 },
   imInChipDone: { backgroundColor: '#E6FCEB', borderWidth: 1, borderColor: '#A7F3D0' },
   imInTextDone: { color: '#065F46' },

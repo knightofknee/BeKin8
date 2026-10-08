@@ -4,14 +4,16 @@
 // hand-crafted ridgeline silhouettes recede into blue haze (nearest darkest and lowest, each
 // farther ridge lighter and higher, sparse snow ticks on the far peaks). The nearest ridge carries
 // a flat ledge aligned to the structure box via anchorX/anchorY: your pyre stands on rock.
-// HERO: seven distant beacon fires zigzag up the range on successive ridges. Lighting your pyre
-// kindles them ONE BY ONE down the chain (2.2s after ignition, then ~1.75s per link: a watcher has
-// to SEE the previous light and run out to light theirs, so the wave travels slowly, each a quick
-// bloom that settles into a gentle 0.75..1 flicker); extinguishing dims them all to faint embers.
-// First mount while already lit shows the whole chain steady-on, no cascade replay.
+// HERO: seven beacon piles zigzag up the range on successive ridges, and every lit one is a REAL
+// PERSON: home passes `people` = the friends who said "I'm in" to your lit beacon (the chain
+// ANSWERING your signal; nobody while yours is out). Person i takes pile i, nearest first, with
+// their first name under the flame. Piles with nobody on them stay dark and unlit (a static silhouette
+// with a cool rim, no glow), so the waiting reads. A person arriving kindles their pile with a
+// quick bloom; on the lit edge the already-answered piles kindle ONE BY ONE (2.2s, then ~1.75s per
+// link, the watchers seeing each other's light). First mount shows the current state steady.
 import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Path, Ellipse, G } from 'react-native-svg';
+import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Path, Ellipse, G, Text as SvgText } from 'react-native-svg';
 import Animated, {
   useSharedValue,
   useAnimatedProps,
@@ -27,8 +29,18 @@ import { useGatedClock } from '../../lib/useGatedClock';
 import type { BeaconSkin } from '../../lib/beaconSkins';
 
 const AnimatedG = Animated.createAnimatedComponent(G);
+const AnimatedPath = Animated.createAnimatedComponent(Path);
 
-const DIM = 0.12; // barely-visible ember state of a distant beacon while yours is out
+// Chain glyphs (pile + flame) drawn a touch larger than the original fire points, so each one can
+// carry a name.
+const GLYPH = 1.2;
+const MAX_LABEL = 9;
+// Relay pacing on your lit edge: the first answered pile catches RELAY_FIRST_MS after ignition, then
+// one per RELAY_STEP_MS (each watcher sees the last light). A later arrival kindles after ARRIVE_MS.
+// Exported so the style preview can time its staged late arrival against the same clock.
+export const RELAY_FIRST_MS = 2200;
+export const RELAY_STEP_MS = 1750;
+export const ARRIVE_MS = 250; // first names longer than this get an ellipsis (the far piles are tiny)
 const BLOOM = 1.35; // envelope overshoot on kindle; opacity clamps at 1 so it reads as a bright pop
 
 // Faint pre-dawn stars. Opacity is baked per star and thins with y so they fade into the horizon
@@ -76,6 +88,16 @@ const CHAIN = [
 const flamePath = (x: number, y: number, s: number) =>
   `M${x} ${y} C${x - s} ${y - s * 1.2} ${x - s * 0.5} ${y - s * 2.2} ${x} ${y - s * 2.7} C${x + s * 0.5} ${y - s * 2.2} ${x + s} ${y - s * 1.2} ${x} ${y} Z`;
 
+// A distant beacon PILE seated on its peak: a squat stack of crossed logs, (x,y) = top-center of the
+// stack where the flame sits. Width ~2.6s, height ~1.3s, so even the farthest (s 2.5) still reads.
+const pilePath = (x: number, y: number, s: number) =>
+  `M${x - 1.3 * s} ${y + 1.3 * s} L${x - 0.75 * s} ${y + 0.1 * s} L${x - 0.2 * s} ${y + 0.35 * s} L${x} ${y - 0.05 * s}` +
+  ` L${x + 0.2 * s} ${y + 0.35 * s} L${x + 0.75 * s} ${y + 0.1 * s} L${x + 1.3 * s} ${y + 1.3 * s} Z`;
+// Cool moonlit rim along the pile's top edge (unlit readability without any glow).
+const pileRimPath = (x: number, y: number, s: number) =>
+  `M${x - 1.3 * s} ${y + 1.3 * s} L${x - 0.75 * s} ${y + 0.1 * s} L${x - 0.2 * s} ${y + 0.35 * s} L${x} ${y - 0.05 * s}` +
+  ` L${x + 0.2 * s} ${y + 0.35 * s} L${x + 0.75 * s} ${y + 0.1 * s}`;
+
 function ridgePath(pts: ReadonlyArray<readonly [number, number]>, W: number, H: number, crestY: number, span: number): string {
   let d = `M-2 ${(crestY - pts[0][1] * span).toFixed(1)}`;
   for (const [xf, dy] of pts) d += ` L${(xf * W).toFixed(1)} ${(crestY - dy * span).toFixed(1)}`;
@@ -86,6 +108,11 @@ function ridgePath(pts: ReadonlyArray<readonly [number, number]>, W: number, H: 
 const snowPath = (x: number, y: number) =>
   `M${(x - 7).toFixed(1)} ${(y + 5).toFixed(1)} L${x.toFixed(1)} ${y.toFixed(1)} L${(x + 6).toFixed(1)} ${(y + 4).toFixed(1)}`;
 
+function shortName(name: string): string {
+  const first = (name || '').trim().split(/\s+/)[0] || '';
+  return first.length > MAX_LABEL ? `${first.slice(0, MAX_LABEL - 1)}…` : first;
+}
+
 type ChainFireProps = {
   env: SharedValue<number>;
   clock: SharedValue<number>;
@@ -94,27 +121,62 @@ type ChainFireProps = {
   x: number;
   y: number;
   s: number;
+  label: string;
 };
 
-function ChainFire({ env, clock, motion, seed, x, y, s }: ChainFireProps) {
+function ChainFire({ env, clock, motion, seed, x, y, s, label }: ChainFireProps) {
   const props = useAnimatedProps(() => {
     // Organic 0.75..1 flicker while motion runs; the flicker mean when frozen (reduce, unfocused,
-    // or unlit) so end states hold perfectly still. env overshoots 1 on kindle; opacity clamps.
+    // or nobody lit) so end states hold perfectly still. env overshoots 1 on kindle; opacity clamps.
     let n = loopNoise(clock.value, seed);
     n = n < 0 ? 0 : n > 1 ? 1 : n;
     const flick = motion.value === 1 ? 0.75 + 0.25 * n : 0.875;
     const o = env.value * flick;
     return { opacity: o > 1 ? 1 : o };
   });
+  // The name fades in with the fire (no flicker on text).
+  const labelProps = useAnimatedProps(() => {
+    const o = env.value;
+    return { opacity: o > 1 ? 1 : o < 0 ? 0 : o };
+  });
+  // The pile warms from a cool rim to an ember-lit rim as it catches.
+  const rimProps = useAnimatedProps(() => {
+    const o = env.value;
+    return { opacity: 1 - (o > 1 ? 1 : o) };
+  });
+  const warmRimProps = useAnimatedProps(() => {
+    const o = env.value;
+    return { opacity: o > 1 ? 1 : o };
+  });
+  const fontSize = 9 + (s - 2.5) * 0.75;
+  const ly = y + 1.3 * s + fontSize + 2;
   return (
-    <AnimatedG animatedProps={props}>
-      {/* small, contained glow (a dim distant point, never a blob over the tile band) */}
-      <Circle cx={x} cy={y - s} r={s * 1.5} fill="url(#bcnGlow)" />
-      <Path d={flamePath(x, y, s)} fill="url(#bcnFlame)" />
-      <Path d={flamePath(x, y - s * 0.15, s * 0.55)} fill="#FFF7D6" />
-    </AnimatedG>
+    <G>
+      <Path d={pilePath(x, y, s)} fill="#070C16" />
+      <AnimatedPath animatedProps={rimProps} d={pileRimPath(x, y, s)} stroke="#5E7397" strokeWidth={0.9} fill="none" strokeLinejoin="round" />
+      <AnimatedPath animatedProps={warmRimProps} d={pileRimPath(x, y, s)} stroke="#FFB45E" strokeWidth={1} fill="none" strokeLinejoin="round" />
+      <AnimatedG animatedProps={props}>
+        {/* small, contained glow (a dim distant point, never a blob over the tile band) */}
+        <Circle cx={x} cy={y - s} r={s * 1.5} fill="url(#bcnGlow)" />
+        <Path d={flamePath(x, y, s)} fill="url(#bcnFlame)" />
+        <Path d={flamePath(x, y - s * 0.15, s * 0.55)} fill="#FFF7D6" />
+      </AnimatedG>
+      {label ? (
+        <AnimatedG animatedProps={labelProps}>
+          <SvgText x={x + 0.8} y={ly + 0.8} fontSize={fontSize} fontWeight="700" fill="#000" opacity={0.75} textAnchor="middle">
+            {label}
+          </SvgText>
+          <SvgText x={x} y={ly} fontSize={fontSize} fontWeight="700" fill="#FFE2B8" textAnchor="middle">
+            {label}
+          </SvgText>
+        </AnimatedG>
+      ) : null}
+    </G>
   );
 }
+
+/** A real person on the chain: someone who said "I'm in" to your beacon. */
+export type ScenePerson = { id: string; name: string };
 
 export type BeaconsSceneProps = {
   skin: BeaconSkin;
@@ -124,48 +186,68 @@ export type BeaconsSceneProps = {
   anchorX?: number;
   anchorY?: number;
   measured?: boolean;
+  /** Who is on the chain, nearest pile first (see the header). Beyond 7, the last pile says "+N". */
+  people?: ScenePerson[];
 };
 
-export default function BeaconsScene({ skin, active, focused = true, anchorX, anchorY, measured = false }: BeaconsSceneProps) {
+export default function BeaconsScene({ skin, active, focused = true, anchorX, anchorY, measured = false, people = [] }: BeaconsSceneProps) {
   const { width: W, height: H } = useWindowDimensions();
   const reduce = useReducedMotion();
 
-  // Cascade envelope per chain fire. Explicit hooks (never map over hooks, Rules of Hooks); this
-  // list MUST stay in sync with CHAIN.length (7).
-  const env0 = useSharedValue(active ? 1 : DIM);
-  const env1 = useSharedValue(active ? 1 : DIM);
-  const env2 = useSharedValue(active ? 1 : DIM);
-  const env3 = useSharedValue(active ? 1 : DIM);
-  const env4 = useSharedValue(active ? 1 : DIM);
-  const env5 = useSharedValue(active ? 1 : DIM);
-  const env6 = useSharedValue(active ? 1 : DIM);
+  // Who sits on each pile. Past 7 people the last pile stands for everyone left ("+N").
+  const n = Math.min(people.length, CHAIN.length);
+  const labels = CHAIN.map((_, i) => {
+    if (i >= n) return '';
+    if (i === CHAIN.length - 1 && people.length > CHAIN.length) return `+${people.length - (CHAIN.length - 1)}`;
+    return shortName(people[i].name);
+  });
+
+  // Envelope per pile: 1 = burning, 0 = dark pile. Explicit hooks (never map over hooks, Rules of
+  // Hooks); this list MUST stay in sync with CHAIN.length (7).
+  const env0 = useSharedValue(n > 0 ? 1 : 0);
+  const env1 = useSharedValue(n > 1 ? 1 : 0);
+  const env2 = useSharedValue(n > 2 ? 1 : 0);
+  const env3 = useSharedValue(n > 3 ? 1 : 0);
+  const env4 = useSharedValue(n > 4 ? 1 : 0);
+  const env5 = useSharedValue(n > 5 ? 1 : 0);
+  const env6 = useSharedValue(n > 6 ? 1 : 0);
   const envs = [env0, env1, env2, env3, env4, env5, env6];
   const prevActive = useRef(active);
+  const prevN = useRef(n);
   useEffect(() => {
     const wasActive = prevActive.current;
+    const hadN = prevN.current;
     prevActive.current = active;
-    if (active) {
-      // Cascade only on a real unlit -> lit edge; first mount while already lit (or any re-run
-      // like a reduce toggle) jumps straight to steady-on, never replaying the ignition.
-      const cascade = !wasActive && !reduce;
-      envs.forEach((e, i) => {
+    prevN.current = n;
+    // On your lit edge every answered pile kindles in sequence down the chain, the LOTR relay. Any
+    // other change only touches the piles that actually changed: a new "I'm in" kindles just its
+    // pile, a friend putting theirs out lets just theirs go dark. Nothing replays on first mount.
+    const relay = active && !wasActive && !reduce;
+    // A lit-state flip resets which piles count as already burning.
+    const flipped = wasActive !== active;
+    envs.forEach((e, i) => {
+      const on = i < n;
+      const wasOn = i < hadN && !flipped;
+      if (on && (relay || !wasOn)) {
         cancelAnimation(e);
-        if (!cascade) { e.value = 1; return; }
+        if (reduce) { e.value = 1; return; }
+        e.value = 0;
+        const delay = relay ? RELAY_FIRST_MS + i * RELAY_STEP_MS : flipped ? 700 + i * 400 : ARRIVE_MS + Math.max(0, i - hadN) * 900;
         e.value = withDelay(
-          // Slow narrative pace: each watcher sees the previous beacon, then lights their own.
-          2200 + i * 1750,
+          Math.max(0, delay),
           withSequence(withTiming(BLOOM, { duration: 220 }), withTiming(1, { duration: 480 }))
         );
-      });
-    } else {
-      envs.forEach((e) => { cancelAnimation(e); e.value = reduce ? DIM : withTiming(DIM, { duration: 600 }); });
-    }
+      } else if (!on) {
+        cancelAnimation(e);
+        e.value = reduce ? 0 : withTiming(0, { duration: 600 });
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, reduce]);
+  }, [active, n, reduce]);
 
-  // Scene clock for the chain flicker (shared gated clock: registered + paused while gated); the
-  // flicker only exists while lit, so `active` gates it too (BeaconScene clock pattern).
-  const { clock, motion } = useGatedClock(focused && !reduce && active);
+  // Scene clock for the chain flicker (shared gated clock: registered + paused while gated). Runs
+  // whenever any pile burns.
+  const { clock, motion } = useGatedClock(focused && !reduce && n > 0);
 
   // Warm ground light on the ledge under your own pyre while lit.
   const litOp = useSharedValue(active ? 1 : 0);
@@ -270,7 +352,7 @@ export default function BeaconsScene({ skin, active, focused = true, anchorX, an
           <Ellipse cx={ax} cy={nearTop + 4} rx={112} ry={42} fill="url(#bcnLedge)" />
         </AnimatedG>
 
-        {/* the answering chain, kindling one by one up the range */}
+        {/* the chain: one pile per real person, nearest first (see the header) */}
         {CHAIN.map((c, i) => (
           <ChainFire
             key={`bcnF${i}`}
@@ -279,8 +361,9 @@ export default function BeaconsScene({ skin, active, focused = true, anchorX, an
             motion={motion}
             seed={c.seed}
             x={W * c.x}
-            y={nearTop - c.lift * span - 2}
-            s={c.s}
+            y={nearTop - c.lift * span - 2 - 1.3 * c.s * GLYPH}
+            s={c.s * GLYPH}
+            label={labels[i]}
           />
         ))}
 

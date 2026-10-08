@@ -29,7 +29,7 @@ const { Timestamp, FieldValue } = admin.firestore;
 const FAKES = [
   { uid: 'seed_maya',   username: 'maya',     displayName: 'Maya',   color: '#EC4899' },
   { uid: 'seed_jordan', username: 'jordan_k', displayName: 'Jordan', color: '#3B82F6' },
-  { uid: 'seed_dev',    username: 'devp',     displayName: 'Dev',    color: '#10B981' },
+  { uid: 'seed_dev',    username: 'devp',     displayName: 'Devin',  color: '#10B981' },
   { uid: 'seed_sam',    username: 'sammy',    displayName: 'Sam',    color: '#F59E0B' },
   { uid: 'seed_priya',  username: 'priya',    displayName: 'Priya',  color: '#8B5CF6' },
 ];
@@ -253,7 +253,10 @@ async function seedContent(viewerUid, viewerName) {
       updatedAt: created,
       startAt: Timestamp.fromDate(startOfDay(day)),
       expiresAt: Timestamp.fromDate(endOfDay(day)),
-      groupIds: [],
+      // Scoped to seed groups that together hold exactly the five fakes. The viewer is a REAL
+      // account with real friends: unscoped, every re-seed announced "<viewer> lit a beacon" to
+      // them (the server notifies all friends on a beacon's first light) and showed them the tile.
+      groupIds: [`${viewerUid}__seed_group_close`, `${viewerUid}__seed_group_climbing`],
       timeHHmm: '18:00',
       audienceUids: audienceOf(viewerUid),
       seed: true,
@@ -347,9 +350,8 @@ async function seedContent(viewerUid, viewerName) {
   }
 
   // ---- Friend groups for the viewer (shown in the beacon options sheet) ----------------------
-  // The tutorial's throwaway "test" group is removed so it never shows up in a screenshot; the
-  // app recreates it on demand if a tour runs again.
-  ops.push((b) => b.delete(db.doc(`FriendGroups/${viewerUid}__tutorial_test`)));
+  // The viewer's "test" group is left alone: every account is meant to have it (the app creates it
+  // on home mount if missing).
   const groupPlan = [
     { id: 'seed_group_close',    name: 'Close friends', members: ['seed_maya', 'seed_jordan', 'seed_priya'] },
     { id: 'seed_group_climbing', name: 'Climbing crew', members: ['seed_dev', 'seed_sam'] },

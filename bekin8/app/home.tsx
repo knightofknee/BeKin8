@@ -1,5 +1,7 @@
 // app/home.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getMillis } from '../lib/millis';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View,
   Text,
@@ -34,6 +36,10 @@ import BeaconEmberColumn from '../components/BeaconEmberColumn';
 import BeaconPrintFire from '../components/BeaconPrintFire';
 import BeaconBonfireFlame from '../components/BeaconBonfireFlame';
 import StylePreview from '../components/StylePreview';
+import StokeModal from '../components/StokeModal';
+import type { ScenePerson } from '../components/scenes/BeaconsScene';
+import { enableDefaultNotifyFlags, goingNames, useBeaconGoing } from '../lib/rsvp';
+import { useUnreadCount } from '../lib/chatRead';
 // Centerpiece fire is the GPU Skia shader. The original SVG flame it was A/B'd against is gone:
 // the flag had been pinned on for every skin built since, so the SVG path was unreachable code
 // that still carried three rules-of-hooks violations.
@@ -67,7 +73,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { syncPushTokenIfGranted, ensurePushPermissionsAndToken } from '../lib/push';
 import * as Notifications from 'expo-notifications';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
-import { buildTimeHHmm, parseTimeHHmm, formatTimeHHmmDisplay } from '../lib/beaconTime';
+import { beaconExpiry, beaconStillLive, buildTimeHHmm, parseTimeHHmm, formatTimeHHmmDisplay } from '../lib/beaconTime';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
@@ -110,16 +116,6 @@ function sameDay(a: Date, b: Date) {
     a.getDate() === b.getDate()
   );
 }
-function getMillis(v: any): number {
-  if (!v) return 0;
-  if (typeof v === 'number') return v;
-  if (v instanceof Date) return v.getTime();
-  if (typeof v.toMillis === 'function') return v.toMillis();
-  if (typeof v.toDate === 'function') return v.toDate().getTime();
-  if (typeof v.seconds === 'number')
-    return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
-  return 0;
-}
 
 // Compute the calendar-day anchors together (today's start, the 7-day window end, and the day chips)
 // so they always agree and can be refreshed atomically when the day rolls over. `dayKey` is a stable
@@ -142,6 +138,9 @@ function computeDayAnchor() {
 }
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
+const FRIEND_NOTIF_ASK_KEY = '@bekin_friend_notif_ask_at';
+// Warm text for the ember chat pill.
+const EMBER_TEXT = '#FDE7B0';
 // Pre-filled into the very first beacon during the onboarding tutorial so new users
 // announce that they've joined. Only used for the guided first beacon, never the default.
 const FIRST_BEACON_INTRO = 'Testing out my beacon';
@@ -165,6 +164,11 @@ export default function HomeScreen() {
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
   const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(null);
+  const [myStokeReady, setMyStokeReady] = useState(false);
+  // Ids of my beacons the server has already announced (lastNotifiedAt): relighting one sends no
+  // second "lit a beacon" push, so its light confirm must not promise one.
+  const [announcedIds, setAnnouncedIds] = useState<Set<string>>(() => new Set());
+  const [stokeOpen, setStokeOpen] = useState(false);
   const [nextPlannedDate, setNextPlannedDate] = useState<Date | null>(null);
   const [plannedMessage, setPlannedMessage] = useState<string>(DEFAULT_BEACON_MESSAGE);
   const [plannedTimeHHmm, setPlannedTimeHHmm] = useState<string | null>(null);
@@ -243,7 +247,7 @@ export default function HomeScreen() {
   // (logs window pos − page window pos). That collapses the whole nesting chain into one offset and
   // is immune to safe-area insets / padding above. REQUIRES styles.page to keep paddingTop:0 and
   // paddingHorizontal:0 with no border, or the flame lands off the logs.
-  // Selected beacon SKIN (device-local pref; default campfire, DEFAULT_SKIN_ID), drives scene,
+  // Selected beacon SKIN (device-local pref; default The Beacons, DEFAULT_SKIN_ID), drives scene,
   // fire, smoke, and structure.
   const [skinId, setSkinId] = useState(DEFAULT_SKIN_ID);
   const skin = getSkin(skinId);
@@ -380,6 +384,9 @@ export default function HomeScreen() {
       // 'granted' is true on iOS once allowed. On Android the boolean is the
       // canonical signal too. If granted, skip, user has already opted in.
       if (perm.granted) return;
+      // Already denied for good (iOS after one "Don't Allow"): the modal's button can't show the
+      // OS prompt anymore, so it would just nag on every light. Settings still covers re-enabling.
+      if (!perm.canAskAgain) return;
       setShowBeaconNotifOnboarding(true);
     } catch {
       // If the permissions check itself fails, don't block the beacon flow.
@@ -389,6 +396,20 @@ export default function HomeScreen() {
   // Prefetch messages for the user's own active beacon so tapping
   // "Open my beacon details" renders chat instantly from cache.
   usePrefetchBeaconMessages([myActiveBeacon?.id]);
+  // Live "who's going" for my lit beacon (the going line under the chat button).
+  const myGoing = useBeaconGoing(isLit ? myActiveBeacon?.id : null, auth.currentUser?.uid);
+  // Friends' messages in my beacon's chat I haven't opened yet (the badge on the Chat pill).
+  const myUnread = useUnreadCount(isLit ? myActiveBeacon?.id : null);
+
+  // The real people the scene shows (The Beacons' chain): the friends going (RSVP'd or rallying)
+  // to my lit beacon; nobody while it's out. Memoized on content so
+  // a same-people snapshot doesn't re-render the scene.
+  const peopleKey = isLit ? myGoing.going.map((g) => `${g.uid}:${g.name}`).join('|') : '';
+  const scenePeople = useMemo<ScenePerson[]>(
+    () => (isLit ? myGoing.going.map((g) => ({ id: g.uid, name: g.name })) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [peopleKey]
+  );
 
   // Deep link: open beacon chatroom from notification
   useEffect(() => {
@@ -495,10 +516,14 @@ export default function HomeScreen() {
       return;
     }
 
+    // From YESTERDAY: a beacon lit last night lives until 4am (beaconExpiry), so after midnight its
+    // owner must still see it lit (and be able to put it out). Yesterday's docs are filtered below.
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
     const qMine = query(
       collection(db, 'Beacons'),
       where('ownerUid', '==', user.uid),
-      where('startAt', '>=', Timestamp.fromDate(todayStart)),
+      where('startAt', '>=', Timestamp.fromDate(yesterdayStart)),
       where('startAt', '<=', Timestamp.fromDate(windowEnd))
     );
 
@@ -507,12 +532,20 @@ export default function HomeScreen() {
       (snap) => {
         let activeDoc: { id: string; data: any } | undefined;
         let plannedSoonest: { id: string; data: any; start: Date } | undefined;
+        const announced = new Set<string>();
+        snap.forEach((d) => { if ((d.data() as any)?.lastNotifiedAt) announced.add(d.id); });
+        setAnnouncedIds(announced);
 
         snap.forEach((d) => {
           const data: any = d.data();
+          // My RALLY beacons are not my plan: the structure is my own beacon only. Rallies live on
+          // the original's tile (lib/rsvp) and stack freely alongside it.
+          if (data?.rallyOf) return;
           const stMs = getMillis(data?.startAt);
           if (!stMs) return;
           const st = new Date(stMs);
+          // Yesterday's beacon only counts while it's still lit and inside its grace window.
+          if (stMs < todayStart.getTime() && !(data?.active && beaconStillLive(stMs, getMillis(data?.expiresAt)))) return;
 
           if (data?.active) {
             if (
@@ -553,6 +586,9 @@ export default function HomeScreen() {
           });
           setIsLit(true);
           setPlannedMessage(msg);
+          // Server-set once the beacon has been relit (it only announces a beacon once): arms the
+          // hidden stoke. Cleared server-side when used.
+          setMyStokeReady(activeDoc.data?.stokeReady === true);
           // Mirror the doc's groups EXACTLY, including the tutorial test group. Filtering test out
           // here made the sheet lie: a deliberately test-scoped beacon showed no group selected, and
           // the next save silently wrote groupIds [] (= all friends). Never overwrites the forced
@@ -564,6 +600,7 @@ export default function HomeScreen() {
         } else {
           setMyActiveBeacon(null);
           setIsLit(false);
+          setMyStokeReady(false);
         }
 
         if (plannedSoonest) {
@@ -774,6 +811,13 @@ export default function HomeScreen() {
     return id;
   }, []);
 
+  // Every account always has the "test" group as a Beacon options choice, not just accounts that ran
+  // a tour (it used to be created only by the tutorial). Cheap: one owner read per home mount, and
+  // a create only when it's genuinely missing.
+  useEffect(() => {
+    if (user?.uid) ensureTestGroup();
+  }, [user?.uid, ensureTestGroup]);
+
   // THE tutorial-safety net: whenever a tour is running on THIS home instance, the selection is
   // test-only. The tour-start preselection alone was not enough: the tour navigates across screens,
   // and a home remount wiped the in-memory selection to [] (= all friends), so a tutorial beacon
@@ -827,18 +871,10 @@ export default function HomeScreen() {
       'Turn on notifications so you know the moment a friend lights a beacon.'
     );
     if (!granted) return; // ensureNotifyPermission emits the permission-change signal on grant
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-    try {
-      await setDoc(
-        doc(db, 'Profiles', uid),
-        { notifyAllBeacons: true, updatedAt: serverTimestamp() },
-        { merge: true }
-      );
-    } catch {
-      // Non-fatal: permission is granted; the master toggle can still be set in Friends/Settings.
-    }
+    // Beacons from all friends + chat pings for beacons they're in. Non-fatal, see the helper.
+    await enableDefaultNotifyFlags();
   };
+
 
   // Build the tour ctx from LIVE state. Used by startBeaconTour AND as the fallback for the live
   // step-update effect: a mid-tour home REMOUNT nulls tourCtxRef, and the gated steps
@@ -1138,6 +1174,39 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAutoStart, isLit, friendsLoaded]);
 
+  // Anyone with a friend should have notifications on: otherwise a friend's beacon never reaches
+  // them (receivers who skip the tour and never light a beacon were never asked). Once they have a
+  // friend and the OS can still prompt, ask, at most every 3 days. Skipped while a tour runs (it has
+  // its own notifications step) and when permission is already settled either way.
+  const hasFriend = onboarding.steps.find((st) => st.key === 'friend')?.done ?? false;
+  const notifSettled = onboarding.steps.find((st) => st.key === 'notifications')?.done ?? true;
+  useEffect(() => {
+    if (!onboarding.loaded || !hasFriend || notifSettled || isActive || pendingAutoStart) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        // Never on a first visit: the auto-shown tour has its own notifications step, and its
+        // start is decided asynchronously, so only ask once the tour has been offered.
+        if (tourActiveRef.current || !(await getSeen('beacon_intro'))) return;
+        const perm = await Notifications.getPermissionsAsync();
+        if (cancelled || perm.granted || !perm.canAskAgain) return;
+        const last = Number((await AsyncStorage.getItem(FRIEND_NOTIF_ASK_KEY)) || 0);
+        if (cancelled || Date.now() - last < 3 * 24 * 3_600_000) return;
+        await AsyncStorage.setItem(FRIEND_NOTIF_ASK_KEY, String(Date.now()));
+        const granted = await ensureNotifyPermission(
+          'Your friends are here. Turn on notifications so you know when one of them lights a beacon.'
+        );
+        if (granted) await enableDefaultNotifyFlags();
+      } catch {
+        // best effort; Settings still has the toggle
+      }
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [onboarding.loaded, hasFriend, notifSettled, isActive, pendingAutoStart]);
+
   // Resume the tutorial when navigated here from the resume banner on another screen, optionally
   // jumping to the first incomplete step (?tourTarget=...) or straight to the final step by id
   // (?tourStepId=set-first-beacon, used by the Friends "add a friend" help card's Next).
@@ -1212,6 +1281,15 @@ export default function HomeScreen() {
           'Your beacon is set to your test group, so no friends will be notified. Open Beacon options and deselect the test group to send your beacon to all friends. Or add a friend group to send it to just them.',
       };
     }
+    // Same doc the light path writes (deterministic per day): already announced = a relight.
+    const day = nextPlannedDate ? startOfDay(nextPlannedDate) : startOfDay(new Date());
+    const dayId = `${me}_${day.getFullYear()}${String(day.getMonth() + 1).padStart(2, '0')}${String(day.getDate()).padStart(2, '0')}`;
+    if (me && announcedIds.has(dayId)) {
+      return {
+        title: 'Relight your beacon?',
+        message: "Your friends were notified when you first lit it, so they won't get another notification.",
+      };
+    }
     if (selectedGroupIds.length === 0) {
       return {
         title: 'Light beacon for all friends?',
@@ -1276,7 +1354,7 @@ export default function HomeScreen() {
               const base = startOfDay(new Date());
               const chosen = nextPlannedDate ? startOfDay(nextPlannedDate) : base;
               const sd = startOfDay(chosen);
-              const ed = endOfDay(chosen);
+              const ed = beaconExpiry(chosen); // 4am the next morning, not midnight
 
               const ownerName = profile?.displayName || profile?.username || null;
               // Carry the clock time through the tap-to-light path (like the message + day), so it
@@ -1383,6 +1461,14 @@ export default function HomeScreen() {
     ]);
   };
 
+  // The hidden stoke (components/StokeModal): a long hold on the lit fire, only once the beacon has
+  // been relit and not yet stoked. Otherwise a long hold does nothing at all, by design.
+  const openStoke = () => {
+    if (!isLit || !myActiveBeacon || !myStokeReady || isActive) return;
+    press();
+    setStokeOpen(true);
+  };
+
   // save options. Returns true if the save actually went through (so the tour can advance only then).
   const saveBeaconOptions = async (): Promise<boolean> => {
     press();
@@ -1402,8 +1488,13 @@ export default function HomeScreen() {
       const base = startOfDay(new Date());
       const d = new Date(base);
       d.setDate(base.getDate() + dayOffset);
-      const sd = startOfDay(d);
-      const ed = endOfDay(sd);
+      // Editing LAST NIGHT'S beacon after midnight (still live in its 4am grace): the day chips
+      // start at the new day, so "Today" would silently move it to tonight and give it another
+      // full day. Keep its own day unless a later day was actually picked.
+      const lastNight =
+        isLit && myActiveBeacon && myActiveBeacon.startAt.getTime() < base.getTime() && dayOffset === 0;
+      const sd = lastNight ? startOfDay(myActiveBeacon.startAt) : startOfDay(d);
+      const ed = beaconExpiry(sd); // 4am the next morning, not midnight
 
       const beaconsRef = collection(db, 'Beacons');
       const ownerName = profile?.displayName || profile?.username || null;
@@ -1532,7 +1623,7 @@ export default function HomeScreen() {
         <View ref={pageRef} collapsable={false} style={styles.page}>
           {/* SCENE, backmost layer: each skin's bespoke procedural backdrop (components/scenes/*),
               anchor-aware so scene geometry lines up with the structure. pointerEvents none. */}
-          <BeaconScene skin={skin} active={!!isLit} focused={isFocused} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} />
+          <BeaconScene skin={skin} active={!!isLit} focused={isFocused} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} people={scenePeople} />
           {/* SMOKE, drifts up BEHIND the friend tiles (shown through the gaps; the tile list stays
               in front and untouched). Rises from the measured structure anchor. Registry-driven:
               skin.smokeKind picks the ambient smoke, the smoke-signal puff column, the fireworks
@@ -1588,20 +1679,21 @@ export default function HomeScreen() {
           </View>
 
           {/* marginBottom inline: BottomBar is 64 + max(insets.bottom, 8) tall on-device (99 on
-              notched phones), so the static 72 under-cleared it and the options CTA sat flush
-              against the tab bar. The +34 band is the paddingBottom+CTA-margin that used to live
-              INSIDE this container, moved below it so the absolutely-positioned test-beacon note
-              can appear there without shifting the beacon/CTA a single pixel.
+              notched phones). The +8 is the only gap kept above it: enough that the options card's
+              shadow doesn't run into the bar. (The test-beacon warning that used to need a 34px
+              band here now lives in the card's subtitle.)
               onLayout: re-anchor the fire whenever THIS container's frame shifts (a layout change
               here moves the logs without firing the logs wrapper's own onLayout, which once left
               every skin's flame painted too low after a fast-refresh). */}
           <View
-            style={[styles.controls, { marginBottom: 64 + Math.max(insets.bottom, 8) + 34 }]}
+            style={[styles.controls, { marginBottom: 64 + Math.max(insets.bottom, 8) + 8 }]}
             onLayout={measureBeaconAnchor}
           >
             <View style={styles.myBeaconColumn}>
               <View ref={logsRef} collapsable={false} style={{ position: 'relative' }} onLayout={measureBeaconAnchor}>
-                <TouchableOpacity onPress={toggleBeacon} disabled={toggleBusy} activeOpacity={0.7} style={styles.beaconContainer}>
+                {/* onLongPress is ALWAYS set so a long hold never falls through to a toggle; it only
+                    does something when the hidden stoke is armed (see openStoke). */}
+                <TouchableOpacity onPress={toggleBeacon} onLongPress={openStoke} delayLongPress={600} disabled={toggleBusy} activeOpacity={0.7} style={styles.beaconContainer}>
                   <BeaconStructure skin={skin} size={180} lit={!!isLit} focused={isFocused} />
                 </TouchableOpacity>
 
@@ -1627,19 +1719,35 @@ export default function HomeScreen() {
                 </Pressable>
               </View>
 
-              {/* Fixed-height slot so the logs sit at the SAME height whether the action below is the
-                  (taller) chat button [lit] or the caption [unlit], both center within it. */}
+              {/* Fixed-height slot so the logs sit at the SAME height whether it holds the chat pill
+                  [lit] or the caption [unlit], both centered in it. */}
               <View style={styles.beaconActionSlot}>
                 {isLit && myActiveBeacon ? (
+                  // Compact ember-glass pill. Who's going rides inside it, except on skins whose
+                  // scene already shows the people by name (skin.showsPeople, e.g. The Beacons).
                   <TouchableOpacity
                     ref={chatTarget}
                     onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
                     activeOpacity={0.8}
-                    style={[styles.myChatBtn, { backgroundColor: colors.primary }]}
+                    style={styles.chatPill}
+                    accessibilityRole="button"
+                    accessibilityLabel={myUnread > 0 ? `Open beacon chat, ${myUnread} unread` : 'Open beacon chat'}
                   >
-                    <Text style={[styles.myChatBtnTxt, { color: '#fff' }]}>Open beacon chat</Text>
+                    <Ionicons name="chatbubble-ellipses-outline" size={19} color={EMBER_TEXT} />
+                    <Text style={styles.chatPillTxt} numberOfLines={1}>
+                      Chat
+                      {!skin.showsPeople && myGoing.going.length > 0 ? (
+                        <Text style={styles.chatPillGoing}>{`  ·  ${goingNames(myGoing.going)} going`}</Text>
+                      ) : null}
+                    </Text>
+                    {myUnread > 0 && (
+                      <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadBadgeTxt}>{myUnread > 9 ? '9+' : myUnread}</Text>
+                      </View>
+                    )}
                   </TouchableOpacity>
-                ) : (
+                ) : null}
+                {isLit && myActiveBeacon ? null : (
                   <Text style={[styles.logHint, { color: skin.tap.tint }]}>{unlitCaption}</Text>
                 )}
               </View>
@@ -1658,24 +1766,19 @@ export default function HomeScreen() {
               </View>
               <View style={styles.optionsCtaTextWrap}>
                 <Text style={[styles.optionsCtaTitle, { color: colors.text }]}>Beacon options</Text>
-                <Text style={[styles.optionsCtaSubtitle, { color: colors.subtle }]}>Pick a day • choose friends • add a note</Text>
+                {/* ONLY test selected: that group's members get nothing (audience = union of selected
+                    groups; test adds nobody), so warn here instead of the usual hint. */}
+                {!!user?.uid && selectedGroupIds.length === 1 && selectedGroupIds[0] === `${user.uid}__tutorial_test` ? (
+                  <Text style={[styles.optionsCtaSubtitle, { color: '#F59E0B', fontWeight: '600' }]} numberOfLines={1}>
+                    Test beacon: friends won&apos;t see it
+                  </Text>
+                ) : (
+                  <Text style={[styles.optionsCtaSubtitle, { color: colors.subtle }]} numberOfLines={1}>Pick a day • choose friends • add a note</Text>
+                )}
               </View>
               <Ionicons name="chevron-forward" size={22} color={colors.primary} />
             </Pressable>
           </View>
-
-          {/* Test-scope warning, in the band BETWEEN Beacon options and the nav bar. Absolutely
-              positioned so showing/hiding it never moves the beacon column above. ONLY when test is
-              the sole selection: with a real group alongside, that group's members DO get the
-              beacon (audience = union of selected groups; test just adds nobody). */}
-          {!!user?.uid && selectedGroupIds.length === 1 && selectedGroupIds[0] === `${user.uid}__tutorial_test` && (
-            <Text
-              style={[styles.testScopeNote, { bottom: 64 + Math.max(insets.bottom, 8) + 2 }]}
-              pointerEvents="none"
-            >
-              Test beacon: friends can&apos;t see it and won&apos;t be notified. Turn off the test group to send to all friends.
-            </Text>
-          )}
 
           {/* FIRE, last child, on TOP of the structure (pointerEvents none, taps reach the structure
               + chat button below). Registry-driven: skin.fire picks the Skia flame, a sweeping beam
@@ -1766,7 +1869,7 @@ export default function HomeScreen() {
                       // flashed the structure at the left edge for a frame. The component restarts
                       // its own lit cycle when skin.id changes.
                       <View style={styles.stylePreviewWrap}>
-                        <StylePreview skin={skin} onClose={() => setStylePreviewOpen(false)} />
+                        <StylePreview skin={skin} anchor={beaconAnchor} onClose={() => setStylePreviewOpen(false)} />
                       </View>
                     )}
                   </View>
@@ -2009,6 +2112,12 @@ export default function HomeScreen() {
       </Modal>
 
       {/* First-time beacon notification onboarding */}
+      <StokeModal
+        visible={stokeOpen}
+        beaconId={myActiveBeacon?.id ?? null}
+        currentMessage={myActiveBeacon?.message || DEFAULT_BEACON_MESSAGE}
+        onClose={() => setStokeOpen(false)}
+      />
       <Modal
         visible={showBeaconNotifOnboarding}
         transparent
@@ -2036,21 +2145,9 @@ export default function HomeScreen() {
                   setShowBeaconNotifOnboarding(false);
                   if (granted) {
                     onboarding.refresh(); // keep the setup banner in sync
-                    // Opt into friend-beacon pushes so they actually start arriving (the NOTIFY FLAG
-                    // the server's recipientWantsNotify checks). Non-fatal if the write fails: OS
-                    // permission is already granted and the master toggle can be set in Settings.
-                    const uid = auth.currentUser?.uid;
-                    if (uid) {
-                      try {
-                        await setDoc(
-                          doc(db, 'Profiles', uid),
-                          { notifyAllBeacons: true, updatedAt: serverTimestamp() },
-                          { merge: true }
-                        );
-                      } catch {
-                        // swallow: permission is granted regardless
-                      }
-                    }
+                    // Opt into friend-beacon pushes (the NOTIFY FLAG the server's recipientWantsNotify
+                    // checks) and chat pings for beacons they're in. Non-fatal, see the helper.
+                    await enableDefaultNotifyFlags();
                   }
                   if (!granted) {
                     Alert.alert(
@@ -2210,31 +2307,46 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 5,
   },
-  // Fixed slot below the logs; the button or caption centers in it so the logs don't shift between
-  // lit and unlit. Height = the chat button's footprint so the unlit logs rise to the lit height.
+  // Fixed slot below the logs; the pill or caption centers in it so the logs don't shift between
+  // lit and unlit.
   beaconActionSlot: {
-    // Pull up into the logs box's ~14px empty bottom (below the log bases) and grow to match, so the
-    // centered button sits at the true midpoint between the VISIBLE logs and the options card. Net
-    // height (marginTop + minHeight = 72) is unchanged, so the logs and options don't move.
-    marginTop: -14,
-    minHeight: 86,
+    // Pull up into the logs box's empty bottom. minHeight = the 46pt chat pill + 11pt of air on each
+    // side, so it clears the base (The Beacons' plinth runs nearly to the box edge) and the
+    // Beacon options card by ~12pt: three tap targets stacked here must never be mis-hit.
+    marginTop: -10,
+    minHeight: 68,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  myChatBtn: {
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: 14,
-    minHeight: 52,
-    justifyContent: 'center',
+  // Chat pill: dark glass with an ember edge so it reads as firelight in the scene, not app chrome
+  // (blue stays the one primary, Beacon options; orange is Rally's).
+  chatPill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
+    justifyContent: 'center',
+    gap: 8,
+    height: 46,
+    minWidth: 240, // wide, easy target: the space under the pyre is open
+    maxWidth: '92%',
+    paddingHorizontal: 20,
+    borderRadius: 999,
+    backgroundColor: 'rgba(15,23,42,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(253,186,116,0.55)',
   },
-  myChatBtnTxt: { fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
+  chatPillTxt: { color: EMBER_TEXT, fontSize: 16, fontWeight: '700', flexShrink: 1 },
+  chatPillGoing: { fontWeight: '500' },
+  // Unread count: a solid ember dot, so "something to see" reads at a glance against the glass.
+  unreadBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: '#FB923C',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unreadBadgeTxt: { color: '#1C0A00', fontSize: 12, fontWeight: '800' },
 
   status: { fontSize: 16, color: '#555', marginTop: 10, textAlign: 'center', minHeight: 22 },
   // Split the old marginBottom:12 evenly across top + bottom so the active-state
@@ -2350,7 +2462,9 @@ const styles = StyleSheet.create({
     borderColor: '#D8E3FF',
     borderWidth: 1,
     borderRadius: 14,
-    paddingVertical: 22,
+    // Minimal: 10 keeps the card ~64px tall (34px icon + two text lines), well over the 44pt tap
+    // minimum, and lets the pyre sit lower on the screen.
+    paddingVertical: 10,
     paddingHorizontal: 14,
     marginTop: 0,
     // Trailing margin moved into the controls' inline marginBottom band (the test-note strip),
@@ -2361,18 +2475,6 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
-  },
-  // Amber caution line in the band between the options CTA and the BottomBar. Absolute (bottom
-  // set inline, insets-aware) so its presence never reflows the beacon column.
-  testScopeNote: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: '#F59E0B',
-    textAlign: 'center',
-    paddingHorizontal: 16,
   },
   optionsCtaPressed: { transform: [{ scale: 0.99 }], opacity: 0.95 },
   optionsCtaIconWrap: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },

@@ -127,15 +127,24 @@ export default function FriendsScreen() {
   useEffect(() => {
     if (!profileLoaded || inviteCode || !currentUsername?.trim()) return;
     let alive = true;
-    (async () => {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const attempt = async (n: number) => {
       const uid = user?.uid;
       if (!uid) return;
       // Cache-first (the root layout prefetches at sign-in), so the Share button is live
       // immediately; falls back to minting via the callable for brand-new usernames.
       const code = await prefetchMyInviteCode(uid);
-      if (alive && code) setInviteCode(code);
-    })();
-    return () => { alive = false; };
+      if (!alive) return;
+      if (code) setInviteCode(code);
+      // A failed mint (offline, cold function) used to leave Share greyed out for the whole
+      // visit, since none of this effect's deps change. Back off and try again a few times.
+      else if (n < 5) retry = setTimeout(() => attempt(n + 1), 3000 * (n + 1));
+    };
+    attempt(0);
+    return () => {
+      alive = false;
+      if (retry) clearTimeout(retry);
+    };
   }, [profileLoaded, inviteCode, currentUsername, user?.uid]);
 
   // Coach-mark tour targets on this screen.

@@ -1,5 +1,6 @@
 // components/FriendsBeaconsList.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getMillis } from '../lib/millis';
 import { View, Text, Pressable, ScrollView, StyleSheet, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
@@ -14,7 +15,11 @@ import {
   where,
 } from 'firebase/firestore';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
-import { formatTimeHHmmDisplay } from '../lib/beaconTime';
+import RsvpRallyActions from './RsvpRallyActions';
+import { tap } from '../utils/haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons';
+import { beaconStillLive, formatTimeHHmmDisplay } from '../lib/beaconTime';
 import ExampleBeaconCard from './tutorial/ExampleBeaconCard';
 import type { ThemeColors } from './ui/colors';
 
@@ -29,6 +34,11 @@ export type FriendBeacon = {
   // Optional clock time in 24-hour "HH:MM" form (e.g. "18:30"). Null/undefined
   // when the owner didn't specify a time.
   timeHHmm?: string | null;
+  // RALLY: this is the owner rallying for another beacon (its id/owner). The tile opens that
+  // beacon's chat and its RSVP/Rally actions act on it (see lib/rsvp).
+  rallyOf?: string | null;
+  rallyOwnerUid?: string | null;
+  rallyOwnerName?: string | null;
 };
 
 type Props = {
@@ -53,24 +63,17 @@ function sameDay(a: Date, b: Date) {
 }
 function dayLabel(d: Date) {
   const today = new Date(); if (sameDay(d, today)) return 'Today';
+  // Last night's beacon, still live in its after-midnight grace hours.
+  if (d.getTime() < startOfDay(today).getTime()) return 'Tonight';
   return d.toLocaleDateString(undefined, { weekday: 'long' });
 }
 function shortDate(d: Date) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
-function getMillis(v: any): number {
-  if (!v) return 0;
-  if (typeof v === 'number') return v;
-  if (v instanceof Date) return v.getTime();
-  if (typeof v.toMillis === 'function') return v.toMillis();
-  if (typeof v.toDate === 'function') return v.toDate().getTime();
-  if (typeof v?.seconds === 'number')
-    return v.seconds * 1000 + Math.floor((v.nanoseconds || 0) / 1e6);
-  return 0;
-}
 const asStringArray = (v: any): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 
 const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
+const COLLAPSED_KEY = '@bekin_beacon_list_collapsed';
 
 // Prefer Profiles.displayName → Profiles.username
 async function fetchProfileNames(uids: string[]): Promise<Record<string, string>> {
@@ -105,6 +108,8 @@ async function fetchProfileNames(uids: string[]): Promise<Record<string, string>
 type FriendBeaconItemProps = {
   beacon: FriendBeacon;
   ownerLabel: string;
+  /** Resolved name of the friend whose beacon this one rallies for (rally tiles only). */
+  rallyOwnerLabel?: string;
   isFirst: boolean;
   onFirstLayout: (height: number) => void;
   onSelect: (beacon: FriendBeacon) => void;
@@ -114,20 +119,26 @@ type FriendBeaconItemProps = {
 const FriendBeaconItem = React.memo(function FriendBeaconItem({
   beacon,
   ownerLabel,
+  rallyOwnerLabel,
   isFirst,
   onFirstLayout,
   onSelect,
   tc,
 }: FriendBeaconItemProps) {
-  const isToday = sameDay(beacon.startAt, new Date());
+  // "Today" styling also covers last night's beacon during its after-midnight grace hours.
+  const isToday = sameDay(beacon.startAt, new Date()) || beacon.startAt.getTime() < startOfDay(new Date()).getTime();
   const timeLabel = formatTimeHHmmDisplay(beacon.timeHHmm);
+  // RSVP / Rally right from the tile, always aimed at the ORIGINAL beacon (a rally tile's rallyOf).
+  const ogId = beacon.rallyOf || beacon.id;
+  const ogOwnerUid = beacon.rallyOf ? beacon.rallyOwnerUid || '' : beacon.ownerUid;
+  const ogOwnerName = beacon.rallyOf ? rallyOwnerLabel || beacon.rallyOwnerName || '' : ownerLabel;
 
   return (
     <Pressable
       onLayout={(e) => {
         if (isFirst) onFirstLayout(Math.max(1, e.nativeEvent.layout.height));
       }}
-      onPress={() => onSelect(beacon)}
+      onPress={() => onSelect(beacon.rallyOf ? { ...beacon, id: beacon.rallyOf } : beacon)}
       style={({ pressed }) => [
         styles.beaconItem,
         isToday && beacon.active
@@ -142,8 +153,15 @@ const FriendBeaconItem = React.memo(function FriendBeaconItem({
         <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={styles.beaconOwner} numberOfLines={1}>
+        <Text style={styles.beaconOwner} numberOfLines={beacon.rallyOf ? 2 : 1}>
           {ownerLabel}
+          {beacon.rallyOf ? (
+            <>
+              <Text style={styles.rallyJoin}> rallying to </Text>
+              {ogOwnerName || 'a friend'}
+              <Text style={styles.rallyJoin}>&apos;s cause</Text>
+            </>
+          ) : null}
         </Text>
         <Text style={styles.beaconWhen} numberOfLines={1}>
           {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
@@ -152,6 +170,9 @@ const FriendBeaconItem = React.memo(function FriendBeaconItem({
         <Text style={styles.beaconMsg} numberOfLines={2}>
           {beacon.message}
         </Text>
+      </View>
+      <View style={styles.rsvpCol}>
+        <RsvpRallyActions ogId={ogId} ogOwnerUid={ogOwnerUid} ogOwnerName={ogOwnerName} />
       </View>
     </Pressable>
   );
@@ -174,6 +195,10 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
     () => Array.from(new Set([...subFriendUids, ...edgeFriendUids])),
     [subFriendUids, edgeFriendUids]
   );
+  // Read by computeAndSet, whose snapshot closure is created once per user (see the subscription
+  // effect), so it needs the CURRENT friend set via a ref rather than the render-time array.
+  const friendSetRef = useRef<Set<string>>(new Set());
+  friendSetRef.current = useMemo(() => new Set(friendUids), [friendUids]);
   const [beacons, setBeacons] = useState<FriendBeacon[]>([]);
   const nameCacheRef = useRef<Record<string, string>>({});
   const beaconUnsubsRef = useRef<(() => void)[]>([]);
@@ -228,6 +253,19 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
   const [containerH, setContainerH] = useState<number | null>(null);
   const [headerH, setHeaderH] = useState<number>(0);
   const [showMoreHint, setShowMoreHint] = useState(false);
+  // Hidden list (header chevron -> a small tab at the top). Device-local convenience pref.
+  const [listCollapsed, setListCollapsedState] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem(COLLAPSED_KEY)
+      .then((v) => { if (mountedRef.current && v === '1') setListCollapsedState(true); })
+      .catch(() => {});
+  }, []);
+  const setListCollapsed = useCallback((v: boolean) => {
+    tap();
+    setListCollapsedState(v);
+    AsyncStorage.setItem(COLLAPSED_KEY, v ? '1' : '0').catch(() => {});
+  }, []);
+  const listRef = useRef<ScrollView>(null);
 
   const listMaxHeight = useMemo(() => {
     if (!firstCardH) return undefined;
@@ -337,8 +375,9 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       const stMillis = getMillis(data?.startAt);
       const expMillis = getMillis(data?.expiresAt);
       if (!stMillis) return;
-      if (stMillis < cutoff) stale.push(id);
-      else if (expMillis && expMillis < nowMs) stale.push(id);
+      if (!beaconStillLive(stMillis, expMillis, nowMs)) stale.push(id);
+      // Scheduled-but-unlit docs from earlier days are dead too (only lit ones get the grace).
+      else if (stMillis < cutoff && !data?.active) stale.push(id);
     });
     stale.forEach((id) => store.delete(id));
 
@@ -349,17 +388,19 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
 
     store.forEach((data: any, id: string) => {
       const stMillis = getMillis(data?.startAt);
-      // Hide past beacons and clamp to our 7‑day window
-      if (stMillis < todayStart.getTime()) return;
-      // if (stMillis > windowEnd.getTime()) return;
       if (!stMillis) return;
-
-      // Hide expired beacons
-      const expMillis = getMillis(data?.expiresAt);
-      if (expMillis && expMillis < Date.now()) return;
+      // Hide expired beacons. A beacon lit last night stays until its expiry (4am the next
+      // morning), so a past start day alone no longer hides it.
+      if (!beaconStillLive(stMillis, getMillis(data?.expiresAt))) return;
+      if (stMillis < todayStart.getTime() && !data?.active) return;
 
       const ownerUid = String(data.ownerUid ?? '');
       if (!ownerUid || (meUid && ownerUid === meUid)) return; // never show my own
+      // Direct friends only. A beacon's audienceUids also includes friends-of-friends when both
+      // sides opted into FoF POSTS, so the audience query alone would surface strangers' beacons.
+      if (!friendSetRef.current.has(ownerUid)) return;
+      // A friend rallying for MY beacon: I already have my own beacon; their rally is for their friends.
+      if (meUid && data?.rallyOwnerUid === meUid) return;
 
       const active = !!data?.active;
       const scheduled = data?.scheduled === true || data?.scheduled === 'true';
@@ -386,6 +427,9 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       if (!canSee) return;
 
       if (!profilesFetchedRef.current.has(ownerUid)) toFetchProfiles.add(ownerUid);
+      // A rally tile names the original's owner too, who may not be my friend: resolve them as well.
+      const rallyOwner = typeof data?.rallyOwnerUid === 'string' ? data.rallyOwnerUid : '';
+      if (rallyOwner && !profilesFetchedRef.current.has(rallyOwner)) toFetchProfiles.add(rallyOwner);
 
       const ownerName: string =
         (typeof data.ownerName === 'string' && data.ownerName.trim()) ||
@@ -411,18 +455,22 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
         scheduled,
         message: msg,
         timeHHmm,
+        rallyOf: typeof data?.rallyOf === 'string' && data.rallyOf ? data.rallyOf : null,
+        rallyOwnerUid: typeof data?.rallyOwnerUid === 'string' ? data.rallyOwnerUid : null,
+        rallyOwnerName: typeof data?.rallyOwnerName === 'string' ? data.rallyOwnerName : null,
         _createdMs: createdMs,
       });
     });
 
-    // newest per owner
-    const byOwner = new Map<string, Candidate>();
+    // One OWN plan per friend (their newest), plus EVERY rally of theirs as its own beacon: people
+    // join each other's plans, so a friend can have their own beacon and rally several others.
+    const byKey = new Map<string, Candidate>();
     candidates.forEach((b) => {
-      const prev = byOwner.get(b.ownerUid);
-      if (prev == null || (b._createdMs || 0) > (prev._createdMs || 0)) byOwner.set(b.ownerUid, b);
+      const key = b.rallyOf ? `rally:${b.id}` : b.ownerUid;
+      const prev = byKey.get(key);
+      if (prev == null || (b._createdMs || 0) > (prev._createdMs || 0)) byKey.set(key, b);
     });
-
-    const out = Array.from(byOwner.values());
+    const out = Array.from(byKey.values());
     out.sort((a, b) => {
       const diff = a.startAt.getTime() - b.startAt.getTime();
       if (diff !== 0) return diff;
@@ -575,6 +623,12 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
     }
     return beacons.length > visibleRows;
   }, [beacons.length, firstCardH, containerH, headerH]);
+  // Friend set changed (first load, new friend, unfriend): re-filter the beacons already in the store.
+  useEffect(() => {
+    if (mountedRef.current) computeAndSet();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [friendUids]);
+
   const uiReady = friendsListReady && edgesReady && beaconsReady;
 
   // Debounce the empty-state so "No friend beacons..." doesn't flash
@@ -594,11 +648,36 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
   return (
     <View style={styles.friendsSection} onLayout={(e) => setContainerH(e.nativeEvent.layout.height)}>
       {/* Hide ALL copy until ready */}
-      {!uiReady ? null : beacons.length > 0 ? (
-        <>
-          <Text style={[styles.friendActiveHeader, { color: tc.text }]} onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}>
+      {!uiReady ? null : beacons.length > 0 && listCollapsed ? (
+        <Pressable
+          onPress={() => setListCollapsed(false)}
+          hitSlop={8}
+          style={styles.collapsedTab}
+          accessibilityRole="button"
+          accessibilityLabel={`Show ${beacons.length} beacons from friends`}
+        >
+          <Text style={styles.collapsedTabTxt}>
             {beacons.length} beacon{beacons.length !== 1 ? 's' : ''} from friends
           </Text>
+          <Ionicons name="chevron-down" size={16} color="#E2E8F0" />
+        </Pressable>
+      ) : beacons.length > 0 ? (
+        <>
+          {/* The header doubles as the HIDE button (chevron). Hidden, the list shrinks to a small tab
+              at the top that brings it back, leaving the scene clear. Remembered per device. */}
+          <Pressable
+            onPress={() => setListCollapsed(true)}
+            hitSlop={8}
+            style={styles.headerRow}
+            onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}
+            accessibilityRole="button"
+            accessibilityLabel="Hide friends' beacons"
+          >
+            <Text style={[styles.friendActiveHeader, { color: tc.text }]}>
+              {beacons.length} beacon{beacons.length !== 1 ? 's' : ''} from friends
+            </Text>
+            <Ionicons name="chevron-up" size={18} color={tc.subtle} style={styles.headerChevron} />
+          </Pressable>
 
           <View
             style={[
@@ -608,6 +687,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
             ]}
           >
             <ScrollView
+              ref={listRef}
               onScroll={handleScroll}
               scrollEventThrottle={16}
               showsVerticalScrollIndicator
@@ -618,6 +698,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
                   key={b.id}
                   beacon={b}
                   ownerLabel={(nameCacheRef.current[b.ownerUid] || b.displayName || 'Friend').toString()}
+                  rallyOwnerLabel={b.rallyOwnerUid ? nameCacheRef.current[b.rallyOwnerUid] : undefined}
                   isFirst={i === 0}
                   onFirstLayout={handleFirstLayout}
                   onSelect={onSelect}
@@ -627,12 +708,20 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
               <View style={{ height: 8 }} />
             </ScrollView>
 
+            {/* The fade band lets touches through (box-none) so a swipe starting on it still scrolls
+                the list; only the pill itself is a button, and it scrolls down about one card. */}
             {listHasOverflow && showMoreHint && (
-              <Pressable style={styles.moreOverlay}>
-                <View style={styles.morePill}>
+              <View style={styles.moreOverlay} pointerEvents="box-none">
+                <Pressable
+                  onPress={() => { tap(); listRef.current?.scrollTo({ y: (firstCardH || 90) + 10, animated: true }); }}
+                  hitSlop={8}
+                  style={styles.morePill}
+                  accessibilityRole="button"
+                  accessibilityLabel="Scroll for more beacons"
+                >
                   <Text style={styles.morePillTxt}>▼  Scroll for more</Text>
-                </View>
-              </Pressable>
+                </Pressable>
+              </View>
             )}
           </View>
         </>
@@ -660,13 +749,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: SCREEN_PAD,
     paddingTop: 12,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
   friendActiveHeader: {
     fontSize: 16,
     fontWeight: '600',
     color: '#0B1426',
-    marginBottom: 10,
     textAlign: 'center'
   },
+  headerChevron: { marginLeft: 6 },
+  collapsedTab: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: 'rgba(15,23,42,0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.35)',
+  },
+  collapsedTabTxt: { color: '#E2E8F0', fontSize: 13, fontWeight: '700' },
 
   peekWrapper: {
     position: 'relative',
@@ -703,6 +811,9 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   avatarTxt: { color: '#fff', fontWeight: '900' },
+  rsvpCol: { alignItems: 'center', alignSelf: 'center' },
+  // The connecting words in "Sam rallying to Devin's cause": names stay bold, these don't.
+  rallyJoin: { fontWeight: '500' },
 
   friendInactive: {
     fontSize: 16,

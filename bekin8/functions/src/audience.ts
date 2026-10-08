@@ -18,6 +18,8 @@
 //
 // AUDIENCE = [owner] + owner's accepted friends
 //            + owner's friends-of-friends, when the owner has friendsOfFriendsPosts on.
+//            (+ for a beacon: rallyUids, the friends a rallier invited into its chat; see
+//             extendRallyAudience in index.ts.)
 //
 // The friends-of-friends part mirrors getFriendsOfFriends exactly: distance EXACTLY 2, both sides
 // must have opted in (the feature is symmetric), and a block in either direction removes the pair.
@@ -52,7 +54,7 @@ function chunk<T>(arr: T[], size: number): T[][] {
  * lenient rule the feed itself used when it queried `where('author','in', friends)`, so switching to
  * audience-scoped reads does not quietly narrow anyone's existing visibility.
  */
-async function acceptedFriendUids(ownerUid: string): Promise<string[]> {
+export async function acceptedFriendUids(ownerUid: string): Promise<string[]> {
   // BOTH friendship representations count. Long-standing accounts still have LEGACY friendships
   // that exist only as docs under users/{owner}/friends (doc id = friend uid) with no FriendEdges
   // row at all; the notification path honors them (legacyNotifyEnabled), the old feed honored
@@ -141,17 +143,23 @@ async function restampOwner(ownerUid: string): Promise<number> {
     db.collection('Beacons').where('ownerUid', '==', ownerUid).get(),
   ]);
 
-  const refs: FirebaseFirestore.DocumentReference[] = [
-    ...posts.docs.map((d) => d.ref),
-    ...beacons.docs.map((d) => d.ref),
-    db.collection('Profiles').doc(ownerUid),
+  // A beacon that friends RALLIED for also carries the rallied-in people (rallyUids, written only
+  // by extendRallyAudience): they were invited into its chat by a friend of theirs, and a graph
+  // change on the owner's side must not lock them back out.
+  const writes: { ref: FirebaseFirestore.DocumentReference; audience: string[] }[] = [
+    ...posts.docs.map((d) => ({ ref: d.ref, audience })),
+    ...beacons.docs.map((d) => {
+      const extra: string[] = Array.isArray((d.data() as any)?.rallyUids) ? (d.data() as any).rallyUids : [];
+      return { ref: d.ref, audience: extra.length ? Array.from(new Set([...audience, ...extra])) : audience };
+    }),
+    { ref: db.collection('Profiles').doc(ownerUid), audience },
   ];
 
   let written = 0;
-  for (const group of chunk(refs, BATCH_LIMIT)) {
+  for (const group of chunk(writes, BATCH_LIMIT)) {
     const batch = db.batch();
     // set/merge rather than update: a Profile doc may not exist yet for a brand-new account.
-    for (const ref of group) batch.set(ref, { audienceUids: audience }, { merge: true });
+    for (const w of group) batch.set(w.ref, { audienceUids: w.audience }, { merge: true });
     await batch.commit();
     written += group.length;
   }

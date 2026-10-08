@@ -4,8 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useTheme } from "../providers/ThemeProvider";
 import { ensureNotifyPermission } from "../lib/notifyPermission";
-import { auth, db } from "../firebase.config";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { enableDefaultNotifyFlags } from "../lib/rsvp";
 import { tap, press } from "../utils/haptics";
 
 export default function NotificationsPermission() {
@@ -19,24 +18,13 @@ export default function NotificationsPermission() {
     try {
       setBusy(true);
       const granted = await ensureNotifyPermission(
-        "We use notifications to let you know when friends light beacons, RSVP or chat on yours, and send requests."
+        "We use notifications to let you know when friends light beacons, RSVP, rally or chat on yours, and send requests."
       );
       if (granted) {
         // Opt into friend-beacon pushes so the promised "a friend lit a beacon" alert actually
-        // arrives. This is the flag the server's recipientWantsNotify checks. Non-fatal on failure:
-        // permission is granted and the master toggle can still be set in Friends/Settings.
-        const uid = auth.currentUser?.uid;
-        if (uid) {
-          try {
-            await setDoc(
-              doc(db, "Profiles", uid),
-              { notifyAllBeacons: true, updatedAt: serverTimestamp() },
-              { merge: true }
-            );
-          } catch {
-            /* ignore */
-          }
-        }
+        // arrives (the flag the server's recipientWantsNotify checks), plus chat pings for beacons
+        // they're in. Non-fatal: both can still be set in Friends/Settings.
+        await enableDefaultNotifyFlags();
         Alert.alert("You're all set", "We'll let you know the moment a friend lights a beacon.");
         if (router.canGoBack()) router.back();
       }
@@ -60,7 +48,7 @@ export default function NotificationsPermission() {
 
         <View style={s.bullets}>
           <Text style={[s.bullet, { color: colors.text }]}>🔥  A friend lights a beacon</Text>
-          <Text style={[s.bullet, { color: colors.text }]}>🙋  Someone RSVPs or chats on your beacon</Text>
+          <Text style={[s.bullet, { color: colors.text }]}>🙋  Someone RSVPs, rallies, or chats on your beacon</Text>
           <Text style={[s.bullet, { color: colors.text }]}>💬  A friend comments on your post</Text>
           <Text style={[s.bullet, { color: colors.text }]}>👋  You get a friend request</Text>
         </View>

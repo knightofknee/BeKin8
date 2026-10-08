@@ -1,5 +1,6 @@
 // functions/src/index.ts
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
+import { acceptedFriendUids } from './audience.js';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { onDocumentCreated, onDocumentUpdated, onDocumentDeleted } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
@@ -26,14 +27,15 @@ type Beacon = {
   allowedUids?: string[];
   groupIds?: string[];
   startAt?: FirebaseFirestore.Timestamp;
+  expiresAt?: FirebaseFirestore.Timestamp;
+  timeHHmm?: string | null;
+  /** RALLY: this beacon is its owner rallying friends into ANOTHER beacon's chat (that beacon's id). */
+  rallyOf?: string;
 };
 
 // ===== Expo client & constants =====
 const expo = new Expo();
 const TICKET_TTL_HOURS = 48;
-// Rapid off/on toggles of the same beacon shouldn't re-notify. If the last activation
-// push for a beacon went out within this window, skip re-fanout.
-const BEACON_NOTIFY_COOLDOWN_MS = 3 * 60 * 1000;
 
 // ===== Helpers: content =====
 function summarize(beacon: Beacon): string {
@@ -41,6 +43,55 @@ function summarize(beacon: Beacon): string {
 }
 function titleFor(beacon: Beacon): string {
   return beacon.ownerName ? `${beacon.ownerName} lit a beacon` : 'A friend lit a beacon';
+}
+
+// ===== Helpers: "when" copy for pushes =====
+// The server runs in UTC but a beacon's day is the OWNER's local day. startAt is always written as
+// the owner's local midnight, so its UTC clock time IS the owner's UTC offset (negated): local
+// midnight at 05:00Z means UTC-5. Mapped into (-11h, +13h]: that covers New Zealand's daylight
+// time and Tonga (+13); the only zones it misreads are UTC-11/-12 (American Samoa, Niue, Baker
+// Island) and Kiribati's +14.
+function ownerOffsetMin(startAt: FirebaseFirestore.Timestamp): number {
+  const d = startAt.toDate();
+  let off = -(d.getUTCHours() * 60 + d.getUTCMinutes());
+  if (off <= -11 * 60) off += 24 * 60;
+  return off;
+}
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** "18:30" -> "6:30 PM", "19:00" -> "7 PM"; '' when unset or malformed. */
+function formatTime12(hhmm?: string | null): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((hhmm || '').trim());
+  if (!m) return '';
+  const h24 = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (h24 > 23 || min > 59) return '';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}${min ? `:${String(min).padStart(2, '0')}` : ''} ${h24 < 12 ? 'AM' : 'PM'}`;
+}
+
+/** "Tonight at 8 PM", "Tomorrow", "Friday at 7:30 PM", relative to the owner's local today. */
+function whenLabel(b: Beacon, nowMs: number = Date.now()): string {
+  if (!b.startAt) return '';
+  const off = ownerOffsetMin(b.startAt) * 60_000;
+  const startMs = b.startAt.toMillis();
+  const localDay = (ms: number) => Math.floor((ms + off) / 86_400_000);
+  const diff = localDay(startMs) - localDay(nowMs);
+  const time = formatTime12(b.timeHHmm);
+  const evening = /^(1[7-9]|2\d):/.test((b.timeHHmm || '').trim());
+  let day: string;
+  if (diff === 0) day = evening ? 'Tonight' : 'Today';
+  else if (diff === -1) day = 'Tonight'; // last night's beacon, inside its after-midnight grace
+  else if (diff === 1) day = 'Tomorrow';
+  else day = WEEKDAYS[new Date(startMs + off + 12 * 3_600_000).getUTCDay()];
+  return time ? `${day} at ${time}` : day;
+}
+
+/** Push body for a beacon: "Friday at 7 PM · Hang out at my place?" */
+function beaconBody(b: Beacon): string {
+  const when = whenLabel(b);
+  return when ? `${when} · ${summarize(b)}` : summarize(b);
 }
 
 // ===== Helpers: preferences & subscribers =====
@@ -363,33 +414,152 @@ async function saveTicketsBatched(
 
 // ===== Core sender =====
 
+/** Owner's display name for push titles: Profiles.displayName at send time, else the beacon's copy. */
+async function ownerDisplayName(ownerUid: string, b: Beacon): Promise<string> {
+  let name = (b.ownerName || '').toString().trim();
+  try {
+    const dn = (await db.collection('Profiles').doc(ownerUid).get()).data()?.displayName;
+    if (typeof dn === 'string' && dn.trim()) name = dn.trim();
+  } catch {}
+  return name;
+}
+
+/**
+ * A beacon tells friends it was lit ONCE. lastNotifiedAt marks that first fan-out (server-written
+ * only); any later off -> on of the same beacon is a relight and sends nothing, so flicking a beacon
+ * on and off can never re-ping everyone. Instead a relight arms the hidden STOKE (stokeReady): a
+ * long press on the lit fire lets the owner nudge friends one more time (stokeBeacon). Claimed in a
+ * transaction so two near-simultaneous activations can't both fan out.
+ */
+async function claimFirstFanOut(beaconId: string): Promise<boolean> {
+  const ref = db.collection('Beacons').doc(beaconId);
+  // The authority is the server-only BeaconNotices doc (the Beacon doc is owner-writable, so a
+  // modified client could clear a flag there to re-fan-out). lastNotifiedAt on the beacon still
+  // counts so beacons lit before this existed aren't treated as first lights.
+  const noticeRef = db.collection('BeaconNotices').doc(beaconId);
+  return db.runTransaction(async (tx) => {
+    const [snap, notice] = await Promise.all([tx.get(ref), tx.get(noticeRef)]);
+    if (!snap.exists) return false;
+    const d = snap.data() as any;
+    const n = notice.data() as any;
+    if (n?.fannedOutAt || d?.lastNotifiedAt) {
+      if (!n?.stokedAt && d?.stokeReady !== true) tx.update(ref, { stokeReady: true });
+      return false;
+    }
+    tx.update(ref, { lastNotifiedAt: FieldValue.serverTimestamp() });
+    tx.set(
+      noticeRef,
+      {
+        ownerUid: d?.ownerUid ?? null,
+        fannedOutAt: FieldValue.serverTimestamp(),
+        purgeAt: Timestamp.fromMillis((d?.expiresAt?.toMillis?.() || Date.now() + 24 * 3_600_000) + 2 * 3_600_000),
+      },
+      { merge: true }
+    );
+    return true;
+  });
+}
+
 async function fanOutForBeacon(beaconId: string, b: Beacon) {
   const ownerUid = b.ownerUid;
   if (!ownerUid) return;
-
-  // Cooldown: skip if this beacon already fanned out within the window (guards against
-  // rapid off/on toggles re-notifying everyone). Read lastNotifiedAt fresh, then stamp it
-  // before sending so concurrent/immediate re-triggers see it.
-  const beaconRef = db.collection('Beacons').doc(beaconId);
+  // A RALLY first opens the original beacon's chat to the rallier's friends (idempotent, so every
+  // activation re-asserts it). An invalid rally (not allowed to see the original, or it's over)
+  // announces nothing at all.
+  let rally: { og: Beacon; ogId: string } | null = null;
+  if (b.rallyOf) {
+    rally = await extendRallyAudience(beaconId, b);
+    if (!rally) return;
+  }
+  let first = false;
   try {
-    const snap = await beaconRef.get();
-    const last = snap.exists ? (snap.data() as any)?.lastNotifiedAt : undefined;
-    const lastMs =
-      last && typeof last.toMillis === 'function' ? last.toMillis() : 0;
-    if (lastMs && Date.now() - lastMs < BEACON_NOTIFY_COOLDOWN_MS) {
-      logger.info('fanOut skipped by cooldown', { beaconId, ownerUid });
-      return;
+    first = await claimFirstFanOut(beaconId);
+  } catch (err) {
+    logger.warn('fanOut claim failed, skipping', { beaconId, err });
+    return;
+  }
+  if (!first) {
+    logger.info('fanOut skipped: relight (stoke armed)', { beaconId, ownerUid });
+    return;
+  }
+  const name = await ownerDisplayName(ownerUid, b);
+  if (rally) {
+    // "Sam is rallying" / "For Maya's beacon · Tonight at 8 PM · Pizza at mine": the plan is the
+    // ORIGINAL beacon's, and tapping opens the original's chat (the shared room).
+    const ogName = (await ownerDisplayName(rally.og.ownerUid, rally.og)) || 'a friend';
+    await pushBeaconToFriends(
+      beaconId,
+      b,
+      name ? `${name} is rallying` : 'A friend is rallying',
+      `For ${ogName}'s beacon · ${beaconBody(rally.og)}`,
+      rally.ogId
+    );
+    return;
+  }
+  await pushBeaconToFriends(beaconId, b, name ? `${name} lit a beacon` : 'A friend lit a beacon', beaconBody(b));
+}
+
+/**
+ * RALLY: owner R lit a beacon with rallyOf = the original beacon (owner O). R's invited friends
+ * (R's chosen groups, else all of R's friends) join the ORIGINAL beacon's audience, so they can read
+ * and post in its one shared chat: stored as rallyUids on the original (kept through owner restamps,
+ * see audience.ts), merged into its audienceUids, and restamped onto its existing messages (the
+ * message read rule checks each message's own copy). rallyOf is client-written, so it is verified:
+ * R must already be in the original's audience, the original must be live, and nobody blocked by
+ * or blocking O gets in. Returns the original, or null if the rally is invalid.
+ */
+async function extendRallyAudience(rallyId: string, b: Beacon): Promise<{ og: Beacon; ogId: string } | null> {
+  const ogId = String(b.rallyOf || '');
+  if (!ogId || ogId === rallyId) return null;
+  const ogRef = db.collection('Beacons').doc(ogId);
+  const ogSnap = await ogRef.get();
+  const og = ogSnap.data() as (Beacon & { audienceUids?: string[]; rallyUids?: string[] }) | undefined;
+  if (!og || !og.ownerUid || og.ownerUid === b.ownerUid) return null;
+  const expMs = og.expiresAt?.toMillis?.() ?? 0;
+  if (og.active !== true || (expMs && expMs < Date.now())) return null;
+  const ogAudience: string[] = Array.isArray(og.audienceUids) ? og.audienceUids : [];
+  if (!ogAudience.includes(b.ownerUid)) {
+    logger.warn('rally rejected: rallier not in the original audience', { rallyId, ogId });
+    return null;
+  }
+
+  const friends = await acceptedFriendUids(b.ownerUid);
+  const scoped = Array.isArray(b.groupIds) && b.groupIds.length > 0;
+  let invited = friends;
+  if (scoped) {
+    const members = new Set(await membersOfGroups(b.ownerUid, b.groupIds as string[]));
+    invited = friends.filter((u) => members.has(u));
+  }
+  invited = invited.filter((u) => u !== og.ownerUid && !ogAudience.includes(u));
+  const unblocked = (
+    await Promise.all(invited.map(async (u) => ((await eitherBlocked(u, og.ownerUid)) ? null : u)))
+  ).filter((u): u is string => !!u);
+
+  if (unblocked.length) {
+    const rallyUids = Array.from(new Set([...(og.rallyUids || []), ...unblocked]));
+    const audience = Array.from(new Set([...ogAudience, ...unblocked]));
+    await ogRef.update({ rallyUids, audienceUids: audience });
+    const msgs = await ogRef.collection('ChatMessages').get();
+    for (const group of chunk(msgs.docs, 450)) {
+      const batch = db.batch();
+      group.forEach((m) => batch.update(m.ref, { audienceUids: audience }));
+      await batch.commit();
     }
-  } catch (err) {
-    logger.warn('fanOut cooldown read failed, proceeding', { beaconId, err });
+    logger.info('rally audience extended', { rallyId, ogId, added: unblocked.length });
   }
-  // Stamp before sending so a near-simultaneous re-activation is suppressed.
-  try {
-    await beaconRef.set({ lastNotifiedAt: FieldValue.serverTimestamp() }, { merge: true });
-  } catch (err) {
-    logger.warn('fanOut cooldown stamp failed, proceeding', { beaconId, err });
-  }
+  return { og, ogId };
+}
 
+/** Send one push about a beacon to its eligible friends (audience, friendship, opt-in, blocks). */
+async function pushBeaconToFriends(
+  beaconId: string,
+  b: Beacon,
+  title: string,
+  body: string,
+  /** Which beacon's chat the push opens (a rally opens the original's). Defaults to beaconId. */
+  openId: string = beaconId
+): Promise<number> {
+  const ownerUid = b.ownerUid;
   const recipients = await eligibleRecipients(b.allowedUids, ownerUid, b.groupIds);
   logger.info('fanOut recipients', {
     beaconId,
@@ -397,18 +567,7 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
     allowedCount: Array.isArray(b.allowedUids) ? b.allowedUids.length : 0,
     recipientCount: recipients.length,
   });
-  if (recipients.length === 0) return;
-
-  const body = summarize(b);
-
-  // Prefer Profiles.displayName at send time for the title
-  let ownerDisplay = (b.ownerName || "").toString().trim();
-  try {
-    const profSnap = await db.collection("Profiles").doc(ownerUid).get();
-    const dn = profSnap.exists ? (profSnap.data() as any)?.displayName : undefined;
-    if (typeof dn === "string" && dn.trim().length > 0) ownerDisplay = dn.trim();
-  } catch {}
-  const title = ownerDisplay ? `${ownerDisplay} lit a beacon` : "A friend lit a beacon";
+  if (recipients.length === 0) return 0;
 
   // Build one flat message list across every recipient/token, then send + write tickets in
   // batches. This packs up to 100 messages per Expo HTTP round trip (via chunkPushNotifications)
@@ -427,13 +586,13 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
         sound: 'default',
         priority: 'high',
         channelId: 'default',
-        data: { type: 'beacon', beaconId, ownerUid },
+        data: { type: 'beacon', beaconId: openId, ownerUid },
       });
       messageSubscriber.push(recipientUid);
     }
   }
 
-  if (messages.length === 0) return;
+  if (messages.length === 0) return 0;
 
   // chunkPushNotifications preserves message order, so a running index maps each returned
   // ticket back to the subscriber/token that produced it.
@@ -459,6 +618,7 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
   }
 
   await saveTicketsBatched(sent, ownerUid, beaconId);
+  return recipients.length;
 }
 
 // ===== Triggers (v2) =====
@@ -564,6 +724,8 @@ type ChatMessage = {
   // RSVP system messages ('im-in') carry the actor instead of an author.
   actorUid?: string;
   actorName?: string;
+  // An RSVP made by RALLYING (the actor also lit their own beacon to bring friends).
+  rally?: boolean;
   // GIF messages carry no text; the push body is generated from the kind.
   kind?: 'text' | 'gif';
 };
@@ -633,6 +795,27 @@ async function getRsvpUids(beaconId: string): Promise<string[]> {
   return Array.from(uids);
 }
 
+/** True the first time `uid` RSVPs (or first rallies) on a beacon; false for any repeat. */
+async function claimRsvpPush(beaconId: string, uid: string, rally: boolean): Promise<boolean> {
+  const ref = db.collection('BeaconNotices').doc(beaconId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const prev = (snap.data() as any)?.rsvpPushed?.[uid] as 'going' | 'rally' | undefined;
+    if (prev === 'rally' || (prev === 'going' && !rally)) return false;
+    tx.set(
+      ref,
+      {
+        rsvpPushed: { [uid]: rally ? 'rally' : 'going' },
+        // A beacon announced before fannedOutAt existed may have no notice doc yet: give it a sweep
+        // date so it can't linger forever (beacons live at most a week ahead + grace).
+        ...(snap.exists && (snap.data() as any)?.purgeAt ? {} : { purgeAt: Timestamp.fromMillis(Date.now() + 9 * 86_400_000) }),
+      },
+      { merge: true }
+    );
+    return true;
+  });
+}
+
 export const onBeaconCommentNotify = onDocumentCreated(
   'Beacons/{beaconId}/ChatMessages/{messageId}',
   async (event) => {
@@ -656,6 +839,15 @@ export const onBeaconCommentNotify = onDocumentCreated(
 
     const beaconId = event.params.beaconId as string;
     const messageId = event.params.messageId as string;
+
+    // RSVPs and rallies push ONCE per person per beacon: taking an RSVP back and re-doing it, or
+    // un-rallying and rallying again, never re-fires. Going -> rallying is new news and pushes once
+    // more. Tracked server-side (BeaconNotices is server-only) in a transaction so a double write
+    // can't sneak two pushes through.
+    if (isRsvp && !(await claimRsvpPush(beaconId, senderUid, msg.rally === true))) {
+      logger.info('rsvp push skipped: already announced', { beaconId, senderUid, rally: msg.rally === true });
+      return;
+    }
 
     // Get beacon to find owner
     const beaconSnap = await db.collection('Beacons').doc(beaconId).get();
@@ -703,7 +895,9 @@ export const onBeaconCommentNotify = onDocumentCreated(
     });
 
     const title = isRsvp
-      ? `${senderName} is in for a beacon`
+      ? msg.rally
+        ? `${senderName} is rallying for a beacon`
+        : `${senderName} RSVP'd to a beacon`
       : `${senderName} commented on a beacon`;
     const body = isRsvp
       ? `Tap to see who's coming.`
@@ -750,6 +944,206 @@ export const onBeaconCommentNotify = onDocumentCreated(
     }
   }
 );
+
+// ===== 4b) Beacon change notices for RSVPers (put out / back on / updated) =====
+//
+// People who said "I'm in" hear when the beacon goes out, comes back, or its day/time/message
+// changes. Expo push can't replace or recall a delivered notification, so instead of sending on
+// every write the change is QUEUED in BeaconNotices/{beaconId} and sent after a quiet period. The
+// sender then compares the beacon's CURRENT state with what RSVPers were last told (lastSent), so
+// an off/on/off/on flurry inside the window nets out to nothing, and a burst of edits becomes one
+// push. BeaconNotices is server-only (no client rule matches it).
+
+const NOTICE_QUIET_MS = 5 * 60 * 1000;
+
+function sameMillis(a?: FirebaseFirestore.Timestamp, b?: FirebaseFirestore.Timestamp): boolean {
+  return (a?.toMillis?.() ?? 0) === (b?.toMillis?.() ?? 0);
+}
+
+export const onBeaconChangedQueueNotice = onDocumentUpdated('Beacons/{beaconId}', async (event) => {
+  const before = event.data?.before?.data() as Beacon | undefined;
+  const after = event.data?.after?.data() as Beacon | undefined;
+  if (!before || !after) return;
+  const wasOn = before.active === true;
+  const isOn = after.active === true;
+  const detailsChanged =
+    wasOn &&
+    isOn &&
+    (!sameMillis(before.startAt, after.startAt) ||
+      (before.timeHHmm || '') !== (after.timeHHmm || '') ||
+      summarize(before) !== summarize(after));
+  if (wasOn === isOn && !detailsChanged) return;
+
+  const beaconId = event.params.beaconId as string;
+  await db
+    .collection('BeaconNotices')
+    .doc(beaconId)
+    .set(
+      {
+        ownerUid: after.ownerUid,
+        // Every change restarts the quiet window; dueAt is removed once sent (single-field range
+        // query in the processor, no composite index).
+        dueAt: Timestamp.fromMillis(Date.now() + NOTICE_QUIET_MS),
+        ...(detailsChanged ? { detailsChanged: true } : {}),
+        // Swept by the processor once the beacon is long over, so these never pile up.
+        purgeAt: Timestamp.fromMillis(
+          (after.expiresAt?.toMillis?.() || Date.now() + 24 * 3_600_000) + 2 * 3_600_000
+        ),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+});
+
+async function pushToUsers(
+  uids: string[],
+  msg: { title: string; body: string; data: Record<string, unknown> },
+  ctx: { friendUid: string; beaconId: string }
+) {
+  const messages: ExpoPushMessage[] = [];
+  const owners: string[] = [];
+  for (const uid of uids) {
+    for (const token of await getAllExpoTokens(uid)) {
+      messages.push({ to: token, sound: 'default', priority: 'high', channelId: 'default', ...msg });
+      owners.push(uid);
+    }
+  }
+  const sent: { id: string; subscriberUid: string; token: string }[] = [];
+  let idx = 0;
+  for (const msgChunk of expo.chunkPushNotifications(messages)) {
+    try {
+      const tickets = await expo.sendPushNotificationsAsync(msgChunk);
+      tickets.forEach((t, i) => {
+        if (t && isSuccessTicket(t)) sent.push({ id: t.id, subscriberUid: owners[idx + i], token: msgChunk[i].to as string });
+      });
+    } catch (err) {
+      logger.error('pushToUsers send error', { ...ctx, err });
+    }
+    idx += msgChunk.length;
+  }
+  await saveTicketsBatched(sent, ctx.friendUid, ctx.beaconId);
+}
+
+async function sendBeaconNotice(beaconId: string) {
+  const ref = db.collection('BeaconNotices').doc(beaconId);
+  const notice = (await ref.get()).data() as any;
+  if (!notice) return;
+  const beaconSnap = await db.collection('Beacons').doc(beaconId).get();
+  if (!beaconSnap.exists) {
+    await ref.delete();
+    return;
+  }
+  const b = beaconSnap.data() as Beacon;
+  const expMs = b.expiresAt?.toMillis?.() ?? 0;
+  const isOn = b.active === true && (!expMs || expMs > Date.now());
+  const lastSent: 'out' | 'on' | undefined = notice.lastSent;
+
+  let kind: 'out' | 'back' | 'updated' | null = null;
+  if (!isOn) kind = lastSent === 'out' ? null : 'out';
+  else if (lastSent === 'out') kind = 'back';
+  else if (notice.detailsChanged) kind = 'updated';
+
+  // Clear the pending state BEFORE sending (so a send failure can't loop the processor every tick),
+  // but only if no newer change landed since the read: the trigger moves dueAt on every change, so
+  // a different dueAt means a fresh quiet window started and that later tick will send instead.
+  const readDue: number = notice.dueAt?.toMillis?.() ?? 0;
+  const cleared = await db.runTransaction(async (tx) => {
+    const cur = (await tx.get(ref)).data() as any;
+    if ((cur?.dueAt?.toMillis?.() ?? 0) !== readDue) return false;
+    tx.set(
+      ref,
+      {
+        dueAt: FieldValue.delete(),
+        detailsChanged: FieldValue.delete(),
+        ...(kind ? { lastSent: kind === 'out' ? 'out' : 'on', lastSentAt: FieldValue.serverTimestamp() } : {}),
+      },
+      { merge: true }
+    );
+    return true;
+  });
+  if (!cleared || !kind) return;
+
+  const ownerUid = b.ownerUid;
+  const rsvps = (await getRsvpUids(beaconId)).filter((u) => u && u !== ownerUid);
+  if (rsvps.length === 0) return;
+  const unblocked = (
+    await Promise.all(rsvps.map(async (u) => ((await eitherBlocked(u, ownerUid)) ? null : u)))
+  ).filter((u): u is string => !!u);
+  if (unblocked.length === 0) return;
+
+  const name = (await ownerDisplayName(ownerUid, b)) || 'Your friend';
+
+  const title =
+    kind === 'out'
+      ? `${name} put out their beacon`
+      : kind === 'back'
+      ? `${name}'s beacon is back on`
+      : `${name} updated their beacon`;
+  const body = kind === 'out' ? "Looks like it's off for now." : beaconBody(b);
+
+  logger.info('beaconNotice send', { beaconId, kind, recipientCount: unblocked.length });
+  await pushToUsers(unblocked, { title, body, data: { type: 'beacon', beaconId, ownerUid } }, { friendUid: ownerUid, beaconId });
+}
+
+export const processBeaconNotices = onSchedule('every 2 minutes', async () => {
+  const due = await db.collection('BeaconNotices').where('dueAt', '<=', Timestamp.now()).limit(200).get();
+  for (const d of due.docs) {
+    try {
+      await sendBeaconNotice(d.id);
+    } catch (err) {
+      logger.error('processBeaconNotices failed', { beaconId: d.id, err });
+    }
+  }
+  const stale = await db.collection('BeaconNotices').where('purgeAt', '<=', Timestamp.now()).limit(400).get();
+  if (!stale.empty) {
+    const batch = db.batch();
+    stale.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+});
+
+// ===== 4c) Stoke: the hidden one-time re-nudge =====
+// A relit beacon never re-pings friends (claimFirstFanOut); instead it arms stokeReady. A long press
+// on the lit fire then lets the owner send ONE more push, optionally with a fresh message. Enforced
+// here (owner only, beacon live, armed by a relight, never stoked before) in a transaction. The
+// once-only cap is BeaconNotices.stokedAt (server-only), so a modified client can't stoke twice;
+// the owner-writable stokeReady on the beacon only drives the hidden long press.
+export const stokeBeacon = onCall({ enforceAppCheck: false }, async (req) => {
+  const uid = req.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Sign in first.');
+  const beaconId = String(req.data?.beaconId || '');
+  const message = String(req.data?.message || '').trim().slice(0, 200);
+  if (!beaconId) throw new HttpsError('invalid-argument', 'Missing beacon.');
+
+  const ref = db.collection('Beacons').doc(beaconId);
+  const noticeRef = db.collection('BeaconNotices').doc(beaconId);
+  const b = await db.runTransaction(async (tx) => {
+    const [snap, notice] = await Promise.all([tx.get(ref), tx.get(noticeRef)]);
+    const d = snap.data() as (Beacon & { stokeReady?: boolean; lastNotifiedAt?: unknown }) | undefined;
+    if (!d || d.ownerUid !== uid) throw new HttpsError('permission-denied', 'Not your beacon.');
+    const expMs = d.expiresAt?.toMillis?.() ?? 0;
+    if (d.active !== true || (expMs && expMs < Date.now())) throw new HttpsError('failed-precondition', 'Your beacon is out.');
+    // Armed only by a relight (claimFirstFanOut); the once-only cap lives server-side.
+    if (d.stokeReady !== true || !d.lastNotifiedAt) throw new HttpsError('failed-precondition', 'Nothing to stoke.');
+    if ((notice.data() as any)?.stokedAt) throw new HttpsError('failed-precondition', 'Already stoked.');
+    tx.update(ref, { stokeReady: false });
+    tx.set(noticeRef, { ownerUid: uid, stokedAt: FieldValue.serverTimestamp() }, { merge: true });
+    return d;
+  });
+
+  const name = await ownerDisplayName(uid, b);
+  const when = whenLabel(b);
+  const text = message || summarize(b);
+  const sent = await pushBeaconToFriends(
+    beaconId,
+    b,
+    name ? `${name} stoked their beacon` : 'A friend stoked their beacon',
+    when ? `${when} · ${text}` : text,
+    b.rallyOf || beaconId // a rally's nudge opens the shared (original) chat
+  );
+  logger.info('stokeBeacon sent', { beaconId, recipients: sent });
+  return { ok: true };
+});
 
 // ===== 5) Post comment notifications =====
 

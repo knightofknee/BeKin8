@@ -495,9 +495,11 @@ service cloud.firestore {
 
     // -------- Config (remote app config: minimum-version gate) --------
     // World-readable ON PURPOSE, and the ONLY unauthenticated read left in this file. It holds a
-    // version string and public store URLs, nothing user-related, and the update gate has to work
-    // on the sign-in screen where there is no auth yet. Console/Admin writes only: a client that
-    // could write this could brick every install by raising minVersion.
+    // version strings (latestVersion / minVersion, iOS), build numbers (androidLatestBuild /
+    // androidMinBuild, Android versionCodes), and public store URLs, nothing user-related, and the
+    // update gate has to work on the sign-in screen where there is no auth yet. Console/Admin
+    // writes only: a client that could write this could brick every install by raising minVersion
+    // or androidMinBuild.
     match /Config/{docId} {
       allow read: if true;
       allow write: if false;

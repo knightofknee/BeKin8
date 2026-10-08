@@ -1,6 +1,7 @@
 // components/UpdateRequiredGate.tsx
 // Rendered ONCE at the root, alongside VerifyEmailGate. Shows a full-screen blocking overlay when
-// the running build is older than Config/app.minVersion.
+// the running build is older than Config/app.minVersion (iOS) or Config/app.androidMinBuild, a
+// versionCode (Android; see lib/appUpdate.ts for why Android counts builds).
 //
 // Renders NOTHING in the normal case, and nothing at all when the config is missing, unreadable, or
 // disabled: see lib/updateGate.ts for why every unknown fails OPEN. A gate that can brick every
@@ -9,9 +10,9 @@
 // Deliberately NOT tied to auth state: an out-of-date build is out of date on the sign-in screen
 // too, and the config read does not require a signed-in user.
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../providers/ThemeProvider';
-import { fetchUpdateGate, currentAppVersion, type UpdateGateConfig } from '../lib/updateGate';
+import { fetchUpdateGate, type UpdateGateConfig } from '../lib/updateGate';
 
 export default function UpdateRequiredGate() {
   const { colors } = useTheme();
@@ -51,12 +52,9 @@ export default function UpdateRequiredGate() {
   return (
     <View style={[styles.overlay, { backgroundColor: colors.bg }]} accessibilityViewIsModal>
       <View style={styles.inner}>
-        <Text style={[styles.title, { color: colors.text }]}>Update required</Text>
+        <Text style={styles.emoji}>🤗</Text>
+        <Text style={[styles.title, { color: colors.text }]}>One quick update</Text>
         <Text style={[styles.body, { color: colors.subtle }]}>{gate.message}</Text>
-        <Text style={[styles.version, { color: colors.subtle }]}>
-          You have {currentAppVersion() || 'an older version'}. Version {gate.minVersion} or newer is
-          required.
-        </Text>
 
         {gate.storeUrl ? (
           <Pressable
@@ -74,14 +72,14 @@ export default function UpdateRequiredGate() {
             {opening ? (
               <ActivityIndicator color={colors.bg} />
             ) : (
-              <Text style={[styles.btnTxt, { color: colors.bg }]}>Update now</Text>
+              <Text style={[styles.btnTxt, { color: colors.bg }]}>Update</Text>
             )}
           </Pressable>
         ) : (
           // No store URL configured: still block, but tell the user what to do rather than
           // rendering a button that goes nowhere.
           <Text style={[styles.body, { color: colors.subtle }]}>
-            Please update BeKin from the App Store to continue.
+            Please update BeKin from {Platform.OS === 'android' ? 'Google Play' : 'the App Store'} to continue.
           </Text>
         )}
 
@@ -95,9 +93,9 @@ export default function UpdateRequiredGate() {
 const styles = StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFillObject, zIndex: 9999, justifyContent: 'center', alignItems: 'center' },
   inner: { paddingHorizontal: 28, alignItems: 'center', maxWidth: 420 },
+  emoji: { fontSize: 44, lineHeight: 52, marginBottom: 8 },
   title: { fontSize: 24, fontWeight: '800', marginBottom: 12, textAlign: 'center' },
   body: { fontSize: 15, lineHeight: 21, textAlign: 'center', marginBottom: 10 },
-  version: { fontSize: 13, lineHeight: 18, textAlign: 'center', marginBottom: 22 },
   btn: { paddingVertical: 14, paddingHorizontal: 28, borderRadius: 12, minWidth: 180, alignItems: 'center' },
   btnTxt: { fontSize: 16, fontWeight: '700' },
 });

@@ -334,7 +334,7 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       branch: true,
       interactive: true,
       title: "Your beacon chat",
-      body: "Nice, it's lit! Friends who can see your beacon can RSVP and chat with you right here. Open it to take a look, or tap Next.",
+      body: "Nice, it's lit! Friends can RSVP to say they're going, or Rally: rallying means they turn on their own beacon for your plan, and the friends they pick join this same chat. Open it to take a look, or tap Next.",
       holePad: 12, // the chat button is the same blue as the ring; give a clear gap so they don't merge
       nextTarget: "beacon-options-cta",
       onEnter: home,
@@ -501,7 +501,7 @@ export function makeSpeedLightStep(ctx: BeaconTourCtx, lit: boolean): TourStep {
       body: "Congrats, that's the whole flow. It went to your test group, so no friends were notified. Open Beacon options to set the day, time, and who sees it.",
       interactive: true,
       placement: "top",
-      holePadTop: ctx.holePadTop + 235, // structure + chat slot; slightly short of the flame tip so
+      holePadTop: ctx.holePadTop + 221, // structure + chat slot; slightly short of the flame tip so
       // the ring keeps clear air between itself and the instruction box above
       cta: "Done",
       onEnter: home,

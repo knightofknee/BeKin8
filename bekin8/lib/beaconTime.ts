@@ -42,3 +42,22 @@ export function formatTimeHHmmDisplay(s: string | null | undefined): string {
   if (!parsed) return "";
   return `${parsed.hour}:${parsed.minute} ${parsed.meridiem}`;
 }
+
+// Hours past midnight a beacon stays alive. A 10pm hangout shouldn't lose its tile and chat at 12.
+export const BEACON_GRACE_HOURS = 4;
+
+// When a beacon for `day` expires: 4am (local) the morning after.
+export function beaconExpiry(day: Date): Date {
+  const x = new Date(day);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() + 1);
+  x.setHours(BEACON_GRACE_HOURS, 0, 0, 0);
+  return x;
+}
+
+// Is a beacon still live? Uses its stored expiry when present; otherwise (very old docs) it lives
+// through its own day plus the grace hours.
+export function beaconStillLive(startAtMs: number, expiresAtMs: number, nowMs: number = Date.now()): boolean {
+  if (expiresAtMs) return expiresAtMs > nowMs;
+  return startAtMs > 0 && beaconExpiry(new Date(startAtMs)).getTime() > nowMs;
+}
