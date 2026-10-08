@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
 import RsvpRallyActions from './RsvpRallyActions';
+import { useUnreadCount } from '../lib/chatRead';
 import { tap } from '../utils/haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -132,6 +133,9 @@ const FriendBeaconItem = React.memo(function FriendBeaconItem({
   const ogId = beacon.rallyOf || beacon.id;
   const ogOwnerUid = beacon.rallyOf ? beacon.rallyOwnerUid || '' : beacon.ownerUid;
   const ogOwnerName = beacon.rallyOf ? rallyOwnerLabel || beacon.rallyOwnerName || '' : ownerLabel;
+  // Unread messages in the chat this tile opens (a rally tile opens the original's), so you can see
+  // where the conversation is without tapping around.
+  const unread = useUnreadCount(ogId);
 
   return (
     <Pressable
@@ -151,6 +155,11 @@ const FriendBeaconItem = React.memo(function FriendBeaconItem({
     >
       <View style={[styles.avatar, { backgroundColor: tc.primary }]}>
         <Text style={styles.avatarTxt}>{ownerLabel?.[0]?.toUpperCase() || 'F'}</Text>
+        {unread > 0 && (
+          <View style={styles.unreadBadge} accessibilityLabel={`${unread} unread messages`}>
+            <Text style={styles.unreadBadgeTxt}>{unread > 9 ? '9+' : unread}</Text>
+          </View>
+        )}
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.beaconOwner} numberOfLines={beacon.rallyOf ? 2 : 1}>
@@ -811,6 +820,22 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   avatarTxt: { color: '#fff', fontWeight: '900' },
+  // Unread badge on the avatar's corner: the same ember as the home Chat pill's badge.
+  unreadBadge: {
+    position: 'absolute',
+    top: -7,
+    right: -9,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: '#FB923C',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unreadBadgeTxt: { color: '#1C0A00', fontSize: 10, fontWeight: '800' },
   rsvpCol: { alignItems: 'center', alignSelf: 'center' },
   // The connecting words in "Sam rallying to Devin's cause": names stay bold, these don't.
   rallyJoin: { fontWeight: '500' },
