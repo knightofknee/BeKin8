@@ -37,12 +37,13 @@ const ZOOM = 1.12;
 const LIT_AFTER_MS = 500;
 const BURN_MS = 10_000;
 
-// The Beacons preview is a STYLE preview, not a data preview: it stages sample friends. Three answer
-// in the lit relay, then, after three relay gaps of quiet, a fourth (Devin) says "I'm in" and his
-// pile ignites on its own, which is the thing this skin does that no other does.
+// The Beacons preview is a STYLE preview, not a data preview: it stages sample friends. Lighting
+// sets the whole range burning; three answers label the nearest piles (Jordan rallied, so his burns
+// brighter), then, after three relay gaps of quiet, a fourth (Devin) answers and his pile flares as
+// his name lands, which is the thing this skin does that no other does.
 const SAMPLE_PEOPLE: ScenePerson[] = [
   { id: 'sample-maya', name: 'Maya' },
-  { id: 'sample-jordan', name: 'Jordan' },
+  { id: 'sample-jordan', name: 'Jordan', rally: true }, // shows off a rally's brighter fire
   { id: 'sample-sam', name: 'Sam' },
 ];
 const SAMPLE_LATE: ScenePerson = { id: 'sample-devin', name: 'Devin' };
@@ -67,6 +68,8 @@ export default function StylePreview({
   const [lit, setLit] = useState(false);
   const [lateArrived, setLateArrived] = useState(false);
   const showsPeople = !!skin.showsPeople;
+  // Sample friends for skins that show people (Beacons chain, Campfire bugs, Fireworks names).
+  const previewPeople = showsPeople && lit ? (lateArrived ? PEOPLE_FULL : SAMPLE_PEOPLE) : NO_PEOPLE;
   const [boxW, setBoxW] = useState(0);
   const { width: W, height: H } = useWindowDimensions();
 
@@ -127,7 +130,7 @@ export default function StylePreview({
             { width: W, height: H, transform: [{ translateX: tx }, { translateY: ty }, { scale: s }] },
           ]}
         >
-          <BeaconScene {...common} people={showsPeople && lit ? (lateArrived ? PEOPLE_FULL : SAMPLE_PEOPLE) : NO_PEOPLE} />
+          <BeaconScene {...common} people={previewPeople} />
 
           {skin.smokeKind === 'signal' ? (
             <BeaconSmokeSignal {...common} />
@@ -136,7 +139,7 @@ export default function StylePreview({
             // stage top, so a full-page stage bursts above the box. Stage it to just the visible
             // band of the page instead (anchor re-based to that band) so every burst lands in view.
             <View style={[styles.stage, { top: visTop, width: W, height: visH }]}>
-              <BeaconFireworks {...common} anchorY={anchorY - visTop} frameW={W} frameH={visH} />
+              <BeaconFireworks {...common} anchorY={anchorY - visTop} frameW={W} frameH={visH} people={previewPeople} />
             </View>
           ) : skin.smokeKind === 'lanterns' ? (
             <BeaconSkyLanterns {...common} />

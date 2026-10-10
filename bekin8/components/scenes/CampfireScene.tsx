@@ -2,14 +2,15 @@
 // The CAMPFIRE backdrop (behind all tiles): a STORYBOOK moonlit forest clearing, fully procedural
 // (no photos). Night-sky gradient with static star specks and a small soft moon high left; three
 // receding pine-silhouette treelines (darkest nearest); a dark clearing mound that meets the log
-// teepee structure at its anchor. Calm fireflies drift over the clearing on loopNoise whenever the
-// tab is focused, lit or not. Lighting the beacon blooms a warm anchor-aligned glow low over the
+// teepee structure at its anchor. Lightning bugs wander the clearing and blink in randomized
+// windows whenever the tab is focused, lit or not; while lit they carry the names of the friends
+// going (see LightningBug). Lighting the beacon blooms a warm anchor-aligned glow low over the
 // clearing (450ms in, 600ms out) and warms the nearest treeline + ground very slightly. Friend
 // tiles sit over the 12..62% band, so that band stays dark and quiet; a top + bottom scrim keeps
 // white text legible.
 import React, { useEffect, useMemo } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Ellipse, Path, G } from 'react-native-svg';
+import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Ellipse, Path, G, Text as SvgText } from 'react-native-svg';
 import Animated, {
   useSharedValue,
   useAnimatedProps,
@@ -18,9 +19,10 @@ import Animated, {
   useReducedMotion,
   type SharedValue,
 } from 'react-native-reanimated';
-import { loopNoise, loopNoiseSigned, makeSeed, type NoiseSeed } from '../../lib/beaconNoise';
+import { loopNoiseSigned, makeSeed, type NoiseSeed } from '../../lib/beaconNoise';
 import { useGatedClock } from '../../lib/useGatedClock';
 import type { BeaconSkin } from '../../lib/beaconSkins';
+import type { ScenePerson } from './BeaconsScene';
 
 const AnimatedG = Animated.createAnimatedComponent(G);
 
@@ -34,40 +36,93 @@ const STARS = [
   { x: 0.82, y: 0.33, r: 0.8, o: 0.3 }, { x: 0.17, y: 0.38, r: 0.8, o: 0.25 }, { x: 0.68, y: 0.4, r: 0.8, o: 0.25 },
 ];
 
-// Fireflies: the same calm approach as BeaconScene's FireflyDot. Each drifts slowly on its own
-// long-period loopNoise and is UNLIT far more than lit; with incommensurate periods the number
-// glowing at once is mostly 0, sometimes 1. Positions hug the clearing, below the tile band.
-const FLIES = [
-  { x: 0.24, y: 0.57, sx: makeSeed(4.2, 10.3, 1.3, 15.1), sy: makeSeed(8.1, 6.6, 1.4, 11.3), bl: makeSeed(14.9, 3.3, 1.5, 10.2) },
-  { x: 0.7, y: 0.53, sx: makeSeed(10.5, 2.8, 1.4, 12.9), sy: makeSeed(3.7, 12.2, 1.3, 16.1), bl: makeSeed(18.1, 7.5, 1.5, 12.4) },
-  { x: 0.48, y: 0.63, sx: makeSeed(6.9, 8.4, 1.3, 14.7), sy: makeSeed(12.8, 5.1, 1.4, 13.6), bl: makeSeed(22.4, 2.6, 1.5, 9.1) },
-  { x: 0.84, y: 0.66, sx: makeSeed(9.2, 6.3, 1.4, 13.1), sy: makeSeed(5.4, 11.7, 1.3, 14.4), bl: makeSeed(16.6, 9.8, 1.5, 11.9) },
-  { x: 0.13, y: 0.68, sx: makeSeed(11.8, 3.4, 1.3, 17.2), sy: makeSeed(7.3, 13.5, 1.4, 12.2), bl: makeSeed(20.2, 5.7, 1.5, 8.9) },
-];
+// LIGHTNING BUGS: a field of them wanders the clearing, each blinking on and off in its own
+// randomized windows (a hashed cycle length, start, and duration per blink, with some blinks
+// skipped), so a few glow at any moment. When the beacon is lit, the friends going take bugs in
+// answer order, and a bug carries its person's first name whenever it lights. A friend who
+// RALLIED gets a bigger, brighter bug that blinks more often and sometimes flutters quickly.
+const BASE_BUGS = 9;
+const MAX_BUGS = 14;
 
-function FireflyDot({ clock, x, y, sx, sy, bl }: { clock: SharedValue<number>; x: number; y: number; sx: NoiseSeed; sy: NoiseSeed; bl: NoiseSeed }) {
+/** Hash to 0..1 on the UI thread (also used in JS to lay the bugs out deterministically). */
+function h01(n: number): number {
+  'worklet';
+  const v = Math.sin(n * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+/** 0..1 brightness of bug `i` at time `t`: randomized on/off windows (see above). */
+function bugBlink(t: number, i: number, rally: boolean, named: boolean): number {
+  'worklet';
+  const L = (3.6 + 4.2 * h01(i * 7.13 + 0.5)) * (rally ? 0.6 : 1);
+  const tt = t + h01(i * 3.71 + 0.2) * L; // per-bug phase so they never sync
+  const k = Math.floor(tt / L);
+  const u = tt - k * L;
+  // Skip some blinks entirely (named bugs skip less, so a name keeps coming back).
+  if (h01(k * 5.71 + i * 1.93) < (named ? 0.1 : 0.25)) return 0;
+  const dur = (1.0 + 1.8 * h01(k * 2.11 + i * 3.37)) * (rally ? 0.85 : 1);
+  const st = h01(k * 1.37 + i * 9.13) * Math.max(0.1, L - dur);
+  const x = u - st;
+  if (x < 0 || x > dur) return 0;
+  let b = Math.min(1, x / 0.3) * Math.min(1, (dur - x) / 0.45);
+  // A rally bug sometimes flutters: a quick pulse through its glow.
+  if (rally && h01(k * 3.31 + i * 1.17) > 0.45) b *= 0.65 + 0.35 * Math.cos(x * 13);
+  return b;
+}
+
+type BugProps = {
+  clock: SharedValue<number>;
+  i: number;
+  x: number;
+  y: number;
+  sx: NoiseSeed;
+  sy: NoiseSeed;
+  label: string;
+  rally: boolean;
+  still: boolean; // reduced motion: hold steady in place
+};
+
+function LightningBug({ clock, i, x, y, sx, sy, label, rally, still }: BugProps) {
+  const named = !!label;
   const props = useAnimatedProps(() => {
     const t = clock.value;
-    // Lit only in the TOP slice of the noise (~top 20%), ramped + squared: dark most of the time,
-    // glowing up gently now and then.
-    let g = (loopNoise(t, bl) - 0.8) / 0.16;
-    g = g < 0 ? 0 : g > 1 ? 1 : g;
-    g = g * g;
+    const b = still ? (named ? 0.9 : 0.45) : bugBlink(t, i, rally, named);
     return {
-      opacity: g,
+      opacity: b,
       transform: [
-        { translateX: x + loopNoiseSigned(t, sx, 48) }, // gentle slow wander
-        { translateY: y + loopNoiseSigned(t, sy, 60) },
+        { translateX: x + (still ? 0 : loopNoiseSigned(t, sx, 70)) }, // slow wandering drift
+        { translateY: y + (still ? 0 : loopNoiseSigned(t, sy, 46)) },
       ],
     };
   });
   return (
     <AnimatedG animatedProps={props}>
-      <Circle cx={0} cy={0} r={4.5} fill="url(#cfFly)" />
-      <Circle cx={0} cy={0} r={1.5} fill="#FFF6B0" />
+      <Circle cx={0} cy={0} r={rally ? 17 : 10} fill="url(#cfFly)" />
+      <Circle cx={0} cy={0} r={rally ? 3.4 : 2.2} fill="#FFFBD0" />
+      {named ? (
+        <>
+          <SvgText x={0.8} y={21} fontSize={rally ? 13 : 11.5} fontWeight="700" fill="#000" opacity={0.75} textAnchor="middle">{label}</SvgText>
+          <SvgText x={0} y={20} fontSize={rally ? 13 : 11.5} fontWeight="700" fill={rally ? '#FFF2A8' : '#EEFFD0'} textAnchor="middle">{label}</SvgText>
+        </>
+      ) : null}
     </AnimatedG>
   );
 }
+
+/** Deterministic layout for n bugs over the clearing band [y0, y1]. */
+function layoutBugs(n: number, W: number, y0: number, y1: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    x: W * (0.07 + 0.86 * h01(i * 3.1 + 1.7)),
+    y: y0 + (y1 - y0) * h01(i * 5.3 + 2.9),
+    sx: makeSeed(3 + i * 2.3, 5 + i * 1.7, 1.3 + (i % 3) * 0.05, 11 + ((i * 1.9) % 7)),
+    sy: makeSeed(7 + i * 1.1, 2 + i * 2.9, 1.35 + (i % 2) * 0.05, 13 + ((i * 2.3) % 6)),
+  }));
+}
+
+const firstName = (name: string) => {
+  const f = (name || '').trim().split(/\s+/)[0] || '';
+  return f.length > 10 ? `${f.slice(0, 9)}…` : f;
+};
 
 // Deterministic jagged pine treeline: per tree a shoulder, peak, shoulder with valleys at the base,
 // closed down to the bottom of the screen so nearer layers stack over farther ones.
@@ -96,9 +151,11 @@ export type CampfireSceneProps = {
   anchorX?: number;
   anchorY?: number;
   measured?: boolean;
+  /** Friends going (answer order): they ride the lightning bugs by name. */
+  people?: ScenePerson[];
 };
 
-export default function CampfireScene({ skin, active, focused = true, anchorX, anchorY, measured = false }: CampfireSceneProps) {
+export default function CampfireScene({ skin, active, focused = true, anchorX, anchorY, measured = false, people = [] }: CampfireSceneProps) {
   const { width: W, height: H } = useWindowDimensions();
   const reduce = useReducedMotion();
 
@@ -120,8 +177,16 @@ export default function CampfireScene({ skin, active, focused = true, anchorX, a
     return { far, mid, near, mound };
   }, [W, H, seatX, seatY, structureBottom]);
 
-  // Scene clock for the fireflies (shared gated clock: registered + paused while gated off), and
-  // fireflies drift whether the beacon is lit or not (gated on focus so the clock pauses off-tab).
+  // The bug field: at least BASE_BUGS, more when more friends are going (up to MAX_BUGS), wandering
+  // the clearing between the tile band and the treetops above the structure.
+  const bugCount = Math.min(MAX_BUGS, Math.max(BASE_BUGS, people.length));
+  const bugs = useMemo(
+    () => layoutBugs(bugCount, W, H * 0.42, Math.max(H * 0.5, seatY - 40)),
+    [bugCount, W, H, seatY]
+  );
+
+  // Scene clock for the bugs (shared gated clock: registered + paused while gated off); they
+  // wander whether the beacon is lit or not (gated on focus so the clock pauses off-tab).
   const { clock } = useGatedClock(!reduce && focused);
 
   // Firelight: blooms low over the clearing when lit, fades when doused. Starts at the lit state so
@@ -190,13 +255,25 @@ export default function CampfireScene({ skin, active, focused = true, anchorX, a
           <Ellipse cx={seatX} cy={seatY + 34} rx={W * 0.44} ry={110} fill="url(#cfGlow)" />
         </AnimatedG>
 
-        {/* calm fireflies drifting over the clearing (lit or not) */}
-        {FLIES.map((f, i) => (
-          <FireflyDot key={`cff${i}`} clock={clock} x={W * f.x} y={H * f.y} sx={f.sx} sy={f.sy} bl={f.bl} />
-        ))}
-
         {/* scrim over everything so tiles/text stay legible */}
         <Rect x={0} y={0} width={W} height={H} fill="url(#cfScrim)" />
+
+        {/* lightning bugs over the clearing (lit or not), ABOVE the scrim so they and the names
+            they carry stay bright; the friends going ride them in answer order */}
+        {bugs.map((b, i) => (
+          <LightningBug
+            key={`cfb${i}`}
+            clock={clock}
+            i={i}
+            x={b.x}
+            y={b.y}
+            sx={b.sx}
+            sy={b.sy}
+            label={i < people.length ? firstName(people[i].name) : ''}
+            rally={i < people.length && people[i].rally === true}
+            still={!!reduce}
+          />
+        ))}
       </Svg>
     </View>
   );

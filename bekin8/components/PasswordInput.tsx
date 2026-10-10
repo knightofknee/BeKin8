@@ -65,8 +65,11 @@ const PasswordInput = forwardRef<PasswordInputHandle, Props>(function PasswordIn
         accessibilityRole="button"
         accessibilityLabel={reveal ? "Hide password" : "Show password"}
       >
+        {/* The icon shows the CURRENT state, the Android/Google convention testers expect: a
+            crossed-out eye while the password is hidden, an open eye while it's visible. (It used to
+            show the action instead, which read as backwards.) */}
         <Ionicons
-          name={reveal ? "eye-off-outline" : "eye-outline"}
+          name={reveal ? "eye-outline" : "eye-off-outline"}
           size={20}
           color={toggleColor}
         />

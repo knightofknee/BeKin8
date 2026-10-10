@@ -284,6 +284,10 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       const available = Math.max(containerH - headerH - 12, 0);
       const perRow = firstCardH + gap;
       const rowsThatFit = Math.max(3, Math.min(6, Math.floor((available + gap) / perRow)));
+      // Everything fits: no cap. The cap is estimated from the FIRST card's height, so capping a
+      // list that doesn't overflow cut the last card off whenever later cards were taller (a
+      // two-line message), with no "Scroll for more" to explain it.
+      if (beacons.length <= rowsThatFit) return undefined;
       const visibleRows = Math.min(beacons.length, rowsThatFit);
       const gapsPx = Math.max(visibleRows - 1, 0) * gap;
       const peek = beacons.length > visibleRows ? Math.round(firstCardH * 0.5) : 0;

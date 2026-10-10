@@ -101,6 +101,7 @@ export type BeaconSkin = {
 // flame + ambient smoke when lit (the old pixel-art WebP pit is gone).
 const CAMPFIRE: BeaconSkin = {
   id: 'campfire',
+  showsPeople: true, // going friends ride the lightning bugs by name (skins spreading this reset it)
   label: 'Campfire',
   blurb: 'A cozy campfire in a moonlit forest clearing.',
   structure: 'logs',
@@ -136,6 +137,7 @@ const CAMPFIRE: BeaconSkin = {
 // dusk sky, stars, moon glint, mist, treeline, animated water, the answer fire + canoes).
 const LAKESHORE: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'lakeshore',
   label: 'Lakeshore',
   blurb: 'A shore fire on a still lake. Light it, and the far bank answers.',
@@ -165,6 +167,7 @@ const LAKESHORE: BeaconSkin = {
 // forged-iron fire basket on a stone plinth; lighting it washes the stonework warm.
 const OLD_GUARD: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'oldguard',
   label: 'Old Guard',
   blurb: 'A watchfire basket burning on the castle wall.',
@@ -192,6 +195,7 @@ const OLD_GUARD: BeaconSkin = {
 // deepen + ground light from 0.9s. The ignite m4a is authored to this timeline.
 const BONFIRE: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'bonfire',
   label: 'Bonfire',
   blurb: 'A big country bonfire under the setting sun.',
@@ -246,6 +250,7 @@ const BEACONS: BeaconSkin = {
 // behind the friend tiles). No flame, no smoke; the sky is the fire. Ethereal wisp sounds fit it.
 const AURORA: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'aurora',
   label: 'Aurora',
   blurb: 'A rune stone that sets the northern sky alight.',
@@ -270,6 +275,7 @@ const AURORA: BeaconSkin = {
 // is a soft colonial piano ("Chester", Billings 1770), trimmed quieter than a crackle.
 const TOWER: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'tower',
   label: 'Two Lanterns',
   blurb: 'One if by land, two if by sea.',
@@ -291,6 +297,7 @@ const TOWER: BeaconSkin = {
 // full-screen sweeping beam in the fire slot. `glow.center` is the beam/lantern color.
 const LIGHTHOUSE: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'lighthouse',
   label: 'Lighthouse',
   blurb: 'A coastal lighthouse. Its beam sweeps the night over a moonlit sea.',
@@ -309,6 +316,7 @@ const LIGHTHOUSE: BeaconSkin = {
 // NOTE for the sound pass: still reuses the beacons clips; wants its own (drier, high-desert) pair.
 const SMOKE_SIGNAL: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'smokesignal',
   label: 'Smoke Signal',
   blurb: 'A ridge fire speaking in slow white puffs.',
@@ -340,6 +348,7 @@ const SMOKE_SIGNAL: BeaconSkin = {
 // to extinguish.
 const FIREWORKS: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: true, // going friends' names write themselves into the bursts
   id: 'fireworks',
   label: 'Fireworks',
   blurb: 'Light the fuse. The night answers in color.',
@@ -368,6 +377,7 @@ const FIREWORKS: BeaconSkin = {
 // fuel pot is the lit cue and extinguish target.
 const SKY_LANTERNS: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'skylanterns',
   label: 'Sky Lanterns',
   blurb: 'A paper lantern released to join a thousand wishes.',
@@ -391,6 +401,7 @@ const SKY_LANTERNS: BeaconSkin = {
 // cloud lights up around it). glow.center is the arc/beam color, lighthouse-style.
 const SEARCHLIGHT: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'searchlight',
   label: 'Searchlight',
   blurb: 'Throw the lever. Put your sign on the clouds.',
@@ -414,6 +425,7 @@ const SEARCHLIGHT: BeaconSkin = {
 // scene's clouds plus rain, and the rod's corona is the extinguish target.
 const STORM: BeaconSkin = {
   ...CAMPFIRE,
+  showsPeople: false,
   id: 'storm',
   label: 'Storm Caller',
   blurb: 'Call the sky down to the rod.',

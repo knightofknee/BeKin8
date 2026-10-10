@@ -75,9 +75,14 @@
 // mid-bloom SINGLE burst (slot 0, cycle 0, age 0.5, no volley) at low alpha. NATIVE: needs a
 // dev/EAS rebuild, Skia is a native module.
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { AppState, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import type { ScenePerson } from './scenes/BeaconsScene';
 import { Canvas, Fill, Shader } from '@shopify/react-native-skia';
-import {
+import Animated, {
+  runOnJS,
+  useAnimatedReaction,
+  useAnimatedStyle,
+  type SharedValue,
   useSharedValue,
   useDerivedValue,
   withTiming,
@@ -322,9 +327,11 @@ export type BeaconFireworksProps = {
    *  launches and bursts are choreographed within it. */
   frameW?: number;
   frameH?: number;
+  /** People going (RSVP/rally): each break writes one of their names in the sky (BurstNames). */
+  people?: ScenePerson[];
 };
 
-export default function BeaconFireworks({ skin, active, anchorX, anchorY, measured, focused = true, frameW, frameH }: BeaconFireworksProps) {
+export default function BeaconFireworks({ skin, active, anchorX, anchorY, measured, focused = true, frameW, frameH, people = [] }: BeaconFireworksProps) {
   // The show is choreographed against the "screen" size (burst altitude band = fractions of u_h,
   // x spread on u_w). frameW/frameH override it so an embedded run (the style-picker preview)
   // stages the whole arc inside its own box instead of at full-screen altitudes.
@@ -444,10 +451,112 @@ export default function BeaconFireworks({ skin, active, anchorX, anchorY, measur
           <Shader source={effect} uniforms={uniforms} />
         </Fill>
       </Canvas>
+      {!reduce && people.length > 0 && (
+        <BurstNames clock={clock} act={act} people={people} anchorX={anchorX} W={W} H={H} />
+      )}
     </View>
+  );
+}
+
+// ---- Names in the sky ----------------------------------------------------------------------
+// Every break also writes a going friend's first name at its burst point, which appears with the
+// pop and fades as the sparks fall. The shader's schedule is fixed (OFFS, CYCLE) and its burst
+// point is hashed off (showCycle, slot), so the SAME math in JS puts each name on its explosion.
+// hash32 replays the SkSL hash in float32 (Math.fround at each step) to match the GPU's floats.
+// Names rotate through everyone going: break (cycle c, slot k) shows person (c * 5 + k) mod n.
+
+const OFFS = [1.85, 6.1, 9.9, 13.5, 17.1]; // slot launch times on the 20s cycle (shader's offs)
+const CYCLE_S = 20;
+const LAUNCH_S = 0.9;
+const f32 = Math.fround;
+const fract32 = (x: number) => f32(x - Math.floor(x));
+function hash32(x: number, y: number): number {
+  let px = fract32(f32(f32(x) * f32(123.34)));
+  let py = fract32(f32(f32(y) * f32(345.45)));
+  const d = f32(f32(px * f32(px + f32(34.345))) + f32(py * f32(py + f32(34.345))));
+  px = f32(px + d);
+  py = f32(py + d);
+  return fract32(f32(px * py));
+}
+function burstPoint(c: number, k: number, anchorX: number, W: number, H: number) {
+  const seed = f32(f32(c * f32(7.31)) + f32(k * f32(17.77)));
+  const h1 = hash32(f32(seed + f32(0.7)), f32(k + f32(1.3)));
+  const h2 = hash32(f32(seed + f32(5.1)), f32(k + f32(6.9)));
+  const bx = Math.min(Math.max(anchorX + (h1 - 0.5) * 0.56 * W, 0.15 * W), 0.85 * W);
+  const by = 0.16 * H + (0.34 * H - 0.16 * H) * h2;
+  return { bx, by };
+}
+
+function BurstNames({ clock, act, people, anchorX, W, H }: {
+  clock: SharedValue<number>;
+  act: SharedValue<number>;
+  people: ScenePerson[];
+  anchorX: number;
+  W: number;
+  H: number;
+}) {
+  // Which showCycle each slot is on; re-renders JS only when a slot rolls to its next cycle.
+  const [cycles, setCycles] = useState<number[]>([-1, -1, -1, -1, -1]);
+  const apply = (key: string) => setCycles(key.split(',').map(Number));
+  useAnimatedReaction(
+    () => OFFS.map((o) => Math.floor((clock.value - o) / CYCLE_S)).join(','),
+    (key, prev) => {
+      if (key !== prev) runOnJS(apply)(key);
+    },
+    []
+  );
+  return (
+    <>
+      {OFFS.map((_, k) => {
+        const c = cycles[k];
+        if (c < 0) return null;
+        const n = people.length;
+        const person = people[(((c * 5 + k) % n) + n) % n];
+        const { bx, by } = burstPoint(c, k, anchorX, W, H);
+        return <BurstName key={k} slot={k} clock={clock} act={act} x={bx} y={by} name={person.name} rally={!!person.rally} />;
+      })}
+    </>
+  );
+}
+
+function BurstName({ slot, clock, act, x, y, name, rally }: {
+  slot: number;
+  clock: SharedValue<number>;
+  act: SharedValue<number>;
+  x: number;
+  y: number;
+  name: string;
+  rally: boolean;
+}) {
+  const style = useAnimatedStyle(() => {
+    const t = clock.value - OFFS[slot];
+    const c = Math.floor(t / CYCLE_S);
+    if (c < 0) return { opacity: 0 };
+    const bt = t - c * CYCLE_S - LAUNCH_S; // seconds since this slot's break
+    if (bt < 0 || bt > 2.4) return { opacity: 0 };
+    const fadeIn = Math.min(1, bt / 0.25);
+    const fadeOut = bt < 1.3 ? 1 : Math.max(0, 1 - (bt - 1.3) / 1.0);
+    return { opacity: fadeIn * fadeOut * act.value, transform: [{ translateY: (-14 * bt) / 2.3 }] };
+  });
+  const first = (name || '').trim().split(/\s+/)[0] || '';
+  return (
+    <Animated.View pointerEvents="none" style={[styles.nameWrap, { left: x - 90, top: y - 11 }, style]}>
+      <Text style={[styles.name, rally && styles.nameRally]} numberOfLines={1}>{first}</Text>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   fill: { position: 'absolute', top: 0, left: 0 },
+  nameWrap: { position: 'absolute', width: 180, alignItems: 'center' },
+  name: {
+    color: '#FFF7E6',
+    fontSize: 17,
+    fontWeight: '800',
+    textShadowColor: 'rgba(0,0,0,0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
+  },
+  // A rally's name burns gold and a touch larger, like its brighter fire on The Beacons.
+  nameRally: { color: '#FFD98C', fontSize: 19 },
 });

@@ -419,11 +419,11 @@ export function buildBeaconTour(ctx: BeaconTourCtx): TourStep[] {
       onEnter: ctx.goSettings,
     },
     {
-      // Light or dark: asked as its own question, pointing at the actual button so the user knows
-      // where it lives. Interactive: tapping flips the theme live under the spotlight.
+      // Light or dark: asked as its own question, pointing at the actual System/Light/Dark row so the
+      // user knows where it lives. Interactive: tapping switches the theme live under the spotlight.
       target: "settings-darkmode",
       title: "Light or dark?",
-      body: "Your call. This button flips the whole app, and you can come back and change it anytime.",
+      body: "Your call. Follow your phone's setting, or pick light or dark. You can change it anytime.",
       interactive: true,
       onEnter: ctx.goSettings,
     },

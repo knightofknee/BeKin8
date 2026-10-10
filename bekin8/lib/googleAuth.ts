@@ -5,9 +5,17 @@ import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase.config";
 import { syncPushTokenIfGranted } from "./push";
 
+// The project's Google WEB OAuth client (client_type 3 in google-services.json). Android needs it to
+// get an ID token at all. It isn't a secret (it ships inside every build), and the env var only
+// exists in the local .env, which is gitignored and so never reaches EAS cloud builds: Play builds
+// went out with webClientId undefined and Google sign-in failed for every Android tester. The
+// env var still wins when set.
+const GOOGLE_WEB_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || "203808800578-nslfpo7rtapvqh6th03qor6v5lbdhqga.apps.googleusercontent.com";
+
 // Configure once at module load, idempotent, safe to call early
 GoogleSignin.configure({
-  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID!,
+  webClientId: GOOGLE_WEB_CLIENT_ID,
 });
 
 /**

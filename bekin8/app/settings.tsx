@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Switch, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Switch, ScrollView, Share, Platform } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
@@ -8,11 +8,15 @@ import { Ionicons } from "@expo/vector-icons";
 import BottomBar from "../components/BottomBar";
 import { SCREEN_PAD } from "../components/ui/layout";
 import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useTheme, type ThemePref } from "../providers/ThemeProvider";
 import { ensureNotifyPermission } from "../lib/notifyPermission";
 import { useTourTarget } from "../providers/TourProvider";
 import { tap, selection } from '../utils/haptics';
 import { logout } from '../lib/logout';
+import { buildInviteUrl, prefetchMyInviteCode } from '../lib/inviteLink';
+
+const APP_STORE_URL = 'https://apps.apple.com/app/id6746952014';
+const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.waldgrave.bekin';
 
 const colors = {
   primary: "#2F6FED",
@@ -25,7 +29,24 @@ const colors = {
 };
 
 export default function SettingsScreen() {
-  const { colors: tc, isDark, toggleTheme } = useTheme();
+  const { colors: tc, pref, setPref } = useTheme();
+
+  const shareApp = async () => {
+    tap();
+    const uid = auth.currentUser?.uid;
+    const code = uid ? await prefetchMyInviteCode(uid) : null;
+    try {
+      if (code) {
+        const url = buildInviteUrl(code);
+        // iOS shares a URL as a rich link; Android ignores `url`, so the link is the message.
+        await (Platform.OS === "ios" ? Share.share({ url }) : Share.share({ message: url }));
+      } else {
+        await Share.share({ message: `BeKin\niPhone: ${APP_STORE_URL}\nAndroid: ${PLAY_STORE_URL}` });
+      }
+    } catch {
+      // cancelled or share sheet failed: nothing to do
+    }
+  };
   const insets = useSafeAreaInsets();
   const { profile, profileLoaded, updateProfile } = useAuth();
   const [commentsEnabled, setCommentsEnabled] = useState(false);
@@ -287,6 +308,21 @@ export default function SettingsScreen() {
           </View>
           </View>
 
+          {/* Share BeKin: shares YOUR friend link, so whoever installs through it lands on the right
+              store for their phone AND is connected to you automatically. The bare link only (same
+              rule as the Friends page share). No username yet = no link, so plain store links. */}
+          <Pressable
+            style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
+            onPress={shareApp}
+            accessibilityRole="button"
+          >
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: tc.primary }]}>Share BeKin</Text>
+              <Text style={[s.subtle, { color: tc.subtle }]}>Friends who join through your link connect with you automatically</Text>
+            </View>
+            <Ionicons name="share-outline" size={20} color={tc.primary} />
+          </Pressable>
+
           {/* Fire sounds live on the beacon page itself (the little volume button), not here. */}
         </ScrollView>
 
@@ -306,35 +342,31 @@ export default function SettingsScreen() {
             <Text style={s.prominentBtnTxt}>Edit Profile</Text>
           </Pressable>
 
-          {/* Dark mode, inverse color scheme. The LABEL is the only in-flow child (so it centers
-              exactly like Edit Profile's text); the sun/moon is an Ionicons vector icon (identical
-              rendering on simulator and device, unlike emoji) hung off a zero-width anchor a fixed
-              gap left of the label, tinted to match the text. */}
-          <Pressable
+          {/* Theme: System (follow the phone's light/dark setting), Light, or Dark. Same footprint as
+              the button it replaced. The tour's "Light or dark?" step points at this row. */}
+          <View
             ref={darkModeTarget as any}
             collapsable={false}
-            // marginBottom 0: the Advanced Settings link below centers itself with its own equal
-            // vertical padding; a trailing button margin here would push the link off-center.
-            style={[s.prominentBtn, { backgroundColor: isDark ? '#FFFFFF' : '#111827', marginBottom: 0 }]}
-            onPress={() => { selection(); toggleTheme(); }}
+            style={[s.themeRow, { backgroundColor: tc.inputBg, borderColor: tc.border }]}
+            accessibilityRole="radiogroup"
           >
-            <View>
-              <View style={s.btnEmojiAnchor}>
-                {/* Tinted like the emoji were: a golden sun, a pale-gold crescent moon. The sun is
-                    drawn bigger (its thin rays read smaller than the moon's solid shape at equal
-                    size), with a 1pt lift to keep it optically centered on the label. */}
-                <Ionicons
-                  name={isDark ? 'sunny' : 'moon'}
-                  size={isDark ? 21 : 17}
-                  color={isDark ? '#F6B93B' : '#F5D488'}
-                  style={[s.btnModeIcon, isDark && { top: -1 }]}
-                />
-              </View>
-              <Text style={[s.prominentBtnTxt, { color: isDark ? '#111827' : '#FFFFFF' }]}>
-                {isDark ? 'Light Mode' : 'Dark Mode'}
-              </Text>
-            </View>
-          </Pressable>
+            {THEME_OPTIONS.map((o) => {
+              const on = pref === o.key;
+              return (
+                <Pressable
+                  key={o.key}
+                  onPress={() => { selection(); setPref(o.key); }}
+                  style={[s.themeSeg, on && { backgroundColor: tc.primary }]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={`${o.label} theme`}
+                >
+                  <Ionicons name={o.icon} size={16} color={on ? '#FFFFFF' : tc.subtle} />
+                  <Text style={[s.themeSegTxt, { color: on ? '#FFFFFF' : tc.text }]}>{o.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
           <Pressable
             style={({ pressed }) => [s.advancedLink, pressed && { opacity: 0.6 }]}
@@ -411,6 +443,28 @@ const s = StyleSheet.create({
   // original single-space width). The Ionicons glyph has a KNOWN width (= its size) and renders
   // identically on simulator and device (emoji tofu advances made this unverifiable), so right: 0
   // inside the anchor is exact; top: 1 optically aligns the 17pt icon with the 16pt bold label.
-  btnEmojiAnchor: { position: "absolute", left: -5, top: 0, bottom: 0, width: 0 },
-  btnModeIcon: { position: "absolute", right: 0, top: 1 },
+  // Theme row: three equal segments in the old toggle button's footprint.
+  themeRow: {
+    flexDirection: "row",
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 4,
+    gap: 4,
+  },
+  themeSeg: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 9,
+  },
+  themeSegTxt: { fontSize: 15, fontWeight: "700" },
 });
+
+const THEME_OPTIONS: { key: ThemePref; label: string; icon: React.ComponentProps<typeof Ionicons>["name"] }[] = [
+  { key: "system", label: "System", icon: "phone-portrait-outline" },
+  { key: "light", label: "Light", icon: "sunny-outline" },
+  { key: "dark", label: "Dark", icon: "moon-outline" },
+];

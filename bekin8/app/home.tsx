@@ -404,9 +404,9 @@ export default function HomeScreen() {
   // The real people the scene shows (The Beacons' chain): the friends going (RSVP'd or rallying)
   // to my lit beacon; nobody while it's out. Memoized on content so
   // a same-people snapshot doesn't re-render the scene.
-  const peopleKey = isLit ? myGoing.going.map((g) => `${g.uid}:${g.name}`).join('|') : '';
+  const peopleKey = isLit ? myGoing.going.map((g) => `${g.uid}:${g.name}:${g.rally ? 1 : 0}`).join('|') : '';
   const scenePeople = useMemo<ScenePerson[]>(
-    () => (isLit ? myGoing.going.map((g) => ({ id: g.uid, name: g.name })) : []),
+    () => (isLit ? myGoing.going.map((g) => ({ id: g.uid, name: g.name, rally: g.rally })) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [peopleKey]
   );
@@ -1631,7 +1631,7 @@ export default function HomeScreen() {
           {skin.smokeKind === 'signal' ? (
             <BeaconSmokeSignal skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'fireworks' ? (
-            <BeaconFireworks skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconFireworks skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} people={scenePeople} />
           ) : skin.smokeKind === 'lanterns' ? (
             <BeaconSkyLanterns skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'embers' ? (
