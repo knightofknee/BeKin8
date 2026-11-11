@@ -57,7 +57,7 @@ export function prefetchBeaconMessages(beaconId: string, n: number = PREFETCH_LI
  * the user. Prefetches each once. Safe to call repeatedly, already-prefetched
  * ids are skipped.
  */
-export function usePrefetchBeaconMessages(beaconIds: Array<string | undefined | null>) {
+export function usePrefetchBeaconMessages(beaconIds: (string | undefined | null)[]) {
   // Stable dep: sorted, joined ids.
   const key = beaconIds.filter(Boolean).sort().join('|');
   const lastKeyRef = useRef<string>('');

@@ -11,17 +11,15 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { auth, db } from "@/firebase.config";
+import { db } from "@/firebase.config";
 import {
   addDoc,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
   getDoc,
   getDocs,
   onSnapshot,
-  orderBy,
   query,
   updateDoc,
   where,
@@ -128,7 +126,7 @@ const meUid = visible && initialized ? user?.uid ?? null : null;
     if (!visible || !meUid) return;
 
     setLoadingFriends(true);
-    const cleanups: Array<() => void> = [];
+    const cleanups: (() => void)[] = [];
 
     // A) Preferred subcollection
     const unsubSub = onSnapshot(

@@ -7,10 +7,10 @@
 // are bridged into the JS SDK through a CustomProvider. Once that is in place the JS SDK attaches
 // the token to every Firestore, Auth and callable-function request on its own.
 //
-// ROLLOUT: this ships in MONITOR mode. Nothing is enforced (Firestore enforcement is off in the
-// console and every callable still has enforceAppCheck: false), so a failed attestation changes
-// nothing for the user. Watch the verified-request share in Firebase console > App Check, and only
-// enforce once nearly all traffic comes from builds that contain this file.
+// ENFORCED since 2026-11-11: every callable has enforceAppCheck: true, so a request without a valid
+// token is rejected. Builds before 1.2.28 have no App Check and stop working against enforced
+// services. Simulators and dev builds use the debug provider and need their debug token
+// registered in Firebase console > App Check > Apps (each simulator mints its own).
 //
 // SAFETY: every step is wrapped. A missing native module (an old dev client), a simulator, or an
 // attestation outage must never stop the app from starting or a request from being sent.

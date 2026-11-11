@@ -41,11 +41,16 @@ import { useOnline } from '../providers/NetworkProvider';
 import { formatTimeHHmmDisplay } from '../lib/beaconTime';
 import { useBeaconGoing } from '../lib/rsvp';
 import RsvpRallyActions from './RsvpRallyActions';
+import HoloButton from './HoloButton';
+import TimePollSheet from './TimePollSheet';
+import { parseTimePoll, optionLabel, useTimeVotes, type TimePoll } from '../lib/timePoll';
+import { useAuth } from '../providers/AuthProvider';
 import { markChatRead } from '../lib/chatRead';
 import { tap, press, warning, selection } from '../utils/haptics';
 import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import GifPicker, { PickedGif } from './GifPicker';
+import ProfilePeek, { type PeekTarget } from './ProfilePeek';
 import * as Clipboard from 'expo-clipboard';
 
 type MediaAttachment = {
@@ -80,6 +85,8 @@ type ChatRoomProps = {
   onClose?: () => void;
   style?: StyleProp<ViewStyle>;
   targetMessageId?: string;
+  /** Tapping "View profile" in a name's peek card: the host closes its modal and routes there. */
+  onViewProfile?: (username: string) => void;
 };
 
 
@@ -168,9 +175,11 @@ const ChatComposer = React.memo(function ChatComposer({
 }: ChatComposerProps) {
   const { colors: tc } = useTheme();
   const [text, setText] = useState('');
-  // Measured content height of the input. iOS keeps a multiline TextInput at its grown height
-  // after a PROGRAMMATIC clear (sending), so height is driven from this and reset on send.
-  const [composerContentH, setComposerContentH] = useState(0);
+  // The multiline input sizes itself (one line up to maxHeight) as the draft grows. iOS keeps it
+  // at its grown height after a PROGRAMMATIC clear (sending), so sending pins it to one line until
+  // the next keystroke, when it measures itself again. (Driving height from onContentSizeChange
+  // did not work: the event never fired while typing, so the box stayed one line and clipped.)
+  const [collapsed, setCollapsed] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore any saved draft once per room.
@@ -195,15 +204,13 @@ const ChatComposer = React.memo(function ChatComposer({
     if (!canSend) return;
     const body = text.trim();
     setText('');
-    setComposerContentH(0);
+    setCollapsed(true);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     AsyncStorage.removeItem(draftKey).catch(() => {});
     onSend(body);
   };
 
   const remaining = CHAT_MESSAGE_MAX - text.length;
-  // contentSize already INCLUDES the input's vertical padding (one line reports ~36).
-  const composerH = Math.max(36, Math.min(120, Math.ceil(composerContentH)));
 
   return (
     <View style={[styles.inputRow, { borderTopColor: tc.border, backgroundColor: tc.headerBg }]}>
@@ -214,13 +221,13 @@ const ChatComposer = React.memo(function ChatComposer({
             // Buzz once when the cap is first hit (maxLength already blocks further input).
             if (t.length >= CHAT_MESSAGE_MAX && text.length < CHAT_MESSAGE_MAX) warning();
             setText(t);
+            if (collapsed) setCollapsed(false);
             persistDraft(t);
           }}
           placeholder="Message"
           placeholderTextColor={tc.subtle}
           editable
-          style={[styles.composerInput, { color: tc.text, height: composerH }]}
-          onContentSizeChange={(e) => setComposerContentH(e.nativeEvent.contentSize.height)}
+          style={[styles.composerInput, { color: tc.text }, collapsed && { height: 36 }]}
           multiline
           maxLength={CHAT_MESSAGE_MAX}
           onFocus={() => {
@@ -265,10 +272,15 @@ const ChatComposer = React.memo(function ChatComposer({
   );
 });
 
-export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId }: ChatRoomProps) {
+export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMessageId, onViewProfile }: ChatRoomProps) {
   const { colors: tc } = useTheme();
   const online = useOnline();
   const me = auth.currentUser;
+  const { profile } = useAuth();
+  // Group scheduling: the beacon's time poll (lib/timePoll), my vote, and the voting sheet.
+  const [timePoll, setTimePoll] = useState<TimePoll | null>(null);
+  const [pollOpen, setPollOpen] = useState(false);
+  const pollVotes = useTimeVotes(timePoll ? beaconId : null, timePoll?.options.map((o) => o.id));
 
   const [loading, setLoading] = useState(true);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
@@ -286,6 +298,13 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   }, []);
 
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
+  // Tap any name (sender, "X is going", the going list, the owner) to see who that is (@username).
+  const [peek, setPeek] = useState<PeekTarget | null>(null);
+  const openPeek = (uid?: string, name?: string) => {
+    if (!uid) return;
+    tap();
+    setPeek({ uid, name });
+  };
 
   const [startLabel, setStartLabel] = useState<string>('');
   const [timeLabel, setTimeLabel] = useState<string>('');
@@ -304,13 +323,26 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const composerFocusedRef = useRef(false);
   const pendingScrollRef = useRef(false);
+  // After I send, keep the thread pinned to the end while the new row lays out. The snapshot's
+  // scrollToEnd ran before the bubble had a measured height, so a long message (or a GIF) landed
+  // with its bottom cut off; onContentSizeChange is the moment the real height is known.
+  const stickToEndUntilRef = useRef(0);
   const didInitialScrollRef = useRef(false);
+  // Reading the newest messages (within ~120pt of the end): a friend's new message follows into
+  // view, like any chat. Scrolled back up reading history: the thread stays put.
+  const nearBottomRef = useRef(true);
+  const lastMsgIdRef = useRef<string | undefined>(undefined);
   const lastScrolledTargetRef = useRef<string | undefined>(undefined);
 
   // Scroll-to-top arrow (only when list is scrollable and user has scrolled down)
   const [listViewportH, setListViewportH] = useState(0);
   const [listContentH, setListContentH] = useState(0);
   const [showJump, setShowJump] = useState(false);
+  // Jump-to-latest pill: shown while scrolled up from the end, so it is never a guess whether
+  // there is more below. newBelow counts friends' messages that arrived while scrolled up
+  // (unseen); it clears on reaching the end.
+  const [awayFromEnd, setAwayFromEnd] = useState(false);
+  const [newBelow, setNewBelow] = useState(0);
 
   const isListScrollable = listContentH > listViewportH + 24;
   const hasRealMessages = useMemo(() => messages.some((m) => m.type !== 'system'), [messages]);
@@ -318,7 +350,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const onListScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     // Store only the derived boolean, not the raw offset, so the message list
     // doesn't re-render on every scroll frame. Bail when it hasn't changed.
-    const next = e.nativeEvent.contentOffset.y > 24;
+    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    nearBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 120;
+    const away = !nearBottomRef.current;
+    setAwayFromEnd((prev) => (prev === away ? prev : away));
+    if (!away) setNewBelow((prev) => (prev === 0 ? prev : 0));
+    const next = contentOffset.y > 24;
     setShowJump((prev) => (prev === next ? prev : next));
   };
 
@@ -334,6 +371,10 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     setListContentH(0);
     pendingScrollRef.current = false;
     didInitialScrollRef.current = false;
+    nearBottomRef.current = true;
+    lastMsgIdRef.current = undefined;
+    setAwayFromEnd(false);
+    setNewBelow(0);
     lastScrolledTargetRef.current = undefined;
   }, [beaconId]);
 
@@ -387,6 +428,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         }
 
         setTimeLabel(formatTimeHHmmDisplay(data?.timeHHmm));
+        setTimePoll(parseTimePoll(data?.timePoll));
 
         // Capture beacon message
         const msg = typeof data?.message === 'string' ? data.message.trim() : '';
@@ -499,10 +541,14 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           listRef.current?.scrollToIndex({ index: targetIdx, animated: false, viewPosition: 0.3 });
           lastScrolledTargetRef.current = targetMessageId;
         } else {
+          // Cached threads render before the list has measured the header + rows, so this first
+          // scrollToEnd can land at the top. Keep snapping to the end as the content size settles.
+          stickToEndUntilRef.current = Date.now() + 1500;
           listRef.current?.scrollToEnd({ animated: false });
         }
         didInitialScrollRef.current = true;
       });
+      lastMsgIdRef.current = messages[messages.length - 1]?.id;
       return;
     }
 
@@ -518,11 +564,30 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       }
     }
 
+    const lastId = messages[messages.length - 1]?.id;
+    const prevLastId = lastMsgIdRef.current;
+    const gotNew = lastId !== prevLastId;
+    lastMsgIdRef.current = lastId;
+
+    // Scrolled up when friends' messages land: leave the thread where it is and count them.
+    if (gotNew && prevLastId && !nearBottomRef.current && !pendingScrollRef.current) {
+      const from = messages.findIndex((m) => m.id === prevLastId);
+      if (from >= 0) {
+        const fresh = messages
+          .slice(from + 1)
+          .filter((m) => m.type !== 'system' && m.authorUid !== me?.uid).length;
+        if (fresh > 0) setNewBelow((n) => n + fresh);
+      }
+    }
+
     if (pendingScrollRef.current) {
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });
         pendingScrollRef.current = false;
       });
+    } else if (gotNew && nearBottomRef.current) {
+      stickToEndUntilRef.current = Date.now() + 1500;
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
     }
   }, [messages, targetMessageId]);
 
@@ -539,9 +604,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   const attendees = useMemo(
     () => ({
       count: 1 + rsvp.going.length,
-      names: [...(ownerName ? [ownerName] : []), ...rsvp.going.map((g) => g.name)],
+      people: [
+        ...(ownerName ? [{ uid: ownerUid, name: ownerName }] : []),
+        ...rsvp.going.map((g) => ({ uid: g.uid, name: g.name })),
+      ],
     }),
-    [rsvp.going, ownerName]
+    [rsvp.going, ownerName, ownerUid]
   );
 
   // Copy of the parent beacon's audience for outgoing writes. OMITTED (not sent as []) until the
@@ -578,6 +646,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         });
 
         pendingScrollRef.current = true;
+        stickToEndUntilRef.current = Date.now() + 2500;
       } catch {
         Alert.alert('Send failed', 'Please try again.');
       } finally {
@@ -618,6 +687,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         }).catch(() => Alert.alert('Send failed', 'Please try again.'));
 
         pendingScrollRef.current = true;
+        stickToEndUntilRef.current = Date.now() + 2500;
       } catch {
         Alert.alert('Send failed', 'Please try again.');
       }
@@ -743,13 +813,20 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
     />
   );
 
-  const PanelBody = (
+  // The whole event header (title, date, going, RSVP, poll band, description) SCROLLS WITH the
+  // thread as the list's header instead of staying pinned: with the keyboard up a pinned header
+  // left room for two messages. Scroll up to see it, like any other chat.
+  const ThreadHeader = (
     <>
       <View style={[styles.slimHeader, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
-        <Text style={[styles.headerTitle, { color: tc.text }]} numberOfLines={1} ellipsizeMode="tail">
-          {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
-        </Text>
-        {(!!startLabel || !!timeLabel) && (
+        <Pressable onPress={() => openPeek(ownerUid, ownerName)} disabled={!ownerUid} hitSlop={4}>
+          <Text style={[styles.headerTitle, { color: tc.text }]} numberOfLines={1} ellipsizeMode="tail">
+            {ownerName ? `Beacon from ${ownerName}` : 'Beacon'}
+          </Text>
+        </Pressable>
+        {timePoll?.status === 'open' ? (
+          <Text style={[styles.headerDate, { color: tc.subtle }]}>Time TBD · voting is open</Text>
+        ) : (!!startLabel || !!timeLabel) && (
           <Text style={[styles.headerDate, { color: tc.subtle }]}>
             {startLabel}
             {startLabel && timeLabel ? ' · ' : ''}
@@ -811,6 +888,62 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
         </View>
       )}
 
+    </>
+  );
+
+  const PanelBody = (
+    <>
+      {timePoll && (
+        <TimePollSheet
+          visible={pollOpen}
+          onClose={() => setPollOpen(false)}
+          beaconId={beaconId}
+          poll={timePoll}
+          isOwner={ownerUid === me?.uid}
+          myName={profile?.displayName || profile?.username || 'Someone'}
+          ownerName={ownerName}
+        />
+      )}
+      {/* Group scheduling band: the holographic vote button while voting is open (the owner's says
+          "Pick the time"), or the locked-in time once decided (tap for the final tally). PINNED above
+          the thread, unlike the rest of the header: the chat opens at the newest message, so inside
+          the scrolling header nobody with any chat history ever saw the vote button. Steps aside
+          while typing so the keyboard-up view is all messages. */}
+      {timePoll && !kbVisible && (
+        <View style={[styles.pollBand, { borderBottomColor: tc.border, backgroundColor: tc.headerBg }]}>
+          {timePoll.status === 'open' ? (
+            ownerUid === me?.uid ? (
+              <HoloButton
+                label="🗳  Pick the time"
+                sublabel={pollVotes.voterCount ? `${pollVotes.voterCount} voted so far` : 'No votes yet'}
+                onPress={() => setPollOpen(true)}
+              />
+            ) : pollVotes.mine?.length ? (
+              <HoloButton label="✓  You voted" sublabel="See how it's shaping up" muted onPress={() => setPollOpen(true)} />
+            ) : (
+              <HoloButton
+                label="🗳  Vote on a time"
+                sublabel={pollVotes.voterCount ? `${pollVotes.voterCount} already voted` : 'Be the first to vote'}
+                onPress={() => setPollOpen(true)}
+              />
+            )
+          ) : (
+            <Pressable
+              onPress={() => { tap(); setPollOpen(true); }}
+              style={({ pressed }) => [styles.pollDecided, { borderColor: '#F5B83D' }, pressed && { opacity: 0.85 }]}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.pollDecidedTxt, { color: tc.text }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                {(() => {
+                  const o = timePoll.options.find((x) => x.id === timePoll.decidedId);
+                  return o ? `📅  Locked in: ${optionLabel(o)}` : '📅  Time locked in';
+                })()}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
       <View
         style={styles.listArea}
         onLayout={(e) => setListViewportH(e.nativeEvent.layout.height)}
@@ -834,15 +967,32 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           ref={listRef}
           data={messages}
           keyExtractor={(m) => m.id}
-          contentContainerStyle={
-            messages.length === 0
-              ? { flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }
-              : { padding: 6, gap: 6, paddingBottom: 6 }
-          }
+          ListHeaderComponent={ThreadHeader}
+          ListHeaderComponentStyle={styles.threadHeader}
+          contentContainerStyle={messages.length === 0 ? { flexGrow: 1 } : { gap: 6, paddingBottom: 6 }}
           keyboardShouldPersistTaps="handled"
           scrollEventThrottle={32}
           onScroll={onListScroll}
-          onContentSizeChange={(_w, h) => setListContentH(h)}
+          onContentSizeChange={(_w, h) => {
+            setListContentH(h);
+            if (Date.now() < stickToEndUntilRef.current) listRef.current?.scrollToEnd({ animated: false });
+          }}
+          // onContentSizeChange does not reliably fire on this RN version (seen 2026-11-11: never
+          // fired, so the chat opened at the TOP of the thread instead of the newest message). The
+          // footer's onLayout fires every time the rows above it grow, so it doubles as the
+          // content-size signal for the stick-to-end window and the scrollable check.
+          ListFooterComponent={
+            <View
+              style={styles.listEndProbe}
+              onLayout={(e) => {
+                const h = e.nativeEvent.layout.y + e.nativeEvent.layout.height;
+                setListContentH((prev) => (Math.abs(prev - h) < 1 ? prev : h));
+                if (Date.now() < stickToEndUntilRef.current) {
+                  requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+                }
+              }}
+            />
+          }
           onScrollToIndexFailed={(info) => {
             const offset = info.averageItemLength * info.index;
             listRef.current?.scrollToOffset({ offset, animated: false });
@@ -852,19 +1002,21 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
           }}
           style={{ flex: 1 }}
           ListEmptyComponent={
-            !messagesLoaded ? (
-              online ? (
-                <ActivityIndicator />
+            <View style={styles.emptyWrap}>
+              {!messagesLoaded ? (
+                online ? (
+                  <ActivityIndicator />
+                ) : (
+                  <Text style={{ color: tc.subtle, fontSize: 13 }}>
+                    Can&apos;t load messages. No internet connection.
+                  </Text>
+                )
               ) : (
                 <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                  Can&apos;t load messages. No internet connection.
+                  {online ? "No messages yet. Say something 👋" : "Can't load messages. No internet connection."}
                 </Text>
-              )
-            ) : (
-              <Text style={{ color: tc.subtle, fontSize: 13 }}>
-                {online ? "No messages yet. Say something 👋" : "Can&apos;t load messages. No internet connection."}
-              </Text>
-            )
+              )}
+            </View>
           }
           renderItem={({ item, index }) => {
             // The beacon header already says "Beacon from X", so a "put out the beacon" row is just
@@ -891,7 +1043,7 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                   {dayDivider}
                   <View style={[styles.systemRow, { backgroundColor: tc.inputBg }]}>
                     {isRsvp ? (
-                      <Text style={styles.systemText}>
+                      <Text style={styles.systemText} onPress={() => openPeek(item.actorUid, item.actorName)}>
                         <Text>{item.rally ? '🔥 ' : '✓ '}</Text>
                         <Text style={{ color: tc.primary, fontWeight: '800' }}>{item.actorName || 'Someone'}</Text>
                         <Text style={{ color: tc.subtle }}>{item.rally ? ' is rallying their friends' : ' is going'}</Text>
@@ -928,11 +1080,17 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
                   styles.msgRow,
                   mine ? styles.msgRowMine : styles.msgRowTheirs,
                   { marginTop: samePrev ? 2 : 6 },
+                  styles.rowPad,
                 ]}
               >
                 <View style={[styles.msgCol, { alignItems: mine ? 'flex-end' : 'flex-start' }]}>
                   {showName ? (
-                    <Text style={[styles.senderName, { color: tc.subtle }]} numberOfLines={1}>
+                    <Text
+                      style={[styles.senderName, { color: tc.subtle }]}
+                      numberOfLines={1}
+                      onPress={() => openPeek(item.authorUid, item.authorName)}
+                      suppressHighlighting
+                    >
                       {item.authorName || 'Friend'}
                       {timeLabel ? <Text style={styles.senderTime}>{`  ·  ${timeLabel}`}</Text> : null}
                     </Text>
@@ -1002,6 +1160,25 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             );
           }}
         />
+        {isListScrollable && awayFromEnd && (
+          <Pressable
+            onPress={() => {
+              tap();
+              stickToEndUntilRef.current = Date.now() + 800;
+              listRef.current?.scrollToEnd({ animated: true });
+            }}
+            hitSlop={10}
+            style={({ pressed }) => [
+              styles.scrollEndBtn,
+              newBelow > 0 && { backgroundColor: tc.primary },
+              pressed && { opacity: 0.9, transform: [{ scale: 0.98 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={newBelow > 0 ? `${newBelow} new, jump to latest` : 'Jump to latest'}
+          >
+            <Text style={styles.scrollTopIcon}>{newBelow > 0 ? `↓  ${newBelow > 99 ? '99+' : newBelow} new` : '↓'}</Text>
+          </Pressable>
+        )}
         {kbVisible && (
           <Pressable
             onPress={() => { tap(); Keyboard.dismiss(); }}
@@ -1092,10 +1269,20 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
             <Text style={[styles.attendeesTitle, { color: tc.text }]}>
               {attendees.count} going
             </Text>
-            {attendees.names.map((n, i) => (
-              <Text key={`${n}-${i}`} style={[styles.attendeeName, { color: tc.subtle }]} numberOfLines={1}>
-                {n}
-              </Text>
+            {attendees.people.map((p, i) => (
+              <Pressable
+                key={`${p.uid}-${i}`}
+                disabled={!p.uid}
+                onPress={() => {
+                  setAttendeesOpen(false);
+                  setTimeout(() => openPeek(p.uid, p.name), 320);
+                }}
+                accessibilityRole="button"
+              >
+                <Text style={[styles.attendeeName, { color: p.uid ? tc.text : tc.subtle }]} numberOfLines={1}>
+                  {p.name}
+                </Text>
+              </Pressable>
             ))}
             <View style={[styles.menuDivider, { backgroundColor: tc.border }]} />
             <Pressable style={styles.menuItem} onPress={() => setAttendeesOpen(false)}>
@@ -1106,6 +1293,12 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
       </Modal>
 
       <GifPicker visible={gifOpen} onClose={() => setGifOpen(false)} onPick={handleSendGif} />
+
+      <ProfilePeek
+        target={peek}
+        onClose={() => setPeek(null)}
+        onViewProfile={onViewProfile ? (u) => { setPeek(null); onViewProfile(u); } : undefined}
+      />
 
       <Modal
         visible={!!gifViewer}
@@ -1266,6 +1459,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
 
+  pollBand: { paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  pollDecided: { borderWidth: 1.5, borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14, alignItems: 'center' },
+  pollDecidedTxt: { fontSize: 15, fontWeight: '800' },
   beaconMsgSection: {
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -1291,9 +1487,24 @@ const styles = StyleSheet.create({
     flex: 1,
     position: 'relative',
   },
+  // Header rides inside the list, full-bleed; rows carry their own side padding.
+  threadHeader: { marginBottom: 0 },
+  rowPad: { paddingHorizontal: 6 },
+  emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   scrollTopBtn: {
     position: 'absolute',
     top: 10,
+    alignSelf: 'center',
+    zIndex: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  listEndProbe: { height: 1 },
+  scrollEndBtn: {
+    position: 'absolute',
+    bottom: 10,
     alignSelf: 'center',
     zIndex: 5,
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
@@ -1391,6 +1602,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     paddingTop: Platform.OS === 'ios' ? 8 : 6,
     paddingBottom: Platform.OS === 'ios' ? 8 : 6,
+    minHeight: 36,
     maxHeight: 120,
   },
   charCount: {

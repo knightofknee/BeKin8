@@ -24,7 +24,6 @@ import { auth, db } from '../../firebase.config';
 import {
   collection,
   doc,
-  getDoc,
   getDocs,
   setDoc,
   deleteDoc,
@@ -34,7 +33,6 @@ import {
   orderBy,
   limit,
   startAfter,
-  serverTimestamp,
   QueryDocumentSnapshot,
   onSnapshot,
 } from 'firebase/firestore';

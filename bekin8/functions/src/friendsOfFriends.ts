@@ -56,7 +56,7 @@ async function acceptedFriendUidsOf(uid: string): Promise<string[]> {
 }
 
 export const getFriendsOfFriends = onCall<unknown, Promise<GetFriendsOfFriendsResponse>>(
-  { enforceAppCheck: false },
+  { enforceAppCheck: true },
   async (req) => {
     const me = req.auth?.uid;
     if (!me) throw new HttpsError('unauthenticated', 'Sign in required.');

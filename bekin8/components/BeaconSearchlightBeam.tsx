@@ -185,7 +185,7 @@ export default function BeaconSearchlightBeam({ skin, active, anchorX, anchorY, 
 
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-      <Canvas style={[styles.fill, { width: W, height: H }]}>
+      <Canvas style={StyleSheet.flatten([styles.fill, { width: W, height: H }])}>
         <Fill>
           <Shader source={effect} uniforms={uniforms} />
         </Fill>

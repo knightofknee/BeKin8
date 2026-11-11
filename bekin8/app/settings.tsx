@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Switch, ScrollView, Share, Platform } from "react-native";
+import { WEB_WHITE_KNOB } from "@/components/ui/webSwitch";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
@@ -63,8 +64,6 @@ export default function SettingsScreen() {
   const router = useRouter();
   const commentsTarget = useTourTarget("settings-comments");
   const commentNotifyTarget = useTourTarget("settings-comment-notify");
-  const notifSectionTarget = useTourTarget("settings-notifications");
-  const darkModeTarget = useTourTarget("settings-darkmode");
 
   // Seed local state from cached profile once available
   React.useEffect(() => {
@@ -219,7 +218,7 @@ export default function SettingsScreen() {
         <ScrollView style={s.body} contentContainerStyle={s.bodyContent} keyboardShouldPersistTaps="handled" alwaysBounceVertical>
           {/* Full control group, spotlighted together by the beacon onboarding tour ("You're in
               control"): the how-we-use link + the comments toggle + all notification toggles. */}
-          <View ref={notifSectionTarget} collapsable={false}>
+          <View>
           {/* How we use notifications, transparency + enable entry point */}
           <Pressable
             style={[s.row, s.rowBetween, { borderBottomColor: tc.border }]}
@@ -244,6 +243,7 @@ export default function SettingsScreen() {
               disabled={commentsBusy}
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
+              {...WEB_WHITE_KNOB}
             />
           </View>
 
@@ -259,6 +259,7 @@ export default function SettingsScreen() {
               disabled={commentNotifyBusy}
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
+              {...WEB_WHITE_KNOB}
             />
           </View>
 
@@ -274,6 +275,7 @@ export default function SettingsScreen() {
               disabled={postCommentNotifyBusy}
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
+              {...WEB_WHITE_KNOB}
             />
           </View>
 
@@ -289,6 +291,7 @@ export default function SettingsScreen() {
               disabled={commentOnCommentNotifyBusy}
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
+              {...WEB_WHITE_KNOB}
             />
           </View>
 
@@ -304,6 +307,7 @@ export default function SettingsScreen() {
               disabled={newPostNotifyBusy}
               trackColor={{ false: tc.border, true: tc.primary }}
               thumbColor="#fff"
+              {...WEB_WHITE_KNOB}
             />
           </View>
           </View>
@@ -343,10 +347,8 @@ export default function SettingsScreen() {
           </Pressable>
 
           {/* Theme: System (follow the phone's light/dark setting), Light, or Dark. Same footprint as
-              the button it replaced. The tour's "Light or dark?" step points at this row. */}
+              the button it replaced. */}
           <View
-            ref={darkModeTarget as any}
-            collapsable={false}
             style={[s.themeRow, { backgroundColor: tc.inputBg, borderColor: tc.border }]}
             accessibilityRole="radiogroup"
           >

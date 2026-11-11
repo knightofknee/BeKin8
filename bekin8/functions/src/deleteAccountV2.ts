@@ -118,7 +118,7 @@ async function removeUidFromFriendsArray(ownerUid: string, uidToRemove: string):
  * before the Auth user is deleted. Aggregates failures and returns ok:false if any
  * critical step failed so the client can surface a retry.
  */
-export const deleteAccountDataV2 = onCall({ enforceAppCheck: false, timeoutSeconds: 300 }, async (req) => {
+export const deleteAccountDataV2 = onCall({ enforceAppCheck: true, timeoutSeconds: 300 }, async (req) => {
   const uid = req.auth?.uid;
   if (!uid) {
     return { ok: false, error: 'UNAUTHENTICATED', message: 'Sign in required.' };

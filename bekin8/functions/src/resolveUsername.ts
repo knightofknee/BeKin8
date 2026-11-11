@@ -21,7 +21,7 @@ const db = getFirestore(app);
 type ResolveUsernameResponse = { found: boolean; uid?: string; username?: string };
 
 export const resolveUsername = onCall<{ username?: string }, Promise<ResolveUsernameResponse>>(
-  { enforceAppCheck: false },
+  { enforceAppCheck: true },
   async (req) => {
     if (!req.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in required.');
 

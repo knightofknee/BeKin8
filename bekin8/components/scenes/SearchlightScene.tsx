@@ -351,7 +351,7 @@ export default function SearchlightScene({ skin, active, focused = true, anchorX
       {/* ===== THE CLOUD BAND (Skia): top 26% of the screen. Skipped entirely if the shader
            failed to compile: the SVG night above stands alone (no clouds, never blank). ===== */}
       {effect ? (
-        <Canvas style={[styles.band, { width: W, height: bandH }]}>
+        <Canvas style={StyleSheet.flatten([styles.band, { width: W, height: bandH }])}>
           <Fill>
             <Shader source={effect} uniforms={uniforms} />
           </Fill>

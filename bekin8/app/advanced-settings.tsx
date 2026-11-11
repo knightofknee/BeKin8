@@ -11,6 +11,7 @@ import {
   Linking,
   TextInput,
 } from "react-native";
+import { WEB_WHITE_KNOB } from "@/components/ui/webSwitch";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { auth, db } from "../firebase.config";
@@ -19,10 +20,6 @@ import {
   onSnapshot,
   setDoc,
   serverTimestamp,
-  collection,
-  query,
-  where,
-  getDocs,
   getDoc,
   deleteDoc,
 } from "firebase/firestore";
@@ -179,6 +176,7 @@ export default function AdvancedSettingsScreen() {
               disabled={fofBusy}
               trackColor={{ false: colors.border, true: colors.primary }}
               thumbColor="#fff"
+              {...WEB_WHITE_KNOB}
             />
           </View>
 

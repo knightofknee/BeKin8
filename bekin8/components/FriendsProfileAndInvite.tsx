@@ -53,21 +53,12 @@ export default function FriendsProfileAndInvite({
   // button; tapping it opens the full-size code (see the Modal at the bottom).
   const [qrOpen, setQrOpen] = useState(false);
   const inviteUrl = inviteCode ? buildInviteUrl(inviteCode) : null;
-  // Tour targets: step "Pick your username" spotlights ONLY the username block; step "Your name &
-  // invite link" spotlights the WHOLE profile block below (username + display name + invite) so the
-  // display name its copy mentions is highlighted and tappable, not just the invite.
+  // Setup-tour targets: "Pick a username" spotlights the username block; "Add a friend" the whole card.
   const usernameTarget = useTourTarget("friends-username");
-  const profileTarget = useTourTarget("friends-profile");
-  // Anchor only: the username/profile tour steps sit their callout JUST BELOW this "send a friend
-  // request" field (so it stays barely visible) rather than below their own spotlighted block.
-  const addFieldTarget = useTourTarget("friends-add");
-  // The whole card (username + invite link + add-by-username): the speed tour's "add a friend" step (2a).
   const addCardTarget = useTourTarget("friends-add-card");
   return (
     <View ref={addCardTarget} collapsable={false} style={[styles.card, { backgroundColor: colors.card }]}>
-      {/* Profile + invite area: one spotlight target for the "Your name & invite link" step, so the
-          username, display name, AND invite are all highlighted + tappable (per the step's copy). */}
-      <View ref={profileTarget} collapsable={false}>
+      <View>
       {/* Username + display name */}
       {currentUsername ? (
         <>
@@ -172,7 +163,7 @@ export default function FriendsProfileAndInvite({
         {!hasProfileUsername && (
           <Text style={[styles.subtle, { marginBottom: 8, color: colors.subtle }]}>You need a username first.</Text>
         )}
-        <View ref={addFieldTarget} collapsable={false} style={styles.inputRow}>
+        <View style={styles.inputRow}>
           <TextInput
             value={nameInput}
             onChangeText={onChangeName}

@@ -211,7 +211,7 @@ export default function AuroraScene({ skin, active, focused = true, anchorX, anc
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.base]}>
-      <Canvas style={[styles.fill, { width: W, height: H }]}>
+      <Canvas style={StyleSheet.flatten([styles.fill, { width: W, height: H }])}>
         <Fill>
           <Shader source={effect} uniforms={uniforms} />
         </Fill>

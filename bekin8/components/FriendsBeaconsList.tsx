@@ -40,6 +40,8 @@ export type FriendBeacon = {
   rallyOf?: string | null;
   rallyOwnerUid?: string | null;
   rallyOwnerName?: string | null;
+  /** Group scheduling: the owner is letting friends vote on the time (lib/timePoll). */
+  timeVoteOpen?: boolean;
 };
 
 type Props = {
@@ -172,10 +174,15 @@ const FriendBeaconItem = React.memo(function FriendBeaconItem({
             </>
           ) : null}
         </Text>
-        <Text style={styles.beaconWhen} numberOfLines={1}>
-          {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
-          {timeLabel ? ` - ${timeLabel}` : ''}
-        </Text>
+        {beacon.timeVoteOpen ? (
+          // Voting on the time: the day is only the earliest option, so lead with the vote instead.
+          <Text style={[styles.beaconWhen, styles.voteWhen]} numberOfLines={1}>🗳 Time TBD · tap to vote</Text>
+        ) : (
+          <Text style={styles.beaconWhen} numberOfLines={1}>
+            {dayLabel(beacon.startAt)} - {shortDate(beacon.startAt)}
+            {timeLabel ? ` - ${timeLabel}` : ''}
+          </Text>
+        )}
         <Text style={styles.beaconMsg} numberOfLines={2}>
           {beacon.message}
         </Text>
@@ -419,12 +426,13 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
       const scheduled = data?.scheduled === true || data?.scheduled === 'true';
       if (!active) return; // only show lit beacons to friends
 
-      // --- visibility (default: visible to all friends if no groups set) ---
+      // --- visibility (default: visible to all friends if no groups / picked friends set) ---
       const groupIds = asStringArray(data?.groupIds);
+      const friendUids = asStringArray(data?.friendUids); // friends invited one by one (the "+" chip)
       let canSee = true; // default allow when not set/empty
-      if (groupIds.length > 0) {
-        canSee = false; // tighten: must be in at least one group
-        for (const gid of groupIds) {
+      if (groupIds.length > 0 || friendUids.length > 0) {
+        canSee = !!meUid && friendUids.includes(meUid); // tighten: picked directly, or in a group
+        for (const gid of canSee ? [] : groupIds) {
           const cache = groupMembersCacheRef.current[gid];
           if (cache instanceof Set) {
             if (meUid && cache.has(meUid)) {
@@ -468,6 +476,7 @@ export default function FriendsBeaconsList({ onSelect, showExampleWhenEmpty = fa
         scheduled,
         message: msg,
         timeHHmm,
+        timeVoteOpen: data?.timePoll?.status === 'open',
         rallyOf: typeof data?.rallyOf === 'string' && data.rallyOf ? data.rallyOf : null,
         rallyOwnerUid: typeof data?.rallyOwnerUid === 'string' ? data.rallyOwnerUid : null,
         rallyOwnerName: typeof data?.rallyOwnerName === 'string' ? data.rallyOwnerName : null,
@@ -813,6 +822,7 @@ const styles = StyleSheet.create({
   cardFuture: { backgroundColor: '#E7F0FF', borderColor: '#C7DAFF' },
   beaconOwner: { fontSize: 15, fontWeight: '800', color: '#0B1426' },
   beaconWhen: { fontSize: 13, color: '#334155', marginTop: 2 },
+  voteWhen: { color: '#6A3FE0', fontWeight: '800' }, // tiles are light cards: a deep violet reads on all three
   beaconMsg: { fontSize: 14, color: '#111827', marginTop: 4 },
   avatar: {
     width: 28,

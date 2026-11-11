@@ -42,7 +42,7 @@ type CheckPostAllowedResponse =
 
 // ── Callable ──────────────────────────────────────────────────────────────────
 export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPostAllowedResponse>>(
-  { enforceAppCheck: false },
+  { enforceAppCheck: true },
   async (req) => {
     const uid = req.auth?.uid;
     if (!uid) throw new HttpsError('unauthenticated', 'Sign in required.');

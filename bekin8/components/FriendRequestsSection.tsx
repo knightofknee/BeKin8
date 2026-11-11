@@ -1,6 +1,6 @@
 // components/FriendRequestsSection.tsx
 import React from "react";
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "./ui/colors";
 import { FriendRequest } from "./types";
 import { useTheme } from "../providers/ThemeProvider";

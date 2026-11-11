@@ -67,5 +67,17 @@ target 'BeKin' do
       :mac_catalyst_enabled => false,
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
+
+    # Xcode 27 rejects any target below iOS 15 as a hard error. Several pods (Firebase/Google
+    # privacy bundles, SDWebImage, RNSVG, AsyncStorage) still declare 9.0 to 13.4, so lift every pod
+    # target to the app's own minimum. The app itself already targets 15.1.
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |bc|
+        current = bc.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+        if current.nil? || Gem::Version.new(current) < Gem::Version.new('15.1')
+          bc.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        end
+      end
+    end
   end
 end

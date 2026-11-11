@@ -7,7 +7,6 @@ import {
   ActivityIndicator,
   StyleSheet,
   Pressable,
-  Linking,
   Modal,
   Alert,
   Animated,
@@ -29,14 +28,12 @@ import {
   where,
   orderBy,
   limit,
-  startAfter,
   onSnapshot,
   addDoc,
   setDoc,
   deleteDoc,
   updateDoc,
   serverTimestamp,
-  DocumentSnapshot,
 } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -212,7 +209,7 @@ export default function Feed() {
         if (v != null) setShowMine(v === '1');
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
   useEffect(() => {
     AsyncStorage.setItem(prefKey(), showMine ? '1' : '0').catch(() => {});
@@ -556,7 +553,7 @@ export default function Feed() {
     AsyncStorage.getItem(hiddenKey())
       .then((v) => { if (v) setHiddenAuthors(new Set(JSON.parse(v))); })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
   const toggleHiddenAuthor = useCallback((uid: string) => {
     selection();

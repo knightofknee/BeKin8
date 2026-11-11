@@ -46,28 +46,18 @@ export type TourStep = {
    */
   advanceOnTargetTap?: boolean;
   /**
-   * When set, advancing from this step jumps to the step with this target key instead of the
-   * next in order, used to skip an optional branch (e.g. the profile detour).
-   */
-  nextTarget?: string;
-  /**
    * Force the callout slot instead of auto-deciding. 'top' = fixed top slot (for a step whose content
    * sits BELOW the spotlight). 'low' = fixed bottom slot. 'below' = anchored JUST UNDER the highlighted
    * target and grown downward (as high as possible without covering it), with `belowGap` revealing a
-   * peek of what's beneath the target for orientation.
+   * peek of what's beneath the target for orientation. 'center' = vertically centered (target-less
+   * cards: the setup intro, the notifications ask, the finale).
    */
-  placement?: "top" | "low" | "below";
+  placement?: "top" | "low" | "below" | "center";
   /** For placement 'below': px between the anchor's bottom and the callout top (default 12). */
   belowGap?: number;
   /** For placement 'below': anchor the callout below THIS target's rect instead of the spotlighted
    * target's, so several steps can share one callout height. The ring still tracks `target`. */
   belowTarget?: string;
-  /**
-   * For a LOW-placed step with a long body: anchor the callout by its TOP (not its bottom) and let it
-   * grow DOWNWARD over the tab bar, so adding copy never pushes the box UP over the spotlighted
-   * element. Used for the notifications step.
-   */
-  growDown?: boolean;
   /**
    * Extra spotlight padding ABOVE the target rect (px). Use when something drawn outside the target
    * should still be inside the highlight, e.g. the beacon flame towers well above the logs/structure
@@ -86,18 +76,6 @@ export type TourStep = {
    */
   holePad?: number;
   /**
-   * Grow the spotlight hole to the UNION of the main target and this second target's rect. Used
-   * when the content to ring is split across elements that can't share a wrapper (the friends
-   * ROWS are list items below the requests block, so a marker at the list's end extends the ring
-   * over every row, however many there are).
-   */
-  holeUnionTarget?: string;
-  /**
-   * An optional side-step reached only via goToTarget (never the normal Next flow), NOT counted in
-   * the "Step X of N" total, so jumping into it doesn't make the numbers leap.
-   */
-  branch?: boolean;
-  /**
    * Gate the CTA (Next/Done/custom): renders greyed/disabled and can't be tapped. Hosts flip it
    * live via updateStepById (e.g. the speed tour's username/friend/light gates, the guided
    * first-beacon Done).
@@ -106,26 +84,18 @@ export type TourStep = {
   /** Short line rendered UNDER the nav row while ctaDisabled, explaining what unlocks it
    *  (e.g. "1 friend is needed to continue."). Also spoken as the disabled CTA's a11y hint. */
   ctaDisabledNote?: string;
-  /**
-   * When set, the step shows a small GREEN "Speed tour" button next to Next that calls this. Used on
-   * step 1 to switch the full tour into the abbreviated speed tour (username, friend, light a beacon).
-   */
-  speedTour?: () => void;
-  /**
-   * When set, the Back button SHOWS (even on a first step with no history) and calls this instead of the
-   * normal Back. Used by the speed tour's first step to return to the full tour's step 1.
-   */
-  backAction?: () => void;
-  /** Override the displayed step number with a custom label (e.g. "2a", "2b") instead of the count. */
-  stepLabel?: string;
-  /** Fixed callout position: anchor its TOP at this FRACTION of screen height (0..1), independent
-   *  of the target. Currently unused by the tours (kept as a layout escape hatch). */
-  topFrac?: number;
-  /**
-   * Gate for the Next/Done button: called on tap, and the tour only advances if it returns
-   * (or resolves) true. Used by the speed tour's notifications step to warn before skipping.
-   */
-  onBeforeNext?: () => boolean | Promise<boolean>;
+  /** Replaces the default "STEP X OF N" eyebrow (e.g. "WELCOME", "SETUP · 2 OF 3"). */
+  eyebrow?: string;
+  /** 'tonal' = a soft outlined CTA, for steps whose real action is IN the app (or in the body) and
+   *  the button is only the way past it ("Skip for now"). Default 'primary'. */
+  ctaVariant?: "primary" | "tonal";
+  /** Center the title (centered cards with a centered hero icon, like the finale). */
+  titleCenter?: boolean;
+  /** Hide the top-right dismiss link (the finale, where "Later" makes no sense: Done ends it). */
+  hideDismiss?: boolean;
+  /** Hide Back on this step even when there's history (setup steps auto-advance once done, so
+   *  stepping back into one would just bounce forward again). */
+  hideBack?: boolean;
 };
 
 type Props = {
@@ -139,6 +109,10 @@ type Props = {
   /** Replay run (tour already completed/skipped once): the dismiss button reads "Close" instead of
    *  "Skip tour", since a returning user isn't skipping onboarding, just leaving. */
   isReplay?: boolean;
+  /** Size of the area the overlay covers (the provider's root). Falls back to the window. */
+  frame?: { width: number; height: number } | null;
+  /** Overrides the dismiss label entirely (the setup tour uses "Later": the setup bar keeps it). */
+  dismissLabel?: string;
 };
 
 const DIM = "rgba(0,0,0,0.62)";
@@ -149,9 +123,11 @@ const PAD = 8;
 const stripEmoji = (s: string) =>
   s.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{FE0F}\u{200D}]/gu, "").replace(/\s+/g, " ").trim();
 
-export default function SpotlightTour({ steps, index, canBack, measureTarget, onNext, onPrev, onSkip, isReplay = false }: Props) {
+export default function SpotlightTour({ steps, index, canBack, measureTarget, onNext, onPrev, onSkip, isReplay = false, dismissLabel, frame }: Props) {
   const { colors } = useTheme();
-  const { width: W, height: H } = useWindowDimensions();
+  const win = useWindowDimensions();
+  const W = frame?.width ?? win.width;
+  const H = frame?.height ?? win.height;
   const insets = useSafeAreaInsets();
   const [rect, setRect] = useState<Rect | null>(null);
   // The step index the current `rect` was measured for. Just after a step change (before the new
@@ -167,6 +143,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   // a field mid-step, which shifts the sheet up, can't flip the callout's slot. null until latched.
   const [useLowLocked, setUseLowLocked] = useState<boolean | null>(null);
   const titleRef = useRef<Text>(null);
+  // Rendered height of the callout, so a TOP-slot step's extra ring headroom (the flame room above
+  // the beacon) can stop just under the box instead of running beneath it on shorter screens.
+  const [calloutH, setCalloutH] = useState(0);
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -185,17 +164,9 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
 
   const step = steps[index];
   const isLast = index === steps.length - 1;
-  // In-flight guard: onBeforeNext made this async (permission checks, confirm alerts), so a
-  // double-tap could queue TWO advances and even finish a tour a step early. One at a time.
-  // Declared up here with the other hooks, NOT next to goNext below: goNext sits after the
-  // `if (!step) return null` early return, and a useRef down there changes the hook count between
-  // renders whenever `index` walks off the end of `steps`, which makes React throw
-  // "Rendered more hooks than during the previous render" and takes the tour down with it.
-  const nextBusyRef = useRef(false);
-  // Step numbering ignores branch steps (optional side-steps), so jumping into one doesn't make the
-  // "Step X of N" count leap.
-  const total = steps.filter((s) => !s.branch).length;
-  const current = Math.max(1, steps.slice(0, index + 1).filter((s) => !s.branch).length);
+  const total = steps.length;
+  const current = index + 1;
+  const eyebrowText = step?.eyebrow ?? `STEP ${current} OF ${total}`;
 
   // On each step: reset to a clean keyboard baseline, run the side effect, and announce it for
   // assistive tech. The target MEASUREMENT / spotlight tracking lives in the next effect.
@@ -215,9 +186,10 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     Promise.resolve(step?.onEnter?.()).catch(() => {});
 
     if (!step) return;
-    AccessibilityInfo.announceForAccessibility(`${stripEmoji(step.title)}. Step ${step.stepLabel ?? current} of ${total}`);
+    AccessibilityInfo.announceForAccessibility(`${stripEmoji(step.title)}. ${eyebrowText.toLowerCase()}`);
     const a11yTimer = setTimeout(() => {
-      const node = titleRef.current && findNodeHandle(titleRef.current);
+      // findNodeHandle throws on web (the web build at waldgrave.com/bekin/app); native only.
+      const node = Platform.OS !== "web" && titleRef.current && findNodeHandle(titleRef.current);
       if (node) AccessibilityInfo.setAccessibilityFocus(node);
     }, 250);
     return () => clearTimeout(a11yTimer);
@@ -243,28 +215,10 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
       Math.abs(a.y - b.y) < 0.5 &&
       Math.abs(a.width - b.width) < 0.5 &&
       Math.abs(a.height - b.height) < 0.5;
-    // Union of two rects: the smallest rect containing both.
-    const union = (a: Rect, b: Rect): Rect => {
-      const x = Math.min(a.x, b.x);
-      const y = Math.min(a.y, b.y);
-      return {
-        x,
-        y,
-        width: Math.max(a.x + a.width, b.x + b.width) - x,
-        height: Math.max(a.y + a.height, b.y + b.height) - y,
-      };
-    };
     const poll = async () => {
       if (cancelled) return;
-      let r = await measureTarget(step.target!);
+      const r = await measureTarget(step.target!);
       if (cancelled) return;
-      // Optionally grow the hole to include a second element (e.g. the end-of-list marker, so
-      // every friend row is inside the ring).
-      if (r && r.width > 0 && step.holeUnionTarget) {
-        const ru = await measureTarget(step.holeUnionTarget);
-        if (cancelled) return;
-        if (ru && ru.width > 0) r = union(r, ru);
-      }
       if (r && r.width > 0) {
         const same = near(lastR, r);
         const alreadyFresh = rectForIdxRef.current === index;
@@ -336,36 +290,16 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     prevCtaGateRef.current = { index, disabled: nowDisabled };
     if (prev.index !== index) return; // a step change, not an in-place unlock
     if (prev.disabled && !nowDisabled && step) {
-      AccessibilityInfo.announceForAccessibility(
-        step.id === "set-first-beacon"
-          ? "Setup complete. The Done button is now available."
-          : "You can continue now."
-      );
+      AccessibilityInfo.announceForAccessibility("You can continue now.");
     }
   }, [index, step?.ctaDisabled, step?.id]);
 
   if (!step) return null;
 
-  const goNext = async () => {
-    if (nextBusyRef.current) return;
-    nextBusyRef.current = true;
-    try {
-      // A step can gate advancing (e.g. "notifications are off, sure?"). Only move on a true.
-      if (step.onBeforeNext) {
-        let ok = false;
-        try {
-          ok = await step.onBeforeNext();
-        } catch {
-          ok = true; // a broken gate must never trap the user in the tour
-        }
-        if (!ok) return;
-      }
-      if (isLast) success();
-      else tap();
-      onNext();
-    } finally {
-      nextBusyRef.current = false;
-    }
+  const goNext = () => {
+    if (isLast) success();
+    else tap();
+    onNext();
   };
   const goBack = () => {
     tap();
@@ -382,12 +316,20 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   // Hole geometry, symmetric padding clamped to the viewport on every axis, so the ring always
   // contains the FULL measured target (never crops the top to satisfy a bottom-overflow clamp).
   // holeBottom/holeRight are floored to hy/hx so an off-screen target can't yield a negative size.
+  // EDGE is the minimum gap between the ring and the screen edge: full-width cards (Friends, Settings)
+  // used to put the 2px ring right ON the screen edge, where it read as clipped. Vertically the hole
+  // stays below the status bar and above the tab bar.
+  const EDGE = 4;
   const xtra = step.holePad ?? 0; // extra padding on all sides (a clear gap from same-color targets)
-  const hy = rect ? Math.max(0, rect.y - PAD - xtra - (step.holePadTop ?? 0)) : 0;
-  const holeBottom = rect ? Math.max(hy, Math.min(H, rect.y + rect.height + PAD + xtra + (step.holePadBottom ?? 0))) : 0;
+  let hy = rect ? Math.max(insets.top + EDGE, rect.y - PAD - xtra - (step.holePadTop ?? 0)) : 0;
+  if (rect && step.placement === "top" && calloutH > 0) {
+    // Trim only the HEADROOM: the ring never starts below the target's own top.
+    hy = Math.max(hy, Math.min(rect.y - PAD - xtra, insets.top + 12 + calloutH + 8));
+  }
+  const holeBottom = rect ? Math.max(hy, Math.min(H - EDGE, rect.y + rect.height + PAD + xtra + (step.holePadBottom ?? 0))) : 0;
   const hh = holeBottom - hy;
-  const hx = rect ? Math.max(0, rect.x - PAD - xtra) : 0;
-  const holeRight = rect ? Math.max(hx, Math.min(W, rect.x + rect.width + PAD + xtra)) : 0;
+  const hx = rect ? Math.max(EDGE, rect.x - PAD - xtra) : 0;
+  const holeRight = rect ? Math.max(hx, Math.min(W - EDGE, rect.x + rect.width + PAD + xtra)) : 0;
   const hw = holeRight - hx;
 
   // True only once THIS step's target has been measured (not a stale ring kept from the previous step
@@ -429,17 +371,16 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
   const useLow =
     step.placement === "low"
       ? true
-      : step.placement === "top" || step.placement === "below"
+      : step.placement === "top" || step.placement === "below" || step.placement === "center"
       ? false
       : useLowLocked ?? (!!rect && hy < TOP_ZONE);
   let calloutPos: any;
   let calloutMaxH: number;
-  if (step.topFrac != null) {
-    // Fixed vertical anchor: callout TOP at a fraction of the screen, the same for sibling sub-steps so
-    // it doesn't drift with the (differently sized) highlighted block. Grows down, scrolls if too tall.
-    const top = Math.round(H * step.topFrac);
-    calloutPos = { top, left: 18, right: 18 };
-    calloutMaxH = Math.max(120, H - top - lowBottom - CARD_PAD);
+  const centered = step.placement === "center";
+  if (centered) {
+    // Centered card: a flex wrapper below does the centering, so only the side insets matter here.
+    calloutPos = { left: 18, right: 18 };
+    calloutMaxH = Math.max(120, H - TOP_LIMIT - lowBottom - CARD_PAD);
   } else if (step.placement === "below" && belowAnchorBottom != null) {
     // Anchor JUST BELOW the anchor element (the spotlighted target, or a shared `belowTarget`) and grow
     // downward. `belowGap` leaves a peek of what's under it for orientation; the box scrolls if its
@@ -450,14 +391,6 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
     // Subtract the card's own vertical padding, otherwise the ScrollView cap lets the padded box
     // run past the bottom of the screen and the Back/Next row gets clipped.
     calloutMaxH = Math.max(120, H - top - 8 - CARD_PAD);
-  } else if (useLow && step.growDown) {
-    // Pin the TOP roughly where the short box would have sat in the low slot, then allow the box to
-    // grow DOWN toward the screen bottom (covering the tab bar if the body is long) instead of
-    // creeping up over the highlighted controls. LOW_REF ≈ a typical short-callout height.
-    const LOW_REF = 270;
-    const topAnchor = Math.max(TOP_LIMIT, H - lowBottom - LOW_REF);
-    calloutPos = { top: topAnchor, left: 18, right: 18 };
-    calloutMaxH = Math.max(120, H - topAnchor - 8 - CARD_PAD); // down to ~8px from the bottom (over the tab bar)
   } else if (useLow) {
     calloutPos = { bottom: lowBottom, left: 18, right: 18 };
     calloutMaxH = Math.max(120, H - lowBottom - TOP_LIMIT - CARD_PAD);
@@ -529,14 +462,21 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
 
       {/* Distinct guidance surface: a blue-tinted, elevated card with a primary accent border that
           echoes the spotlight ring, deliberately NOT an app card, so it reads as "the tour talking". */}
+      {/* Centered steps: a full-screen flex wrapper centers the card between the status bar and
+          the tab bar (no height measurement needed); everything else is absolutely positioned. */}
+      <View
+        pointerEvents="box-none"
+        style={centered ? [StyleSheet.absoluteFill, { justifyContent: "center", paddingTop: TOP_LIMIT, paddingBottom: lowBottom }] : StyleSheet.absoluteFill}
+      >
       <View
         pointerEvents={calloutHidden ? "none" : "auto"}
         style={[
           styles.callout,
           { backgroundColor: colors.tourSurface, borderColor: colors.tourBorder },
-          calloutPos,
+          centered ? styles.calloutCentered : calloutPos,
           calloutHidden && styles.calloutHidden,
         ]}
+        onLayout={(e) => setCalloutH(e.nativeEvent.layout.height)}
         accessibilityViewIsModal
       >
         {/* Capped to the available gap; if the content is ever taller than the gap it scrolls,
@@ -551,16 +491,16 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
           <View style={styles.eyebrowRow}>
             <View style={styles.eyebrow}>
               <Ionicons name="sparkles" size={13} color={colors.primary} />
-              <Text style={[styles.eyebrowTxt, { color: colors.primary }]}>
-                {`STEP ${step.stepLabel ?? current} OF ${total}`}
-              </Text>
+              <Text style={[styles.eyebrowTxt, { color: colors.primary }]}>{eyebrowText}</Text>
             </View>
-            <Pressable hitSlop={10} onPress={skip} accessibilityRole="button" accessibilityLabel={isReplay ? "Close tour" : "Skip tour"}>
-              <Text style={[styles.skipTxt, { color: colors.subtle }]}>{isReplay ? "Close" : "Skip tour"}</Text>
-            </Pressable>
+            {step.hideDismiss ? null : (
+              <Pressable hitSlop={10} onPress={skip} accessibilityRole="button" accessibilityLabel={dismissLabel ?? (isReplay ? "Close tour" : "Skip tour")}>
+                <Text style={[styles.skipTxt, { color: colors.subtle }]}>{dismissLabel ?? (isReplay ? "Close" : "Skip tour")}</Text>
+              </Pressable>
+            )}
           </View>
 
-          <Text ref={titleRef} accessibilityRole="header" style={[styles.title, { color: colors.text }]} numberOfLines={2}>
+          <Text ref={titleRef} accessibilityRole="header" style={[styles.title, { color: colors.text }, step.titleCenter && { textAlign: "center" }]} numberOfLines={2}>
             {step.title}
           </Text>
 
@@ -571,47 +511,39 @@ export default function SpotlightTour({ steps, index, canBack, measureTarget, on
           )}
 
           <View style={styles.nav}>
-            {/* Back shows when there's history OR the step provides a custom backAction (speed-tour step
-                1, which returns to the full tour). It reserves NO space when neither applies. */}
-            {(canBack || step.backAction) && (
-              <Pressable
-                onPress={step.backAction ? () => { tap(); step.backAction!(); } : goBack}
-                style={styles.btnGhost}
-                accessibilityRole="button"
-                accessibilityLabel="Back"
-              >
+            {canBack && !step.hideBack && (
+              <Pressable onPress={goBack} style={styles.btnGhost} accessibilityRole="button" accessibilityLabel="Back">
                 <Text style={[styles.btnGhostTxt, { color: colors.subtle }]}>Back</Text>
               </Pressable>
             )}
-            {/* Speed tour stays slim on the LEFT; Next is flex:1 so it fills the rest of the row. */}
-            {step.speedTour && (
-              <Pressable
-                onPress={() => { tap(); step.speedTour!(); }}
-                style={[styles.btnSpeed, { backgroundColor: colors.success }]}
-                accessibilityRole="button"
-                accessibilityLabel="Speed tour, the quick setup path"
-              >
-                <Text style={styles.btnSpeedTxt}>Speed{"\n"}tour</Text>
-              </Pressable>
-            )}
-            <Pressable
-              onPress={ctaDisabled ? undefined : goNext}
-              disabled={ctaDisabled}
-              style={[styles.btnPrimary, { backgroundColor: ctaDisabled ? colors.border : colors.primary }]}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: ctaDisabled }}
-              accessibilityHint={ctaDisabled ? (step.ctaDisabledNote ?? "Complete this step to continue") : undefined}
-            >
-              <Text style={[styles.btnPrimaryTxt, ctaDisabled && { color: colors.subtle }]}>
-                {step.cta ?? (isLast ? "Done" : "Next")}
-              </Text>
-            </Pressable>
+            {(() => {
+              const tonal = step.ctaVariant === "tonal" && !ctaDisabled;
+              return (
+                <Pressable
+                  onPress={ctaDisabled ? undefined : goNext}
+                  disabled={ctaDisabled}
+                  style={[
+                    styles.btnPrimary,
+                    { backgroundColor: ctaDisabled ? colors.border : tonal ? colors.primary + "1F" : colors.primary },
+                    tonal && { borderWidth: 1, borderColor: colors.primary + "66" },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: ctaDisabled }}
+                  accessibilityHint={ctaDisabled ? (step.ctaDisabledNote ?? "Complete this step to continue") : undefined}
+                >
+                  <Text style={[styles.btnPrimaryTxt, tonal && { color: colors.primary }, ctaDisabled && { color: colors.subtle }]}>
+                    {step.cta ?? (isLast ? "Done" : "Next")}
+                  </Text>
+                </Pressable>
+              );
+            })()}
           </View>
 
           {ctaDisabled && step.ctaDisabledNote ? (
             <Text style={[styles.ctaNote, { color: colors.subtle }]}>{step.ctaDisabledNote}</Text>
           ) : null}
         </ScrollView>
+      </View>
       </View>
     </View>
   );
@@ -641,10 +573,8 @@ const styles = StyleSheet.create({
   nav: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 10 },
   btnGhost: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10 },
   btnGhostTxt: { fontSize: 15, fontWeight: "600" },
-  // Narrow GREEN button (stacked "Speed / tour" text) so it stays slim next to the wide Next button.
-  btnSpeed: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  btnSpeedTxt: { color: "#fff", fontSize: 13, fontWeight: "800", textAlign: "center", lineHeight: 15 },
   calloutHidden: { opacity: 0 },
+  calloutCentered: { position: "relative", marginHorizontal: 18 },
   // Why-the-CTA-is-grayed line, under the nav row.
   ctaNote: { fontSize: 12, fontWeight: "600", textAlign: "center", marginTop: 8 },
   btnPrimary: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: "center" },

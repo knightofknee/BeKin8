@@ -21,7 +21,9 @@ import {
   useWindowDimensions,
   AccessibilityInfo,
   AppState,
+  Switch,
 } from 'react-native';
+import { WEB_WHITE_KNOB } from '@/components/ui/webSwitch';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import BeaconStructure from '../components/BeaconStructure';
 import BeaconScene from '../components/BeaconScene';
@@ -52,8 +54,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { auth, db } from '../firebase.config';
 import {
-  addDoc,
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -67,6 +69,8 @@ import {
 } from 'firebase/firestore';
 import ChatRoom from '../components/ChatRoom';
 import FriendsBeaconsList, { FriendBeacon } from '../components/FriendsBeaconsList';
+import FriendPickerSheet from '../components/FriendPickerSheet';
+import { friendLabel, useFriends } from '../lib/useFriends';
 import BottomBar from '@/components/BottomBar';
 import { SCREEN_PAD } from '@/components/ui/layout';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -74,23 +78,25 @@ import { syncPushTokenIfGranted, ensurePushPermissionsAndToken } from '../lib/pu
 import * as Notifications from 'expo-notifications';
 import { usePrefetchBeaconMessages } from '../lib/prefetchBeaconMessages';
 import { beaconExpiry, beaconStillLive, buildTimeHHmm, parseTimeHHmm, formatTimeHHmmDisplay } from '../lib/beaconTime';
+import {
+  MAX_TIME_OPTIONS,
+  newOptionId,
+  openPollBeaconFields,
+  optionLabel,
+  parseTimePoll,
+  sameOption,
+  sortOptions,
+  type TimeOption,
+  type TimePoll,
+} from '../lib/timePoll';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
-import { tap, press, selection, success } from '../utils/haptics';
+import { tap, press, selection, success, warning } from '../utils/haptics';
 import TutorialResumeBanner from '../components/tutorial/TutorialResumeBanner';
 import WackyWednesday from '../components/WackyWednesday';
-import {
-  buildBeaconTour,
-  buildSpeedTour,
-  makeFirstBeaconStep,
-  makeFullUsernameStep,
-  makeSpeedUsernameStep,
-  makeSpeedFriendStep,
-  makeSpeedLightStep,
-  type BeaconTourCtx,
-} from '../components/tutorial/tourSteps';
-import { useTour, useTourTarget, type TourStep } from '../providers/TourProvider';
+import { useSetupTour, makeWelcomeBeaconStep, WELCOME_BEACON_ID, type WelcomeBeaconCtx } from '../components/tutorial/setupTour';
+import { useTour, useTourTarget } from '../providers/TourProvider';
 import { useOnboarding } from '../providers/OnboardingProvider';
 import { getSeen, setSeen } from '../lib/tutorialFlags';
 import { ensureNotifyPermission } from '../lib/notifyPermission';
@@ -141,9 +147,6 @@ const DEFAULT_BEACON_MESSAGE = 'Hang out at my place?';
 const FRIEND_NOTIF_ASK_KEY = '@bekin_friend_notif_ask_at';
 // Warm text for the ember chat pill.
 const EMBER_TEXT = '#FDE7B0';
-// Pre-filled into the very first beacon during the onboarding tutorial so new users
-// announce that they've joined. Only used for the guided first beacon, never the default.
-const FIRST_BEACON_INTRO = 'Testing out my beacon';
 const BEACON_MESSAGE_MAX = 1000;
 
 // --- Friend groups ---
@@ -155,7 +158,7 @@ type FriendGroup = {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string; tutorial?: string; tourTarget?: string; tourStepId?: string }>();
+  const params = useLocalSearchParams<{ beaconId?: string; messageId?: string }>();
   const { profile, user } = useAuth();
   const { colors } = useTheme();
   const online = useOnline();
@@ -164,6 +167,10 @@ export default function HomeScreen() {
   // Your beacon state
   const [isLit, setIsLit] = useState<boolean | null>(null);
   const [myActiveBeacon, setMyActiveBeacon] = useState<FriendBeacon | null>(null);
+  // Group scheduling (lib/timePoll): the poll on my current beacon, and the sheet's draft of it.
+  const [myTimePoll, setMyTimePoll] = useState<TimePoll | null>(null);
+  const [pollOn, setPollOn] = useState(false);
+  const [pollOptions, setPollOptions] = useState<TimeOption[]>([]);
   const [myStokeReady, setMyStokeReady] = useState(false);
   // Ids of my beacons the server has already announced (lastNotifiedAt): relighting one sends no
   // second "lit a beacon" push, so its light confirm must not promise one.
@@ -222,26 +229,22 @@ export default function HomeScreen() {
   const [selectedBeacon, setSelectedBeacon] = useState<FriendBeacon | null>(null);
   const [selectedBeaconMessageId, setSelectedBeaconMessageId] = useState<string | undefined>(undefined);
   // Coach-mark tour: target refs to spotlight + the tour controller.
-  const { startTour, updateStepById, isActive, currentStepId, currentStepTarget, goToTarget, navDir, advance, advanceFromStepId, back, restart, endTour } = useTour();
+  const { updateStepById, isActive, currentStepId } = useTour();
+  const { startSetup, startWelcome } = useSetupTour();
+  // Welcome step 1's local practice light (see the Onboarding section below).
+  const [practiceLit, setPracticeLit] = useState(false);
+  const onWelcomeBeacon = isActive && currentStepId === WELCOME_BEACON_ID;
+  const fireLit = !!isLit || practiceLit; // drives every fire/scene layer + the fire sound
   // Mirrored into a ref so non-reactive code (doc-sync callbacks) can read the live tour state.
   const tourActiveRef = useRef(isActive);
   tourActiveRef.current = isActive;
-  // Mirror the tour nav direction into a ref so the sheet animation can read it without re-running on
-  // every nav. On a BACK navigation the sheet RESTORES (snaps) instead of replaying its open slide.
-  const navDirRef = useRef(navDir);
-  navDirRef.current = navDir;
   // Base-setup progress (username + friend + notifications) drives the resume banner.
   const onboarding = useOnboarding();
   const logsRef = useTourTarget('beacon-logs');
   const optionsCtaRef = useTourTarget('beacon-options-cta');
-  const dayRef = useTourTarget('sheet-day');
-  const timeRef = useTourTarget('sheet-time');
-  const groupsRef = useTourTarget('sheet-groups');
-  const messageRef = useTourTarget('sheet-message');
-  // Wraps day + time + friend groups + message so the tour can highlight them as ONE step.
-  const sheetFieldsRef = useTourTarget('sheet-fields');
-  const beaconStyleRef = useTourTarget('beacon-style');
-  const chatTarget = useTourTarget('beacon-chat');
+  // Sheet field refs, for scrolling a focused field into view above the keyboard.
+  const timeRef = useRef<View | null>(null);
+  const messageRef = useRef<View | null>(null);
   // The home page View, the coordinate basis for the fire/smoke layers. Both <Svg> layers are
   // position:absolute top:0 left:0 inside styles.page, so we measure the logs RELATIVE TO this view
   // (logs window pos − page window pos). That collapses the whole nesting chain into one offset and
@@ -321,51 +324,18 @@ export default function HomeScreen() {
   // sound would keep playing on Feed/Friends/etc. On blur the crackle stops; on return it resumes
   // (no re-ignite, focus changes don't flip `was`).
   const isFocused = useIsFocused();
-  const prevLitForSoundRef = useRef(isLit);
+  const prevLitForSoundRef = useRef<boolean | null>(isLit);
   useEffect(() => {
     const was = prevLitForSoundRef.current;
-    prevLitForSoundRef.current = isLit;
+    prevLitForSoundRef.current = isLit === null ? null : fireLit;
     if (!soundLoaded) return; // wait for the pref so a muted user never hears a startup blip
-    fireSound.setLit(!!isLit && isFocused);
-    if (isLit && was === false && isFocused) {
+    fireSound.setLit(fireLit && isFocused);
+    if (fireLit && was === false && isFocused) {
       fireSound.playIgnite();
       success();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLit, fireSoundOn, soundLoaded, isFocused]);
-  // Whether the user has ≥1 friend, read when the tour is built so it can drop the "Add Brian"
-  // step (that card only renders at zero friends). `friendsLoaded` gates auto-start so the tour is
-  // NEVER built before the count is known (the old race kept add-brian in for users who have
-  // friends, then auto-skipped its missing target).
-  const hasFriendsRef = useRef(false);
-  const [friendsLoaded, setFriendsLoaded] = useState(false);
-  useEffect(() => {
-    const uid = user?.uid;
-    if (!uid) return;
-    // Use the SAME source the Friends screen's "Add Brian" card gates on (accepted FriendEdges,
-    // symmetric: both parties are in `uids`), so the step is dropped exactly when the card won't
-    // render. The error branch still flips friendsLoaded so an offline cold start can't wedge the
-    // tour from ever auto-starting (unknown count → treat as none, which just keeps add-brian).
-    const qEdges = query(
-      collection(db, 'FriendEdges'),
-      where('uids', 'array-contains', uid),
-      where('state', '==', 'accepted')
-    );
-    const unsub = onSnapshot(
-      qEdges,
-      (snap) => {
-        hasFriendsRef.current = snap.size > 0;
-        setFriendsLoaded(true);
-      },
-      (e) => {
-        if (__DEV__) console.warn('friends-count listener error', e);
-        hasFriendsRef.current = false;
-        setFriendsLoaded(true);
-      }
-    );
-    return () => unsub();
-  }, [user?.uid]);
-
+  }, [fireLit, isLit, fireSoundOn, soundLoaded, isFocused]);
   // First-time notification onboarding prompted after a user creates a beacon
   // while OS-level notification permission is not yet granted. Explains
   // beacon-specific notifications (RSVPs + chat) before opening the OS prompt.
@@ -456,11 +426,20 @@ export default function HomeScreen() {
   // Friend groups state for scheduler
   const [groups, setGroups] = useState<FriendGroup[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
-  // True while the tour is on the final guided-first-beacon step. On that step the group selection is
-  // FORCED to just the test group (so the "set to your test group" copy is true and the demo beacon
-  // notifies no one), so the live beacon snapshot below must not overwrite it with a beacon's groups.
-  const onFirstBeaconStepRef = useRef(false);
   const [loadingGroups, setLoadingGroups] = useState(false);
+  // Friends invited one by one (the "+" chip after the groups). Stored on the beacon as friendUids;
+  // the server unions them with the groups' members for the push, the friends list honors them for
+  // visibility. Loaded only while the sheet is up or a pick exists (names for the chips/confirm).
+  const [selectedFriendUids, setSelectedFriendUids] = useState<string[]>([]);
+  const [friendPickerOpen, setFriendPickerOpen] = useState(false);
+  const { friends: myFriends, loading: loadingFriends } = useFriends(
+    user?.uid ?? null,
+    optionsRendered || selectedFriendUids.length > 0
+  );
+  const friendNameOf = (uid: string) => {
+    const f = myFriends.find((x) => x.uid === uid);
+    return f ? friendLabel(f) : 'Friend';
+  };
 
   // ---------- SUBSCRIBE: your beacon(s) (next 7 days) ----------
   // Day anchors are STATE, not one-shot useMemo: Home stays mounted overnight, so after midnight the
@@ -561,6 +540,8 @@ export default function HomeScreen() {
           }
         });
 
+        setMyTimePoll(parseTimePoll((activeDoc ?? plannedSoonest)?.data?.timePoll));
+
         if (activeDoc) {
           const stMs = getMillis(activeDoc.data?.startAt);
           const msg =
@@ -591,12 +572,16 @@ export default function HomeScreen() {
           setMyStokeReady(activeDoc.data?.stokeReady === true);
           // Mirror the doc's groups EXACTLY, including the tutorial test group. Filtering test out
           // here made the sheet lie: a deliberately test-scoped beacon showed no group selected, and
-          // the next save silently wrote groupIds [] (= all friends). Never overwrites the forced
-          // test-only selection while a tour runs (tourActiveRef).
+          // the next save silently wrote groupIds [] (= all friends).
           const gids: string[] = Array.isArray(activeDoc.data?.groupIds)
             ? activeDoc.data.groupIds.filter((x: any) => typeof x === 'string')
             : [];
-          if (!onFirstBeaconStepRef.current && !tourActiveRef.current) setSelectedGroupIds(gids);
+          setSelectedGroupIds(gids);
+          setSelectedFriendUids(
+            Array.isArray(activeDoc.data?.friendUids)
+              ? activeDoc.data.friendUids.filter((x: any) => typeof x === 'string')
+              : []
+          );
         } else {
           setMyActiveBeacon(null);
           setIsLit(false);
@@ -621,7 +606,12 @@ export default function HomeScreen() {
           const gids: string[] = Array.isArray(plannedSoonest.data?.groupIds)
             ? plannedSoonest.data.groupIds.filter((x: any) => typeof x === 'string')
             : [];
-          if (!onFirstBeaconStepRef.current && !tourActiveRef.current) setSelectedGroupIds(gids);
+          setSelectedGroupIds(gids);
+          setSelectedFriendUids(
+            Array.isArray(plannedSoonest.data?.friendUids)
+              ? plannedSoonest.data.friendUids.filter((x: any) => typeof x === 'string')
+              : []
+          );
         } else {
           setNextPlannedDate(null);
           // Do NOT wipe the time here: when a beacon is lit (active but no separate scheduled doc)
@@ -764,6 +754,10 @@ export default function HomeScreen() {
 
     setDayOffset(diffDays);
     setMessage(srcMsg);
+    // An open time poll reopens as the editable option list; anything else starts with it off.
+    const openPoll = myTimePoll?.status === 'open' ? myTimePoll : null;
+    setPollOn(!!openPoll);
+    setPollOptions(openPoll ? openPoll.options : []);
 
     const parsedTime = parseTimeHHmm(srcTime);
     if (parsedTime) {
@@ -818,120 +812,32 @@ export default function HomeScreen() {
     if (user?.uid) ensureTestGroup();
   }, [user?.uid, ensureTestGroup]);
 
-  // THE tutorial-safety net: whenever a tour is running on THIS home instance, the selection is
-  // test-only. The tour-start preselection alone was not enough: the tour navigates across screens,
-  // and a home remount wiped the in-memory selection to [] (= all friends), so a tutorial beacon
-  // once notified a brand-new user's real friend. Runs on mount and on tour start.
-  useEffect(() => {
-    const uid = auth.currentUser?.uid;
-    if (!isActive || !uid) return;
-    setSelectedGroupIds([`${uid}__tutorial_test`]);
-    ensureTestGroup();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive]);
-
-  // Belt to the braces above: the WRITE-time scope. Any beacon written while a tour runs is
-  // test-scoped no matter what the local selection state says.
+  // Safety net: any beacon written while a tour runs is test-scoped no matter what the selection
+  // says. (The welcome tour's practice light writes nothing, so this should never matter.)
   const tourSafeGroupIds = (): string[] => {
     const uid = auth.currentUser?.uid;
     if (isActive && uid) return [`${uid}__tutorial_test`];
     return selectedGroupIds;
   };
+  // Same safety net for the individually picked friends: a tour-time write invites nobody.
+  const tourSafeFriendUids = (): string[] => (isActive ? [] : selectedFriendUids);
 
-  // Guided first beacon (final tour step): pre-fill the test message, default to today, and select the
-  // "test" group (notifies no one). It does NOT open the options sheet: the step is completed by LIGHTING
-  // the beacon (tapping the structure, which writes active:true), Saving the sheet only schedules an
-  // inactive/planned beacon and does NOT ungate Done. Leaving the sheet closed keeps the lighthouse (and
-  // its "light your beacon" hint) visible so the gating action isn't buried. Seeds ONCE per tour run.
-  const firstBeaconSeededRef = useRef(false);
-  const startFirstBeacon = () => {
-    if (firstBeaconSeededRef.current) return;
-    firstBeaconSeededRef.current = true;
-    setMessage(FIRST_BEACON_INTRO);
-    setPlannedMessage(FIRST_BEACON_INTRO);
-    setDayOffset(0);
-    setTimeHourInput('');
-    setTimeMinuteInput('');
-    setTimeMeridiem('PM');
-    // Select the test group SYNCHRONOUSLY by its deterministic id so even an instant light/Save is
-    // scoped to it (groupIds=[testId] → server notifies no one, even before the group doc loads, since
-    // its members resolve to just the owner). ensureTestGroup() creates the doc in the background.
-    const uid = auth.currentUser?.uid;
-    setSelectedGroupIds(uid ? [`${uid}__tutorial_test`] : []);
-    ensureTestGroup();
-  };
+  // ---- Onboarding (components/tutorial/setupTour.tsx) ----
+  // Welcome step 1 invites a PRACTICE light: tapping the beacon on that step lights it locally only
+  // (fire, sound, haptic; no beacon doc is written, nobody is notified) and it goes out when the step
+  // ends. fireLit drives every fire/scene layer below.
+  const welcomeCtxRef = useRef<WelcomeBeaconCtx | null>(null);
+  useEffect(() => {
+    if (!onWelcomeBeacon) setPracticeLit(false);
+  }, [onWelcomeBeacon]);
+  useEffect(() => {
+    if (onWelcomeBeacon && welcomeCtxRef.current) {
+      updateStepById(WELCOME_BEACON_ID, makeWelcomeBeaconStep(welcomeCtxRef.current, practiceLit));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [practiceLit]);
 
-  // Whether the user has no beacon yet (drives the first-beacon prompt + label).
-  const hasNoBeaconYet = !isLit && !myActiveBeacon && !nextPlannedDate;
-
-  // From the tutorial's notifications step: get OS permission, and on success opt the user into
-  // beacon notifications from all friends (the master toggle), so future friends are covered.
-  const enableBeaconNotifications = async () => {
-    const granted = await ensureNotifyPermission(
-      'Turn on notifications so you know the moment a friend lights a beacon.'
-    );
-    if (!granted) return; // ensureNotifyPermission emits the permission-change signal on grant
-    // Beacons from all friends + chat pings for beacons they're in. Non-fatal, see the helper.
-    await enableDefaultNotifyFlags();
-  };
-
-
-  // Build the tour ctx from LIVE state. Used by startBeaconTour AND as the fallback for the live
-  // step-update effect: a mid-tour home REMOUNT nulls tourCtxRef, and the gated steps
-  // (username/friend/light) must still be able to unlock. Mirrors the set-first-beacon hardening:
-  // never let a home-local ref silently kill a live update.
-  const buildLiveTourCtx = (): BeaconTourCtx => {
-    const uDone0 = !!onboarding.steps.find((st) => st.key === 'username')?.done;
-    const fDone0 = !!onboarding.steps.find((st) => st.key === 'friend')?.done;
-    const beaconLit0 = !!isLit || !!myActiveBeacon; // currently lit/active (NOT a stale planned one)
-    const tourCtx: BeaconTourCtx = {
-      openSheet: () => setOptionsOpen(true),
-      closeSheet: () => setOptionsOpen(false),
-      goFriends: () => router.navigate('/friends'),
-      goHome: () => router.navigate('/home'),
-      goSettings: () => router.navigate('/settings'),
-      // The notifications step lives on /settings; jump back Home before opening the beacon sheet.
-      openFirstBeacon: () => openFirstBeaconCb.current(),
-      hasFriends: hasFriendsRef.current,
-      tapNoun: skin.tap.noun, // step 1 copy adapts to the current skin ("Tap the lighthouse …")
-      // Spotlight headroom over the structure box: the solid flame body tops out at roughly
-      // 170*flameScale px above the seat, which sits 180*origin below the box top; +12 covers the
-      // flickering tip. Flameless skins keep the original 70.
-      holePadTop: skin.fire === 'flame' || skin.fire === 'print' || skin.fire === 'pyre' ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 12) : 70,
-      beaconLit: beaconLit0,
-      usernameDone: uDone0,
-      friendDone: fDone0,
-      online,
-      onEnableNotifications: enableBeaconNotifications,
-      // The green "Speed tour" button (step 1) swaps the running tour to the short path in place.
-      onSpeedTour: () => restart(buildSpeedTour(tourCtx)),
-      // Speed-tour step 1 Back: return to the full tour at its step 1 (the steps already built).
-      onExitSpeedTour: () => restart(builtBeaconStepsRef.current ?? buildBeaconTour(tourCtx)),
-    };
-    return tourCtx;
-  };
-
-  // Start (or replay) the beacon coach-mark tour. `startAtTarget` lets the resume banner jump to
-  // the earliest incomplete setup step.
-  const pendingStartTargetRef = useRef<string | undefined>(undefined);
-  const pendingStartStepIdRef = useRef<string | undefined>(undefined);
-  // The built steps + whether the final step is the GATED guided-first-beacon variant, so the live
-  // effect below can refresh that one step (checklist + Done gate) via updateStepById without rebuilding
-  // the whole array (which could shift indices if the add-brian step's presence changed mid-tour).
-  const builtBeaconStepsRef = useRef<TourStep[] | null>(null);
-  // The ctx the running tour was built with; the live speed-step gates re-make steps from it.
-  const tourCtxRef = useRef<BeaconTourCtx | null>(null);
-  // Sticky: latches true once the user has a username + a friend + a LIT beacon, all during this run.
-  // Once true the final step shows the celebratory wrap-up with Done enabled, and STAYS there even if
-  // the beacon is later put out.
-  const reachedRef = useRef(false);
-  const lastGateSigRef = useRef('');
-  // First-skip hint: distinguish a finish from a skip (onClose fires for both) so we can, on the very
-  // first skip before the tour was ever completed, tell the user how to reopen it.
-  const didFinishTourRef = useRef(false);
-  const [showSkipHint, setShowSkipHint] = useState(false);
-  // Once-only "who will see this beacon" confirm on the FIRST beacon lit after the first tour (finish or
-  // skip). Loaded from storage on mount; armed when the tour ends; consumed on that first light.
+  // The one-time "who will see this" confirm (first beacon lit after the tour) arms when it closes.
   const firstTourDoneRef = useRef(false);
   const audienceSeenRef = useRef(false);
   useEffect(() => {
@@ -943,191 +849,20 @@ export default function HomeScreen() {
     });
     return () => { mounted = false; };
   }, []);
-  const openFirstBeaconCb = useRef(() => { router.navigate('/home'); startFirstBeacon(); });
-  openFirstBeaconCb.current = () => { router.navigate('/home'); startFirstBeacon(); };
-  // Celebratory final step's onEnter: just go home and close the sheet (don't seed a new beacon).
-  const onEnterDoneCb = useRef(() => { router.navigate('/home'); setOptionsOpen(false); });
-  onEnterDoneCb.current = () => { router.navigate('/home'); setOptionsOpen(false); };
-  const startBeaconTour = (opts?: { startAtTarget?: string; startAtStepId?: string }) => {
-    // Never build the tour before the friend count is known, otherwise the add-brian step can be
-    // wrongly kept (the auto-start/resume/banner/help entry points all funnel through here). Defer
-    // via the pendingAutoStart machinery, which re-fires this once isLit + friendsLoaded are ready
-    // (remembering the requested jump target across the defer).
-    if (!friendsLoaded) {
-      pendingStartTargetRef.current = opts?.startAtTarget;
-      pendingStartStepIdRef.current = opts?.startAtStepId;
-      setPendingAutoStart(true);
-      return;
-    }
-    const tourCtx = buildLiveTourCtx();
-    const builtSteps = buildBeaconTour(tourCtx);
-    builtBeaconStepsRef.current = builtSteps;
-    tourCtxRef.current = tourCtx; // the live speed-step updates below rebuild steps from this
-    reachedRef.current = tourCtx.usernameDone && tourCtx.friendDone && tourCtx.beaconLit; // start latched if already fully done
-    lastGateSigRef.current = ''; // force the live effect to (re)apply for this run
-    firstBeaconSeededRef.current = false; // re-seed the first-beacon sheet once for this run
-    didFinishTourRef.current = false;
-    // Preselect the TEST group for the WHOLE tour, so any beacon lit during it (step 1 demo or the
-    // finale) is scoped to test and notifies no one. ensureTestGroup creates the empty, owner-only
-    // group doc in the background; even before it loads the server resolves the audience to no one.
-    const tourUid = auth.currentUser?.uid;
-    if (tourUid) setSelectedGroupIds([`${tourUid}__tutorial_test`]);
-    ensureTestGroup();
-    startTour(builtSteps, {
-      startAtTarget: opts?.startAtTarget,
-      startAtStepId: opts?.startAtStepId,
-      // Replay if the tour has ended at least once before (finish or skip): the dismiss button then
-      // reads "Close" instead of "Skip tour". Captured now, before onClose flips the ref.
-      isReplay: firstTourDoneRef.current,
-      onFinish: () => {
-        didFinishTourRef.current = true;
-        success();
-        setSeen('beacon');
-      },
-      onClose: () => {
-        builtBeaconStepsRef.current = null;
-        reachedRef.current = false;
-        firstBeaconSeededRef.current = false;
-        // NOTE: the group selection is deliberately NOT touched here. It mirrors the beacon doc
-        // (test group included), and the light confirm (describeAudience) tells the user when a
-        // beacon is test-scoped, so nothing is silently re-scoped behind their back.
-        // Arm the one-time "who will see this" confirm for the first beacon lit AFTER this tour (the
-        // tour ending, by finish OR skip, is what arms it, so even users who skip get warned once).
-        setSeen('first_tour_done');
-        firstTourDoneRef.current = true;
-        // On the FIRST skip (tour never completed before), show a one-time hint about reopening it.
-        const wasSkip = !didFinishTourRef.current;
-        didFinishTourRef.current = false;
-        if (wasSkip) {
-          Promise.all([getSeen('beacon'), getSeen('skip_hint')]).then(([completed, hinted]) => {
-            if (!completed && !hinted) {
-              setShowSkipHint(true);
-              setSeen('skip_hint');
-            }
-          });
-        }
-      },
-    });
+
+  const beginWelcome = (isReplay: boolean) => {
+    // Spotlight headroom over the structure box: the solid flame body tops out at roughly
+    // 170*flameScale px above the seat, which sits 180*origin below the box top. Flameless skins
+    // keep 70.
+    const holePadTop =
+      skin.fire === 'flame' || skin.fire === 'print' || skin.fire === 'pyre'
+        ? Math.max(70, Math.ceil(170 * skin.flameScale - 180 * skin.origin) + 40) // +40: tip + glow stay inside the ring
+        : 70;
+    const ctx: WelcomeBeaconCtx = { tapNoun: skin.tap.noun, holePadTop, alreadyLit: !!isLit };
+    welcomeCtxRef.current = ctx;
+    setOptionsOpen(false);
+    startWelcome({ ...ctx, isReplay, onClose: () => { firstTourDoneRef.current = true; } });
   };
-
-  // Primitive done-flags so the live-gate effect depends on booleans, not the fresh onboarding.steps
-  // array each render (which would re-run the effect body on unrelated OnboardingProvider re-renders).
-  const obUsernameDone = !!onboarding.steps.find((st) => st.key === 'username')?.done;
-  const obFriendDone = !!onboarding.steps.find((st) => st.key === 'friend')?.done;
-
-  // Keep the gated final step live: as the user completes username/friend (earlier steps) and sets a
-  // beacon (during this step), refresh that one step's checklist + Done gate in place. Drives off the
-  // PROVIDER (isActive + updateStepById), NOT home-local refs: the tour navigates to /friends +
-  // /settings, which REMOUNTS home and would reset the old home-local guard refs to their initial
-  // values, so the old guard silently killed this effect for the rest of the tour (the "Light your
-  // beacon" item never checked after visiting settings). updateStepById splices the provider's
-  // own steps by id, so it works regardless of remounts. A signature guard keeps it a no-op unless the
-  // gate inputs actually changed (updateStepById -> setSteps re-renders and would otherwise loop).
-  // reachedRef/lastGateSigRef reset on a home remount, which is fine: the effect just recomputes them
-  // from the live state on the next run and re-syncs the step.
-  useEffect(() => {
-    if (!isActive) return;
-    const uDone = obUsernameDone;
-    const fDone = obFriendDone;
-    const beaconLit = !!isLit || !!myActiveBeacon;
-    if (uDone && fDone && beaconLit) reachedRef.current = true; // sticky once fully complete
-    const reached = reachedRef.current;
-    const sig = `${uDone}|${fDone}|${beaconLit}|${reached}`;
-    if (sig === lastGateSigRef.current) return;
-    lastGateSigRef.current = sig;
-    updateStepById(
-      'set-first-beacon',
-      makeFirstBeaconStep(
-        { openFirstBeacon: () => openFirstBeaconCb.current(), onEnterDone: () => onEnterDoneCb.current() },
-        { usernameDone: uDone, friendDone: fDone, beaconLit, reached }
-      )
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, obUsernameDone, obFriendDone, isLit, myActiveBeacon]);
-
-  // While the tour sits on the final guided-first-beacon step, force the group selection to just the
-  // test group (so the step's "set to your test group" copy is actually true and any beacon lit there
-  // notifies no one), and drop it again when the user leaves that step. Transition-gated so earlier
-  // steps keep the selection the tour started them with, and the snapshot guard above stops a beacon
-  // load from overwriting the forced value while we're on the step.
-  const prevOnFirstBeaconStepRef = useRef(false);
-  useEffect(() => {
-    const uid = auth.currentUser?.uid;
-    const testId = uid ? `${uid}__tutorial_test` : null;
-    const onStep = isActive && currentStepId === 'set-first-beacon';
-    const was = prevOnFirstBeaconStepRef.current;
-    prevOnFirstBeaconStepRef.current = onStep;
-    onFirstBeaconStepRef.current = onStep;
-    if (!testId) return;
-    if (onStep && !was) {
-      setSelectedGroupIds([testId]); // entered the step: test group only
-    }
-    // Leaving the step does NOT strip the test group anymore: the selection mirrors whatever the
-    // beacon doc actually says, and the light confirm surfaces test scoping instead of hiding it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, currentStepId]);
-
-  // The final tour step is ALWAYS shown and completes only when the user taps Done. It's a single live
-  // step: gated until username + friend + a lit beacon (reached), then the celebratory "you're all set"
-  // variant with Done enabled (see makeFirstBeaconStep's `reached` branch). Tapping Done ends the tour
-  // via onFinish (setSeen('beacon') + the success haptic).
-
-  // If the user LIGHTS the beacon during tour step 1, opt into the chat mini-step (a branch) so we
-  // explain the chat right there.
-  // Edge-gated on a real false→true light: starting the tour with an already-lit beacon (e.g. the
-  // help-button replay) must NOT jump straight to the branch, and stepping Back into step 1 must not
-  // re-bounce. goToTarget pushes history (default), so Back from the chat mini-step returns to step 1.
-  const prevLitForBranchRef = useRef(isLit);
-  useEffect(() => {
-    const wasLit = prevLitForBranchRef.current;
-    prevLitForBranchRef.current = isLit;
-    // STRICT false->true edge: on a home REMOUNT (any tour navigation back to home, e.g. Back out
-    // of the speed tour) isLit starts as null while the beacon doc loads, and a loose `!wasLit`
-    // read that null->true load as a fresh light, bouncing an already-lit beacon into this branch.
-    if (isActive && currentStepId === 'light-beacon-demo' && isLit === true && wasLit === false && myActiveBeacon) {
-      // Push history so Back from the chat mini-step returns to the fire/logs step (the edge-gate
-      // above stops it from immediately re-branching when Back lands back on step 1).
-      goToTarget('beacon-chat');
-    }
-  }, [isActive, currentStepId, isLit, myActiveBeacon, goToTarget]);
-
-  // LIVE speed-tour steps: the username/friend gates ungray Next the moment the task is done, and
-  // the single light step flips in place (tap-instruction with a grayed "Light your beacon" task ->
-  // congratulations with Done + the beacon-plus-options highlight). updateStepById is a same-index
-  // swap and a no-op when the id isn't in the running tour, so this is safe during the full tour.
-  useEffect(() => {
-    if (!isActive) return;
-    // Fallback ctx rebuild: a mid-tour home remount nulls tourCtxRef, and without this the
-    // username/friend/light gates could never unlock (Next stuck gray forever).
-    const ctx = tourCtxRef.current ?? (tourCtxRef.current = buildLiveTourCtx());
-    updateStepById('speed-username', makeSpeedUsernameStep(ctx, obUsernameDone));
-    updateStepById('speed-friend', makeSpeedFriendStep(ctx, obFriendDone));
-    updateStepById('speed-light', makeSpeedLightStep(ctx, isLit === true));
-    updateStepById('full-username', makeFullUsernameStep(ctx, obUsernameDone));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, obUsernameDone, obFriendDone, isLit]);
-
-  // Speed tour finale hand-off: the lit step-4 congrats says "Open Beacon options". Opening the
-  // sheet COMPLETES the tour right there, so the sheet is fully usable instead of squeezed under
-  // the coach-mark with its Save/Cancel outside the ring.
-  useEffect(() => {
-    if (isActive && currentStepId === 'speed-light' && isLit === true && optionsOpen) endTour(true);
-  }, [isActive, currentStepId, isLit, optionsOpen, endTour]);
-
-  // Keep the options sheet OPEN whenever the tour is on a sheet step, including when the user steps
-  // BACK into one from a later screen. (The per-step onEnter's openSheet closure can be stale after a
-  // Stack re-mount, so drive sheet-open from the CURRENT step on the live home instance.)
-  useEffect(() => {
-    const SHEET_TARGETS = ['beacon-style', 'sheet-fields'];
-    if (isActive && currentStepTarget && SHEET_TARGETS.includes(currentStepTarget)) {
-      setOptionsOpen(true);
-    }
-  }, [isActive, currentStepTarget]);
-
-  // (The standalone one-step "beacon chat" explainer that used to live here was DELETED
-  // 2026-07-24: its seen-flag was device-local, so every fresh install re-showed it to
-  // established users, and it fired from a backgrounded Home while another screen (e.g. the
-  // feed) was on top, ringing blank space. The chat mini-step inside the tour covers it.)
 
   // Decide ONCE whether to auto-pop the tour for a new user (the resume banner takes over after).
   // Skipped when arriving via a notification deep link so we don't cover the opened beacon, and
@@ -1160,19 +895,14 @@ export default function HomeScreen() {
   }, [onboarding.loaded]);
 
   // Start the auto-shown tour only once Home's content (hence the spotlight targets) is mounted,
-  // i.e. after isLit resolves, and the friend count is known. Also re-fires a deferred start
-  // (banner/resume) once those are ready, preserving the requested jump target.
+  // i.e. after isLit resolves.
   useEffect(() => {
-    if (pendingAutoStart && isLit !== null && friendsLoaded) {
+    if (pendingAutoStart && isLit !== null) {
       setPendingAutoStart(false);
-      const t = pendingStartTargetRef.current;
-      const sid = pendingStartStepIdRef.current;
-      pendingStartTargetRef.current = undefined;
-      pendingStartStepIdRef.current = undefined;
-      startBeaconTour(sid ? { startAtStepId: sid } : t ? { startAtTarget: t } : undefined);
+      beginWelcome(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingAutoStart, isLit, friendsLoaded]);
+  }, [pendingAutoStart, isLit]);
 
   // Anyone with a friend should have notifications on: otherwise a friend's beacon never reaches
   // them (receivers who skip the tour and never light a beacon were never asked). Once they have a
@@ -1207,19 +937,6 @@ export default function HomeScreen() {
     };
   }, [onboarding.loaded, hasFriend, notifSettled, isActive, pendingAutoStart]);
 
-  // Resume the tutorial when navigated here from the resume banner on another screen, optionally
-  // jumping to the first incomplete step (?tourTarget=...) or straight to the final step by id
-  // (?tourStepId=set-first-beacon, used by the Friends "add a friend" help card's Next).
-  useEffect(() => {
-    if (params.tutorial === '1') {
-      const t = typeof params.tourTarget === 'string' ? params.tourTarget : undefined;
-      const sid = typeof params.tourStepId === 'string' ? params.tourStepId : undefined;
-      startBeaconTour(sid ? { startAtStepId: sid } : t ? { startAtTarget: t } : undefined);
-      router.setParams({ tutorial: undefined as any, tourTarget: undefined as any, tourStepId: undefined as any });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.tutorial]);
-
   // Track keyboard visibility so the options sheet can drop its home-indicator padding while
   // typing, keeps the Save/Cancel row tight to the keyboard's Done bar.
   useEffect(() => {
@@ -1236,14 +953,9 @@ export default function HomeScreen() {
     return () => { mounted = false; sub.remove(); };
   }, []);
 
-  // Slide the options sheet in/out; keep it mounted through the exit animation. BACK navigation in the
-  // tour (and OS Reduce Motion) RESTORE the prior state INSTANTLY: snap to the target with no slide, so
-  // stepping Back into a sheet step shows the sheet already open instead of replaying its entrance.
-  // Forward opens still animate.
+  // Slide the options sheet in/out; keep it mounted through the exit animation. Reduce Motion snaps.
   useEffect(() => {
-    // Snap (no slide) when restoring via tour BACK, or whenever Reduce Motion is on. Gated on isActive
-    // so a leftover 'back' direction after the tour ends never suppresses a normal sheet-open animation.
-    const instant = (isActive && navDirRef.current === 'back') || reduceMotion;
+    const instant = reduceMotion;
     if (optionsOpen) {
       setOptionsRendered(true);
       if (instant) optionsAnim.setValue(1);
@@ -1273,7 +985,8 @@ export default function HomeScreen() {
   const describeAudience = (): { title: string; message: string } => {
     const me = auth.currentUser?.uid;
     const testId = me ? `${me}__tutorial_test` : null;
-    const onlyTest = !!testId && selectedGroupIds.length === 1 && selectedGroupIds[0] === testId;
+    const onlyTest =
+      !!testId && selectedGroupIds.length === 1 && selectedGroupIds[0] === testId && selectedFriendUids.length === 0;
     if (onlyTest) {
       return {
         title: 'This is a test beacon',
@@ -1290,13 +1003,16 @@ export default function HomeScreen() {
         message: "Your friends were notified when you first lit it, so they won't get another notification.",
       };
     }
-    if (selectedGroupIds.length === 0) {
+    if (selectedGroupIds.length === 0 && selectedFriendUids.length === 0) {
       return {
         title: 'Light beacon for all friends?',
         message: 'All of your friends will see this beacon and get a notification. Pick a friend group in Beacon options to share it with just some of them.',
       };
     }
-    const names = groups.filter((g) => selectedGroupIds.includes(g.id)).map((g) => g.name).join(', ');
+    const names = [
+      ...groups.filter((g) => selectedGroupIds.includes(g.id)).map((g) => g.name),
+      ...selectedFriendUids.map(friendNameOf),
+    ].join(', ');
     return {
       title: `Light beacon for ${names}?`,
       message: `Only ${names} will see this beacon and get a notification.`,
@@ -1385,6 +1101,7 @@ export default function HomeScreen() {
                   startAt: Timestamp.fromDate(sd),
                   expiresAt: Timestamp.fromDate(ed),
                   groupIds: tourSafeGroupIds(), // tour-time lights are ALWAYS test-scoped
+                  friendUids: tourSafeFriendUids(),
                   // NOTE: allowedUids is intentionally NOT written. It used to embed the owner's
                   // friend uids in this world-readable doc (a friend-graph leak). The server now
                   // resolves the notification audience from groupIds + the private FriendGroups.
@@ -1426,8 +1143,11 @@ export default function HomeScreen() {
 
   const toggleBeacon = () => {
     if (toggleBusyRef.current) return; // an in-flight toggle: ignore rapid re-taps
-    // The tour gets NO special-casing here: the final step is meant to be the real workflow, so the
-    // same light/extinguish confirms show (native alerts render above the coach-mark just fine).
+    // Welcome step 1: a local practice light (see practiceLit). No confirm, no write.
+    if (onWelcomeBeacon && !isLit) {
+      setPracticeLit((v) => !v);
+      return;
+    }
     if (isLit) {
       Alert.alert('Extinguish Beacon', 'Are you sure you want to extinguish your beacon?', [
         { text: 'Cancel', style: 'cancel' },
@@ -1469,6 +1189,22 @@ export default function HomeScreen() {
     setStokeOpen(true);
   };
 
+  // Time poll composer: the Day chips + Time fields above pick a slot, this adds it as an option.
+  const composedOption = (): Omit<TimeOption, 'id'> | null => {
+    const d = startOfDay(new Date());
+    d.setDate(d.getDate() + dayOffset);
+    if (!timeHourInput.trim() && timeMinuteInput.trim()) return null; // minutes without an hour
+    return { dayMs: startOfDay(d).getTime(), timeHHmm: buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem) };
+  };
+  const addPollOption = () => {
+    const o = composedOption();
+    if (!o) { Alert.alert('Time', 'Add an hour, or clear the time.'); return; }
+    if (pollOptions.some((x) => sameOption(x, o))) { warning(); return; }
+    if (pollOptions.length >= MAX_TIME_OPTIONS) { warning(); return; }
+    selection();
+    setPollOptions((cur) => sortOptions([...cur, { id: newOptionId(), ...o }]));
+  };
+
   // save options. Returns true if the save actually went through (so the tour can advance only then).
   const saveBeaconOptions = async (): Promise<boolean> => {
     press();
@@ -1481,6 +1217,11 @@ export default function HomeScreen() {
     const mTrim = timeMinuteInput.trim();
     if (!hTrim && mTrim) {
       Alert.alert('Time', 'Add an hour, or clear the time.');
+      return false;
+    }
+
+    if (pollOn && pollOptions.length < 2) {
+      Alert.alert('Add another time', 'Give friends at least 2 options to vote on, or turn off voting.');
       return false;
     }
 
@@ -1500,6 +1241,11 @@ export default function HomeScreen() {
       const ownerName = profile?.displayName || profile?.username || null;
 
       const timeHHmm = buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem);
+      // A time poll replaces the day/time with its options (see openPollBeaconFields), and saving one
+      // LIGHTS the beacon: friends can only vote on a beacon they can see. Turning voting off on an
+      // open poll removes it; a decided poll is left alone as the record of what was picked.
+      const pollFields = pollOn ? openPollBeaconFields(pollOptions) : null;
+      const dropOpenPoll = !pollOn && myTimePoll?.status === 'open' ? { timePoll: deleteField() } : {};
 
       // allowedUids is intentionally NOT written (see the tap-to-light path): it embedded the owner's
       // friend uids in a world-readable doc. The server resolves the audience from groupIds now.
@@ -1513,9 +1259,14 @@ export default function HomeScreen() {
           scheduled: true,
           updatedAt: serverTimestamp(),
           groupIds: tourSafeGroupIds(), // tour-time saves are ALWAYS test-scoped
+          friendUids: tourSafeFriendUids(),
           timeHHmm,
+          ...dropOpenPoll,
+          ...(pollFields ?? {}),
         });
       } else {
+        // A poll's doc is keyed to its FIRST option day (its startAt).
+        if (pollFields) sd.setTime(pollFields.startAt.toMillis());
         const yyyy = sd.getFullYear();
         const mm = String(sd.getMonth() + 1).padStart(2, '0');
         const dd = String(sd.getDate()).padStart(2, '0');
@@ -1528,14 +1279,17 @@ export default function HomeScreen() {
             ownerName,
             message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
             details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            active: false,
+            active: !!pollFields,
             scheduled: true,
             startAt: Timestamp.fromDate(sd),
             expiresAt: Timestamp.fromDate(ed),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
             groupIds: tourSafeGroupIds(), // tour-time saves are ALWAYS test-scoped
+          friendUids: tourSafeFriendUids(),
             timeHHmm,
+            ...dropOpenPoll,
+            ...(pollFields ?? {}),
           },
           { merge: true }
         );
@@ -1576,18 +1330,12 @@ export default function HomeScreen() {
     }
   };
 
-  // During tour step 4 (the sheet-fields step) the sheet's OWN Save/Cancel drive the tour: Save saves and
-  // advances to step 5 (only if the save succeeded), Cancel steps back to step 3. Outside the tour they
-  // behave normally (Save saves + closes, Cancel just closes).
-  const onTourSheetFields = isActive && currentStepTarget === 'sheet-fields';
   const handleSheetSave = async () => {
-    const ok = await saveBeaconOptions();
-    if (ok && onTourSheetFields) advance();
+    await saveBeaconOptions();
   };
   const handleSheetCancel = () => {
     tap();
-    if (onTourSheetFields) back();
-    else setOptionsOpen(false);
+    setOptionsOpen(false);
   };
 
   // Loading baseline
@@ -1623,27 +1371,27 @@ export default function HomeScreen() {
         <View ref={pageRef} collapsable={false} style={styles.page}>
           {/* SCENE, backmost layer: each skin's bespoke procedural backdrop (components/scenes/*),
               anchor-aware so scene geometry lines up with the structure. pointerEvents none. */}
-          <BeaconScene skin={skin} active={!!isLit} focused={isFocused} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} people={scenePeople} />
+          <BeaconScene skin={skin} active={fireLit} focused={isFocused} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} people={scenePeople} />
           {/* SMOKE, drifts up BEHIND the friend tiles (shown through the gaps; the tile list stays
               in front and untouched). Rises from the measured structure anchor. Registry-driven:
               skin.smokeKind picks the ambient smoke, the smoke-signal puff column, the fireworks
               show, the sky-lantern field, the bonfire's spiral ember column, or nothing. */}
           {skin.smokeKind === 'signal' ? (
-            <BeaconSmokeSignal skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconSmokeSignal skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'fireworks' ? (
-            <BeaconFireworks skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} people={scenePeople} />
+            <BeaconFireworks skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} people={scenePeople} />
           ) : skin.smokeKind === 'lanterns' ? (
-            <BeaconSkyLanterns skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconSkyLanterns skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'embers' ? (
-            <BeaconEmberColumn skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconEmberColumn skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.smokeKind === 'ambient' ? (
-            <BeaconSmoke skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconSmoke skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : null}
           {/* The bonfire's flame BODY lives here, behind the tiles AND behind the structure below,
               so the pyre's front logs occlude the flame base and the wood burns INSIDE the fire
               (the structure adds its own front licks on top). */}
           {skin.fire === 'pyre' && (
-            <BeaconBonfireFlame skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconBonfireFlame skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           )}
           {(() => {
             const resumeVisible = onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart;
@@ -1653,17 +1401,7 @@ export default function HomeScreen() {
                 doneCount={onboarding.doneCount}
                 total={onboarding.total}
                 nextLabel={onboarding.firstIncomplete?.label}
-                onPress={() => {
-                  const inc = onboarding.firstIncomplete;
-                  // "Add a friend" is not a locked coach-mark anymore: send the user to Friends, where
-                  // a non-blocking help card shows for anyone with no friend yet. Other steps still use
-                  // the coach-mark jump.
-                  if (inc?.key === 'friend') {
-                    router.navigate('/friends');
-                  } else {
-                    startBeaconTour(inc?.target ? { startAtTarget: inc.target } : undefined);
-                  }
-                }}
+                onPress={() => startSetup({ onClose: () => { firstTourDoneRef.current = true; } })}
               />
             );
             // The email-verify banner (VerifyEmailGate, floats at the very top for pending email/
@@ -1694,11 +1432,11 @@ export default function HomeScreen() {
                 {/* onLongPress is ALWAYS set so a long hold never falls through to a toggle; it only
                     does something when the hidden stoke is armed (see openStoke). */}
                 <TouchableOpacity onPress={toggleBeacon} onLongPress={openStoke} delayLongPress={600} disabled={toggleBusy} activeOpacity={0.7} style={styles.beaconContainer}>
-                  <BeaconStructure skin={skin} size={180} lit={!!isLit} focused={isFocused} />
+                  <BeaconStructure skin={skin} size={180} lit={fireLit} focused={isFocused} />
                 </TouchableOpacity>
 
                 {!isActive && (
-                  <Pressable onPress={() => startBeaconTour()} hitSlop={12} style={styles.helpBtn}>
+                  <Pressable onPress={() => beginWelcome(true)} hitSlop={12} style={styles.helpBtn} accessibilityRole="button" accessibilityLabel="How BeKin works">
                     <Ionicons name="help-circle" size={28} color={colors.primary} />
                   </Pressable>
                 )}
@@ -1726,7 +1464,6 @@ export default function HomeScreen() {
                   // Compact ember-glass pill. Who's going rides inside it, except on skins whose
                   // scene already shows the people by name (skin.showsPeople, e.g. The Beacons).
                   <TouchableOpacity
-                    ref={chatTarget}
                     onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
                     activeOpacity={0.8}
                     style={styles.chatPill}
@@ -1747,7 +1484,7 @@ export default function HomeScreen() {
                     )}
                   </TouchableOpacity>
                 ) : null}
-                {isLit && myActiveBeacon ? null : (
+                {(isLit && myActiveBeacon) || practiceLit ? null : (
                   <Text style={[styles.logHint, { color: skin.tap.tint }]}>{unlitCaption}</Text>
                 )}
               </View>
@@ -1768,7 +1505,7 @@ export default function HomeScreen() {
                 <Text style={[styles.optionsCtaTitle, { color: colors.text }]}>Beacon options</Text>
                 {/* ONLY test selected: that group's members get nothing (audience = union of selected
                     groups; test adds nobody), so warn here instead of the usual hint. */}
-                {!!user?.uid && selectedGroupIds.length === 1 && selectedGroupIds[0] === `${user.uid}__tutorial_test` ? (
+                {!!user?.uid && selectedGroupIds.length === 1 && selectedGroupIds[0] === `${user.uid}__tutorial_test` && selectedFriendUids.length === 0 ? (
                   <Text style={[styles.optionsCtaSubtitle, { color: '#F59E0B', fontWeight: '600' }]} numberOfLines={1}>
                     Test beacon: friends won&apos;t see it
                   </Text>
@@ -1787,16 +1524,16 @@ export default function HomeScreen() {
               stone, sky-lantern stand). */}
           {skin.fire === 'beam' ? (
             skin.structure === 'searchlight' ? (
-              <BeaconSearchlightBeam skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+              <BeaconSearchlightBeam skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
             ) : (
-              <BeaconLighthouseBeam skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+              <BeaconLighthouseBeam skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
             )
           ) : skin.fire === 'bolt' ? (
-            <BeaconStormBolt skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconStormBolt skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.fire === 'print' ? (
-            <BeaconPrintFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconPrintFire skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : skin.fire === 'flame' ? (
-            <BeaconFire skin={skin} active={!!isLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
+            <BeaconFire skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           ) : null}
         </View>
 
@@ -1851,7 +1588,7 @@ export default function HomeScreen() {
                       changed its width and the whole wrap reflowed on every tap. Now every chip is
                       the same size and nothing ever moves. Selecting a style also opens a live
                       preview box that overlays the fields below until dismissed. */}
-                  <View ref={beaconStyleRef} collapsable={false} style={stylePreviewOpen ? styles.styleZTop : undefined}>
+                  <View style={stylePreviewOpen ? styles.styleZTop : undefined}>
                     <Text style={[styles.modalLabel, { color: colors.text }]}>Beacon style</Text>
                     <View style={styles.daysWrap}>
                       {BEACON_SKINS.map((bs) => (
@@ -1875,10 +1612,10 @@ export default function HomeScreen() {
                   </View>
 
                   {/* Day, time, friend groups, and message: wrapped so the tour highlights them together. */}
-                  <View ref={sheetFieldsRef} collapsable={false}>
+                  <View>
                   {/* Day */}
                   <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Day</Text>
-                  <View ref={dayRef} collapsable={false} style={styles.daysWrap}>
+                  <View style={styles.daysWrap}>
                     {next7Days.map((d) => (
                       <Pressable
                         key={d.offset}
@@ -1942,16 +1679,91 @@ export default function HomeScreen() {
                     <Text style={[styles.timeError, { color: colors.error }]}>{timeRangeError}</Text>
                   ) : null}
 
+                  {/* Group scheduling: offer several day/time options and let friends vote in the chat.
+                      With it on, the Day chips + Time fields above compose the option to add. */}
+                  <View style={[styles.pollCard, { backgroundColor: colors.inputBg, borderColor: pollOn ? colors.primary : colors.border }]}>
+                    <View style={styles.pollHeadRow}>
+                      <Ionicons name="sparkles" size={18} color={colors.primary} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.pollTitle, { color: colors.text }]}>Let friends vote on the time</Text>
+                        <Text style={[styles.pollSub, { color: colors.subtle }]}>
+                          {pollOn
+                            ? 'Pick a day and time above, then add it. Friends vote in the chat and you lock one in.'
+                            : "Not sure when? Offer a few options."}
+                        </Text>
+                      </View>
+                      <Switch
+                        value={pollOn}
+                        onValueChange={(v) => { selection(); setPollOn(v); }}
+                        trackColor={{ false: colors.border, true: colors.primary }}
+                        thumbColor="#fff"
+                        {...WEB_WHITE_KNOB}
+                        accessibilityLabel="Let friends vote on the time"
+                      />
+                    </View>
+                    {pollOn ? (
+                      <>
+                        {pollOptions.length > 0 && (
+                          <View style={styles.pollChips}>
+                            {pollOptions.map((o) => (
+                              <View key={o.id} style={[styles.pollChip, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                                <Text style={[styles.pollChipTxt, { color: colors.text }]}>{optionLabel(o)}</Text>
+                                <Pressable
+                                  onPress={() => { tap(); setPollOptions((cur) => cur.filter((x) => x.id !== o.id)); }}
+                                  hitSlop={8}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Remove ${optionLabel(o)}`}
+                                >
+                                  <Ionicons name="close-circle" size={18} color={colors.subtle} />
+                                </Pressable>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                        {pollOptions.length < MAX_TIME_OPTIONS ? (
+                          <Pressable
+                            onPress={addPollOption}
+                            style={({ pressed }) => [styles.pollAddBtn, { borderColor: colors.primary }, pressed && { opacity: 0.8 }]}
+                            accessibilityRole="button"
+                          >
+                            <Ionicons name="add-circle" size={18} color={colors.primary} />
+                            <Text style={[styles.pollAddTxt, { color: colors.primary }]} numberOfLines={1}>
+                              {(() => {
+                                const o = composedOption();
+                                if (!o) return 'Add this time';
+                                // Already in the list: say so instead of offering a button that just buzzes.
+                                if (pollOptions.some((x) => sameOption(x, o))) return 'Added. Pick another day or time';
+                                return `Add ${optionLabel({ id: '', ...o })}`;
+                              })()}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                        <Text style={[styles.pollHint, { color: colors.subtle }]}>
+                          {pollOptions.length < 2
+                            ? `Add at least ${2 - pollOptions.length} more. Saving lights your beacon so friends can vote.`
+                            : 'Saving lights your beacon so friends can vote.'}
+                        </Text>
+                      </>
+                    ) : myTimePoll?.status === 'decided' ? (
+                      <Text style={[styles.pollHint, { color: colors.subtle }]}>
+                        {(() => {
+                          const o = myTimePoll.options.find((x) => x.id === myTimePoll.decidedId);
+                          return o ? `Last vote locked in ${optionLabel(o)}.` : '';
+                        })()}
+                      </Text>
+                    ) : null}
+                  </View>
+
                   {/* Friend Groups */}
-                  <View ref={groupsRef} collapsable={false}>
+                  <View>
                   <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>
-                    Friend Groups (if none selected, all friends can see)
+                    Friend groups or friends (if none selected, all friends can see)
                   </Text>
                   {loadingGroups ? (
                     <View style={{ paddingVertical: 6 }}>
                       <ActivityIndicator />
                     </View>
-                  ) : groups.length ? (
+                  ) : (
                     <View style={styles.daysWrap}>
                       {groups.map((g) => {
                         const selected = selectedGroupIds.includes(g.id);
@@ -1970,10 +1782,35 @@ export default function HomeScreen() {
                           </Pressable>
                         );
                       })}
+                      {/* Friends picked one by one: a selected chip each (tap removes), then the "+"
+                          that opens the picker. Same chip style as the groups. */}
+                      {selectedFriendUids.map((uid) => (
+                        <Pressable
+                          key={`f:${uid}`}
+                          onPress={() => {
+                            selection();
+                            setSelectedFriendUids((prev) => prev.filter((x) => x !== uid));
+                          }}
+                          style={[styles.dayChip, styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${friendNameOf(uid)}, tap to remove`}
+                        >
+                          <Text style={[styles.dayChipText, styles.dayChipTextActive]}>{friendNameOf(uid)}</Text>
+                        </Pressable>
+                      ))}
+                      <Pressable
+                        onPress={() => { tap(); setFriendPickerOpen(true); }}
+                        style={[styles.dayChip, styles.plusChip, { backgroundColor: colors.inputBg, borderColor: colors.border }]}
+                        accessibilityRole="button"
+                        accessibilityLabel="Add friends"
+                      >
+                        <Ionicons name="add" size={18} color={colors.text} />
+                      </Pressable>
                     </View>
-                  ) : (
-                    <Text style={{ color: colors.subtle, marginBottom: 6 }}>
-                      {online ? "No groups yet. Create some in Friends." : "Can't load groups. No internet connection."}
+                  )}
+                  {!loadingGroups && groups.length === 0 && selectedFriendUids.length === 0 && (
+                    <Text style={{ color: colors.subtle, marginTop: 6, marginBottom: 6 }}>
+                      {online ? 'No groups yet. Create some in Friends, or tap + to pick friends.' : "Can't load groups. No internet connection."}
                     </Text>
                   )}
                   </View>
@@ -2075,41 +1912,33 @@ export default function HomeScreen() {
 
               {selectedBeacon && (
                 <View style={{ flex: 1, marginTop: 4 }}>
-                  <ChatRoom beaconId={selectedBeacon.id} targetMessageId={selectedBeaconMessageId} style={{ flex: 1 }} />
+                  <ChatRoom
+                    beaconId={selectedBeacon.id}
+                    targetMessageId={selectedBeaconMessageId}
+                    style={{ flex: 1 }}
+                    onViewProfile={(username) => {
+                      setSelectedBeacon(null);
+                      setSelectedBeaconMessageId(undefined);
+                      router.push(`/profile/${username}`);
+                    }}
+                  />
                 </View>
               )}
             </View>
           </KeyboardAvoidingView>
         </Modal>
+
+        <FriendPickerSheet
+          visible={friendPickerOpen}
+          onClose={() => setFriendPickerOpen(false)}
+          friends={myFriends}
+          loading={loadingFriends}
+          selected={selectedFriendUids}
+          onChange={setSelectedFriendUids}
+        />
       </SafeAreaView>
 
       {!optionsRendered && <BottomBar />}
-
-      {/* First-skip hint: how to reopen the walkthrough (shown once, only if never completed). */}
-      <Modal
-        visible={showSkipHint}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowSkipHint(false)}
-      >
-        <View style={styles.skipHintBackdrop}>
-          <View style={[styles.skipHintCard, { backgroundColor: colors.card }]}>
-            <Ionicons name="help-circle" size={56} color={colors.primary} />
-            <Text style={[styles.skipHintTitle, { color: colors.text }]}>Come back any time</Text>
-            <Text style={[styles.skipHintBody, { color: colors.subtle }]}>
-              No worries. You can reopen this walkthrough whenever you like by tapping the help button
-              (the <Ionicons name="help-circle" size={15} color={colors.subtle} /> icon) on the home screen.
-            </Text>
-            <Pressable
-              onPress={() => { tap(); setShowSkipHint(false); }}
-              style={[styles.skipHintBtn, { backgroundColor: colors.primary }]}
-              accessibilityRole="button"
-            >
-              <Text style={styles.skipHintBtnTxt}>Got it</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
 
       {/* First-time beacon notification onboarding */}
       <StokeModal
@@ -2186,12 +2015,7 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   // First-skip hint modal
-  skipHintBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: 28 },
-  skipHintCard: { width: '100%', maxWidth: 360, borderRadius: 20, padding: 24, alignItems: 'center' },
-  skipHintTitle: { fontSize: 20, fontWeight: '800', marginTop: 10, marginBottom: 8, textAlign: 'center' },
-  skipHintBody: { fontSize: 15, lineHeight: 22, textAlign: 'center', marginBottom: 20 },
-  skipHintBtn: { alignSelf: 'stretch', paddingVertical: 14, borderRadius: 14, alignItems: 'center' },
-  skipHintBtnTxt: { color: '#fff', fontSize: 16, fontWeight: '800' },
+
   // Page structure
   page: {
     flex: 1,
@@ -2380,6 +2204,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   dayChipActive: { backgroundColor: '#2F6FED', borderColor: '#2F6FED' },
+  // The "+" (add friends) chip: same height as a text chip, squared off so it reads as a button.
+  plusChip: { paddingHorizontal: 9, paddingVertical: 5, alignItems: 'center', justifyContent: 'center' },
   // Style-picker chips: FIXED width (3 per row) so selection (bold text) never reflows the grid.
   skinChip: { width: '31.5%', alignItems: 'center', paddingHorizontal: 4 },
   // The preview overlays the sheet fields below the grid until dismissed.
@@ -2399,6 +2225,16 @@ const styles = StyleSheet.create({
   },
   msgHint: { color: '#667085', fontSize: 12, marginTop: 4 },
   timeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pollCard: { marginTop: 14, borderWidth: 1, borderRadius: 14, padding: 12 },
+  pollHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  pollTitle: { fontSize: 15, fontWeight: '800' },
+  pollSub: { fontSize: 12.5, lineHeight: 17, marginTop: 2 },
+  pollChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  pollChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderRadius: 999, paddingVertical: 7, paddingLeft: 12, paddingRight: 8 },
+  pollChipTxt: { fontSize: 13.5, fontWeight: '700' },
+  pollAddBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 12, borderWidth: 1.5, borderStyle: 'dashed', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12 },
+  pollAddTxt: { fontSize: 14, fontWeight: '800', flexShrink: 1 },
+  pollHint: { fontSize: 12, marginTop: 8 },
   timeInput: {
     borderWidth: 1,
     borderRadius: 10,

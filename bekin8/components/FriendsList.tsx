@@ -1,6 +1,6 @@
 // components/FriendsList.tsx
 import React, { useRef, useCallback } from "react";
-import { Pressable, StyleSheet, Text, View, Switch, GestureResponderEvent } from "react-native";
+import { Pressable, StyleSheet, Text, View, Switch } from "react-native";
 import { colors } from "./ui/colors";
 import { Friend } from "./types";
 import { useTheme } from "../providers/ThemeProvider";

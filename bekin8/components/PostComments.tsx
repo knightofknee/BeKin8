@@ -435,7 +435,7 @@ export default function PostComments({ post, onClose, targetCommentId }: Props) 
     const isMine = comment.authorUid === me.uid;
     if (Platform.OS === 'ios' && ActionSheetIOS) {
       const options = ['Cancel', 'Report'];
-      const actions: Array<() => void> = [() => {}, () => doReport(comment)];
+      const actions: (() => void)[] = [() => {}, () => doReport(comment)];
       let destructiveButtonIndex: number | undefined;
       if (isMine) {
         options.push('Delete comment');

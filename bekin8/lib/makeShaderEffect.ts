@@ -12,7 +12,7 @@ export function makeShaderEffect(sksl: string, tag: string): SkRuntimeEffect | n
     return Skia.RuntimeEffect.Make(sksl);
   } catch (e) {
     if (__DEV__) {
-      // eslint-disable-next-line no-console
+       
       console.warn(`${tag}: shader failed to compile`, e);
     }
     return null;

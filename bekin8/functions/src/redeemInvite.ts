@@ -84,7 +84,7 @@ async function recordRedeemFailure(uid: string): Promise<void> {
  *  public invite code is a "force-friend-me" token anyone could read and redeem. A legacy code on
  *  Profiles is migrated here and the public copy cleared. Lock the Invites collection in the console
  *  rules (allow read: if false) so the map can't be enumerated; the Admin SDK bypasses rules. */
-export const ensureInviteCode = onCall({ enforceAppCheck: false }, async (req) => {
+export const ensureInviteCode = onCall({ enforceAppCheck: true }, async (req) => {
   const uid = req.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in required.');
 
@@ -140,7 +140,7 @@ export const ensureInviteCode = onCall({ enforceAppCheck: false }, async (req) =
 });
 
 /** Redeems an inviter's code into an instantly-accepted friendship with the caller. */
-export const redeemInvite = onCall({ enforceAppCheck: false }, async (req) => {
+export const redeemInvite = onCall({ enforceAppCheck: true }, async (req) => {
   const meUid = req.auth?.uid;
   if (!meUid) throw new HttpsError('unauthenticated', 'Sign in required.');
 

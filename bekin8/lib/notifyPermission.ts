@@ -30,6 +30,11 @@ export function emitNotifyPermissionChange(): void {
 export async function ensureNotifyPermission(
   reason: string = "Turn on notifications to get alerts for beacons, comments, and requests."
 ): Promise<boolean> {
+  if (Platform.OS === "web") {
+    // The web build can't receive push. Point people at the app instead of a dead permission flow.
+    Alert.alert("Notifications are in the app", "Get BeKin on your phone to be notified when a friend lights a beacon.");
+    return false;
+  }
   const perm = await Notifications.getPermissionsAsync();
   if (perm.granted) return true;
 

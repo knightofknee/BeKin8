@@ -146,7 +146,7 @@ export default function BeaconSeaScene({ active, focused = true }: { active: boo
   if (!effect) return null;
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.base]}>
-      <Canvas style={[styles.fill, { width: W, height: H }]}>
+      <Canvas style={StyleSheet.flatten([styles.fill, { width: W, height: H }])}>
         <Fill>
           <Shader source={effect} uniforms={uniforms} />
         </Fill>

@@ -1,5 +1,5 @@
 // app/friends.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -13,7 +13,9 @@ import {
   Switch,
   Share,
 } from "react-native";
+import { WEB_WHITE_KNOB } from "@/components/ui/webSwitch";
 import { useRouter } from "expo-router";
+import * as Clipboard from "expo-clipboard";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { auth, db } from "../firebase.config";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -47,8 +49,9 @@ import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
 import { buildInviteUrl, prefetchMyInviteCode } from "../lib/inviteLink";
 import TutorialResumeBanner from "@/components/tutorial/TutorialResumeBanner";
-import FriendsSetupCard from "@/components/tutorial/FriendsSetupCard";
-import { useTour, useTourTarget } from "../providers/TourProvider";
+import { useSetupTour } from "@/components/tutorial/setupTour";
+import { useTour } from "../providers/TourProvider";
+import { addBrianAsFriend } from "../lib/addBrian";
 import { useOnboarding } from "../providers/OnboardingProvider";
 import { emitNotifyPermissionChange } from "../lib/notifyPermission";
 
@@ -56,7 +59,6 @@ import * as Notifications from "expo-notifications";
 
 // 🔔 Push helpers (new)
 import {
-  ensurePushPermissionsAndToken,
   subscribeToFriendNotifications,
   unsubscribeFromFriendNotifications,
   syncPushTokenIfGranted,
@@ -73,15 +75,6 @@ export default function FriendsScreen() {
   const [notifyAllBeacons, setNotifyAllBeacons] = useState(false);
   const [notifyAllBusy, setNotifyAllBusy] = useState(false);
   const router = useRouter();
-  // Non-blocking "add your first friend" card. Shown to ANY user with no friend yet whenever they are
-  // on this screen (dismissable for the session, so it returns on the next visit). It locks nothing;
-  // "Next" hands off to the final tour step (checklist / celebration).
-  const [setupCardDismissed, setSetupCardDismissed] = useState(false);
-  const setupHelpNext = useCallback(() => {
-    setSetupCardDismissed(true);
-    router.navigate({ pathname: "/home", params: { tutorial: "1", tourStepId: "set-first-beacon" } });
-  }, [router]);
-
   // Username state, seeded from cached profile, editable locally
   const [usernameInput, setUsernameInput] = useState("");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
@@ -147,57 +140,31 @@ export default function FriendsScreen() {
     };
   }, [profileLoaded, inviteCode, currentUsername, user?.uid]);
 
-  // Coach-mark tour targets on this screen.
-  const { isActive: tourActive, currentStepId, currentStepTarget, measureTarget } = useTour();
-  const groupsTarget = useTourTarget("friends-groups");
-  const brianTarget = useTourTarget("add-brian");
-  // Wraps the Requests section + the My Friends list/add-brian card so the tour highlights them as one
-  // step. The page FlatList scrolls this block into view when the tour reaches it.
-  const requestsListTarget = useTourTarget("friends-requests");
-  // Zero-content marker at the very END of the friend rows: the tour unions it with the
-  // requests block so the ring encloses EVERY row (rows are list items, not wrappable).
-  const listEndTarget = useTourTarget("friends-list-end");
+  // Setup-tour steps on this screen spotlight the username block and the add-a-friend card (both
+  // registered inside FriendsProfileAndInvite). The page doesn't hand-scroll while a tour runs, so
+  // bring the spotlighted card near the top, under the status bar, when its step starts.
+  const { isActive: tourActive, currentStepTarget, measureTarget } = useTour();
+  const { startSetup } = useSetupTour();
   const listRef = useRef<FlatList>(null);
   const scrollYRef = useRef(0);
 
-  // Base-setup progress drives the resume banner here too, so a user on Friends sees it persist
-  // until username + friend + notifications are all done.
+  // Base-setup progress drives the setup bar here too, so a user on Friends sees what's left.
   const onboarding = useOnboarding();
 
-  // While the tour is on a Friends step, the page does NOT hand-scroll (scrollEnabled below):
-  // the ring staying put while content slid under it read as broken. Instead the tour positions
-  // each step's target itself. Uses the tour's measureTarget so it works for any registered
-  // target, including ones inside child components.
   useEffect(() => {
-    // friends-groups is deliberately NOT here: its card sits mid-screen where the TOP-slot callout
-    // never covers it, and auto-scrolling it up to desiredY collided with the callout slot that
-    // was latched from the pre-scroll measurement (callout landed ON the highlighted card).
-    const SCROLLABLE = [
-      "friends-username",
-      "friends-profile",
-      "friends-add-card",
-      "friends-requests",
-    ];
+    const SCROLLABLE = ["friends-username", "friends-add-card"];
     if (!currentStepTarget || !SCROLLABLE.includes(currentStepTarget)) return;
     const bring = async () => {
       const r = await measureTarget(currentStepTarget);
       if (!r) return;
-      // Default: block's top near the top of the screen, above a LOW callout. The friends-list
-      // steps (speed 2b + full step 8) instead put their callout in the TOP slot, so their block
-      // sits BELOW the callout (nothing covered).
-      const desiredY = currentStepId === 'speed-friend' || currentStepId === 'full-friends' ? 330 : 120;
-      const delta = r.y - desiredY;
-      if (Math.abs(delta) > 12) {
-        // SNAP, don't glide: an animated scroll here made the ring + callout visibly chase the
-        // content a beat after they had already landed (the "awkward vertical shift").
-        listRef.current?.scrollToOffset({ offset: Math.max(0, scrollYRef.current + delta), animated: false });
-      }
+      const delta = r.y - 120;
+      // SNAP, don't glide: an animated scroll made the ring + callout chase the content.
+      if (Math.abs(delta) > 12) listRef.current?.scrollToOffset({ offset: Math.max(0, scrollYRef.current + delta), animated: false });
     };
-    const t0 = setTimeout(bring, 30); // immediately, so the snap lands before the ring/callout draw
-    const t1 = setTimeout(bring, 320); // after the navigation to Friends settles
-    const t2 = setTimeout(bring, 650); // a second pass in case layout was still mounting
-    return () => { clearTimeout(t0); clearTimeout(t1); clearTimeout(t2); };
-  }, [currentStepTarget, currentStepId, measureTarget]);
+    const t0 = setTimeout(bring, 30);
+    const t1 = setTimeout(bring, 320);
+    return () => { clearTimeout(t0); clearTimeout(t1); };
+  }, [currentStepTarget, measureTarget]);
 
   const handleShareInvite = async () => {
     const code = inviteCode ?? profile?.inviteCode; // state first; profile fallback during migration
@@ -205,7 +172,16 @@ export default function FriendsScreen() {
     const url = buildInviteUrl(code);
     // Share the LINK, nothing else. The sender adds their own words; no canned marketing blurb.
     try {
-      if (Platform.OS === "ios") {
+      if (Platform.OS === "web") {
+        // Browsers: the system share sheet when there is one (phones), else copy the link.
+        const nav: any = typeof navigator !== "undefined" ? navigator : null;
+        if (nav?.share) {
+          await nav.share({ url });
+        } else {
+          await Clipboard.setStringAsync(url);
+          showMessage("Friend link copied. Paste it to a friend.", "success");
+        }
+      } else if (Platform.OS === "ios") {
         await Share.share({ url }, { subject: "Add me on BeKin" });
       } else {
         // Android ignores `url`, so the link is the message.
@@ -336,7 +312,7 @@ export default function FriendsScreen() {
     }
 
     // Logged in: set up all Firestore subscriptions.
-    const cleanups: Array<() => void> = [];
+    const cleanups: (() => void)[] = [];
 
     // username seeded from AuthProvider profile cache
 
@@ -934,46 +910,25 @@ export default function FriendsScreen() {
     try {
       setAddingBrian(true);
 
-      // The target is resolved entirely server-side now. The client used to look Brian up with its
-      // own Profiles query, which no longer works: Profiles are audience-scoped, and a brand-new
-      // user with zero friends is not in Brian's audience. addFriendMutual resolves the target
-      // itself (pinned uid / Usernames reservation, failing closed on ambiguity), so calling it
-      // with no argument is both simpler and unspoofable.
-      //
-      // The client-side "already friends" pre-check is gone with it: it needed the uid we no longer
-      // have, and the callable is already idempotent, returning { ok:true, already:true } when the
-      // edge exists. The callable RESOLVES (does not throw) on its guard cases, so inspect the
-      // result and never claim success on a soft failure.
-      const res = await httpsCallable(getFunctions(), "addFriendMutual")({});
-      const data = (res?.data ?? {}) as {
-        ok?: boolean; already?: boolean; error?: string; targetUid?: string;
-      };
-      if (!data.ok) {
-        if (data.error === "BLOCKED") {
-          return showMessage("You've blocked Brian. Unblock to add them.", "error");
-        }
-        if (data.error === "SELF") return; // user IS Brian
+      // Resolved server-side (see lib/addBrian); never claims success on a soft failure.
+      const res = await addBrianAsFriend();
+      if (!res.ok) {
+        if (res.error === "BLOCKED") return showMessage("You've blocked Brian. Unblock to add them.", "error");
+        if (res.error === "SELF") return; // user IS Brian
+        if (res.error === "NOT_DEPLOYED") return showMessage("Couldn't add Brian yet. Please try again later.", "error");
         return showMessage("Couldn't add Brian. Please try again.", "error");
       }
 
-      if (data.targetUid) nameCacheRef.current[data.targetUid] = "brain";
+      if (res.targetUid) nameCacheRef.current[res.targetUid] = "brain";
 
-      if (!data.already && wasFriendless) {
+      // During the setup tour the tour's own step flips to a celebration, so skip the full-screen one.
+      if (!res.already && wasFriendless && !tourActive) {
         setCelebrateFirstFriend(true);
       } else {
         showMessage(
-          data.already ? "Already friends with Brian!" : "You and Brian are now friends!",
+          res.already ? "Already friends with Brian!" : "You and Brian are now friends!",
           "success"
         );
-      }
-    } catch (e: any) {
-      if (__DEV__) console.error("handleAddBrian error", e);
-      // Fail soft when the callable isn't deployed yet (or otherwise errors), so
-      // the app never crashes and we never claim success on a real failure.
-      if (e?.code === "functions/not-found" || e?.code === "not-found") {
-        showMessage("Couldn't add Brian yet. Please try again later.", "error");
-      } else {
-        showMessage("Failed to add Brian.", "error");
       }
     } finally {
       setAddingBrian(false);
@@ -1141,10 +1096,6 @@ export default function FriendsScreen() {
     }
   };
 
-  // Show the "add your first friend" card to anyone with no friend yet (until dismissed this session).
-  const friendStepDone = !!onboarding.steps.find((s) => s.key === "friend")?.done;
-  const showSetupCard = onboarding.loaded && !friendStepDone && !setupCardDismissed;
-
   // ----- PAGE SCROLLER: One FlatList for the entire screen -----
   if (!profileLoaded) {
     return (
@@ -1184,23 +1135,13 @@ export default function FriendsScreen() {
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
-            {showSetupCard ? (
-              <FriendsSetupCard onNext={setupHelpNext} onDismiss={() => setSetupCardDismissed(true)} />
-            ) : (
-              <TutorialResumeBanner
-                visible={onboarding.loaded && !onboarding.allDone && !tourActive}
-                doneCount={onboarding.doneCount}
-                total={onboarding.total}
-                nextLabel={onboarding.firstIncomplete?.label}
-                onPress={() => {
-                  const inc = onboarding.firstIncomplete;
-                  // Already on Friends: the "add a friend" step re-opens the (dismissed) help card in
-                  // place rather than bouncing through a locked coach-mark.
-                  if (inc?.key === "friend") { setSetupCardDismissed(false); return; }
-                  router.push(inc ? `/home?tutorial=1&tourTarget=${inc.target}` : "/home?tutorial=1");
-                }}
-              />
-            )}
+            <TutorialResumeBanner
+              visible={onboarding.loaded && !onboarding.allDone && !tourActive}
+              doneCount={onboarding.doneCount}
+              total={onboarding.total}
+              nextLabel={onboarding.firstIncomplete?.label}
+              onPress={startSetup}
+            />
             <Text style={[styles.header, { color: tc.text }]}>Friends</Text>
 
             {/* Username + Invite. Its tour targets (friends-username / friends-profile / friends-add)
@@ -1224,7 +1165,7 @@ export default function FriendsScreen() {
             />
 
             {/* My Friend Groups */}
-            <View ref={groupsTarget} collapsable={false} style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>
+            <View style={[styles.card, { backgroundColor: tc.card, shadowColor: tc.dark }]}>
               <View style={styles.groupsHeaderRow}>
                 <Text style={[styles.sectionTitle, { color: tc.text }]}>My Friend Groups</Text>
                 <Pressable onPress={() => { tap(); setEditingGroup(null); setGroupEditorOpen(true); }} hitSlop={10} style={[styles.plusBtn, { backgroundColor: tc.primary }]}>
@@ -1262,8 +1203,7 @@ export default function FriendsScreen() {
               )}
             </View>
 
-            {/* Requests + friends list, wrapped so the tour highlights them as one step (friends-requests). */}
-            <View ref={requestsListTarget} collapsable={false}>
+            <View>
             {/* Requests */}
             <FriendRequestsSection
               incoming={visibleIncoming}
@@ -1289,6 +1229,7 @@ export default function FriendsScreen() {
                   disabled={notifyAllBusy}
                   trackColor={{ false: tc.border, true: tc.primary }}
                   thumbColor="#fff"
+                  {...WEB_WHITE_KNOB}
                 />
               </View>
               {visibleFriends.length === 0 && (
@@ -1297,7 +1238,7 @@ export default function FriendsScreen() {
                     <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet. Search for a username above to send a request.</Text>
 
                     {/* First-friend suggestion */}
-                    <View ref={brianTarget} collapsable={false} style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
+                    <View style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
                       <View style={[styles.brianAvatar, { backgroundColor: tc.primary }]}>
                         <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
                       </View>
@@ -1327,7 +1268,7 @@ export default function FriendsScreen() {
             </View>
           </View>
         }
-        ListFooterComponent={<View ref={listEndTarget} collapsable={false} style={{ height: 16 }} />}
+        ListFooterComponent={<View style={{ height: 16 }} />}
         contentContainerStyle={{
           padding: SCREEN_PAD,
           paddingTop: 10, // the top inset now comes from the SafeAreaView above

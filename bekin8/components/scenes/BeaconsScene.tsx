@@ -57,7 +57,7 @@ const STARS = [
 // Far ridges, drawn far-to-near (the nearest ridge is built in-render around the anchor ledge).
 // lift = crest height above the near ledge line, pts are [xFraction, peakLift], both in units of
 // the ridge band span; each ridge that seats a chain fire has a hand-placed peak under it.
-type RidgeDef = { lift: number; color: string; pts: ReadonlyArray<readonly [number, number]> };
+type RidgeDef = { lift: number; color: string; pts: readonly (readonly [number, number])[] };
 const RIDGES: RidgeDef[] = [
   { lift: 0.84, color: '#2B4270', pts: [[0, 0.02], [0.07, 0.06], [0.14, 0], [0.22, 0.05], [0.29, 0.01], [0.36, 0.06], [0.43, -0.01], [0.48, 0.04], [0.52, 0.14], [0.56, 0.03], [0.63, 0.07], [0.71, 0], [0.79, 0.05], [0.87, 0.01], [0.94, 0.06], [1, 0.02]] },
   { lift: 0.7, color: '#24395F', pts: [[0, 0.03], [0.08, 0.02], [0.16, 0.06], [0.24, 0], [0.33, 0.07], [0.41, 0.01], [0.5, 0.05], [0.58, -0.01], [0.64, 0.04], [0.7, 0.13], [0.76, 0.02], [0.84, 0.07], [0.92, 0.01], [1, 0.05]] },
@@ -99,7 +99,7 @@ const pileRimPath = (x: number, y: number, s: number) =>
   `M${x - 1.3 * s} ${y + 1.3 * s} L${x - 0.75 * s} ${y + 0.1 * s} L${x - 0.2 * s} ${y + 0.35 * s} L${x} ${y - 0.05 * s}` +
   ` L${x + 0.2 * s} ${y + 0.35 * s} L${x + 0.75 * s} ${y + 0.1 * s}`;
 
-function ridgePath(pts: ReadonlyArray<readonly [number, number]>, W: number, H: number, crestY: number, span: number): string {
+function ridgePath(pts: readonly (readonly [number, number])[], W: number, H: number, crestY: number, span: number): string {
   let d = `M-2 ${(crestY - pts[0][1] * span).toFixed(1)}`;
   for (const [xf, dy] of pts) d += ` L${(xf * W).toFixed(1)} ${(crestY - dy * span).toFixed(1)}`;
   const yEnd = (crestY - pts[pts.length - 1][1] * span).toFixed(1);

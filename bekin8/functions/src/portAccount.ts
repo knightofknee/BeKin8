@@ -143,7 +143,7 @@ async function deleteByQuery(
  * Moves friends, posts, beacons, comments, and cleans up the old account.
  */
 export const portAccountData = onCall(
-  { enforceAppCheck: false, timeoutSeconds: 300 },
+  { enforceAppCheck: true, timeoutSeconds: 300 },
   async (req) => {
     const newUid = req.auth?.uid;
     if (!newUid) {

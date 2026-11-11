@@ -408,7 +408,8 @@ export default function Index() {
       >
         <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <SafeAreaView style={{ flex: 1 }}>
-          <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          {/* Native only: on web a click into a field bubbles up here and the dismiss blurs it, so typing died. */}
+          <TouchableWithoutFeedback onPress={Platform.OS === "web" ? undefined : Keyboard.dismiss} accessible={false}>
             {Platform.OS === "android" ? (
               // Android: scrollable, so the card can never hang under the system nav bar,
               // and adjustResize + ScrollView keeps the focused input visible while typing.

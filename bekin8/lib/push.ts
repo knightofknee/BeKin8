@@ -28,6 +28,7 @@ import {
  * - Ensures Android has a default notification channel so alerts show reliably.
  */
 export async function initNotifications() {
+  if (Platform.OS === "web") return; // no push on the web build (waldgrave.com/bekin/app)
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowAlert: true, // show alerts even in foreground on iOS
@@ -59,8 +60,8 @@ export async function ensurePushPermissionsAndToken(): Promise<{
   granted: boolean;
   token?: string;
 }> {
-  if (!Device.isDevice) {
-    return { granted: false }; // iOS simulator never receives push
+  if (!Device.isDevice || Platform.OS === "web") {
+    return { granted: false }; // iOS simulator never receives push; the web build has none
   }
 
   // 1) Check current status
@@ -136,7 +137,7 @@ export async function ensurePushPermissionsAndToken(): Promise<{
  */
 export async function removePushTokenForThisDevice(uid?: string) {
   const userId = uid ?? auth.currentUser?.uid;
-  if (!userId) return;
+  if (!userId || Platform.OS === "web") return;
   const installationId = await getInstallationId();
   await deleteDoc(doc(db, "users", userId, "pushTokens", installationId));
 }
@@ -207,6 +208,7 @@ async function getInstallationId(): Promise<string> {
 }
 
 export async function syncPushTokenIfGranted() {
+  if (Platform.OS === "web") return;
   const status = (await Notifications.getPermissionsAsync()).status;
   if (status !== "granted") return; // no prompt here
   await ensurePushPermissionsAndToken(); // saves/updates token for this device

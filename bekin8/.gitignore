@@ -15,6 +15,7 @@ functions/lib/
 # Expo
 .expo/
 dist/
+dist-web/
 web-build/
 expo-env.d.ts
 

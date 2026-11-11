@@ -268,7 +268,7 @@ function parseMeta(html: string, baseUrl: string): Meta {
 
 // ---------- callable ----------
 
-export const fetchLinkPreview = onCall({ enforceAppCheck: false }, async (req) => {
+export const fetchLinkPreview = onCall({ enforceAppCheck: true }, async (req) => {
   // Authenticated callers only. This is not a public open proxy, and the client that renders
   // previews is always signed in. Fail soft (ok:false), the client shows a plain link.
   if (!req.auth?.uid) return { ok: false as const };

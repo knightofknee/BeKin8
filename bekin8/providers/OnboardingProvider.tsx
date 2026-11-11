@@ -1,9 +1,9 @@
 // providers/OnboardingProvider.tsx
 // Tracks the "base setup" the user must finish to actually get value from BeKin: pick a username,
-// add a friend, and turn on notifications. Drives the resume banner (which persists until all three
-// are done, independent of whether the tour was watched) and tells it where to jump.
+// add a friend, and turn on notifications. Drives the setup bar (which persists until all three are
+// done, independent of whether the tour was watched) and the setup tour's auto-advancing steps.
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import * as Notifications from "expo-notifications";
 import { db } from "../firebase.config";
@@ -17,8 +17,6 @@ export type OnboardingStep = {
   /** Short banner label for the next incomplete step. */
   label: string;
   done: boolean;
-  /** Tour target to jump to when the banner is tapped on this step. */
-  target: string;
 };
 
 type OnboardingCtx = {
@@ -120,6 +118,12 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   // to the foreground (so returning from iOS Settings clears the step). `refresh` covers the
   // in-app enable, which on iOS shows a modal that doesn't fire an AppState change.
   const checkNotif = useCallback(async () => {
+    if (Platform.OS === "web") {
+      // No push on the web build, so there's nothing to set up: the step counts as done.
+      setNotifGranted(true);
+      setNotifChecked(true);
+      return;
+    }
     try {
       const perm = await Notifications.getPermissionsAsync();
       setNotifGranted(!!perm.granted);
@@ -148,9 +152,9 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
 
   const hasUsername = !!profile?.username?.trim();
   const steps: OnboardingStep[] = [
-    { key: "username", label: "Pick a username", done: hasUsername, target: "friends-username" },
-    { key: "friend", label: "Add a friend", done: hasFriend, target: "friends-requests" },
-    { key: "notifications", label: "Turn on notifications", done: notifGranted || notifBlocked, target: "settings-notifications" },
+    { key: "username", label: "Pick a username", done: hasUsername },
+    { key: "friend", label: "Add a friend", done: hasFriend },
+    { key: "notifications", label: "Turn on notifications", done: notifGranted || notifBlocked },
   ];
   const doneCount = steps.filter((s) => s.done).length;
   const firstIncomplete = steps.find((s) => !s.done) ?? null;

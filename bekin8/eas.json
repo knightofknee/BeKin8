@@ -4,14 +4,14 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "ios": { "image": "latest" }
+      "ios": { "image": "sdk-55" }
     },
     "preview": {
       "distribution": "internal",
-      "ios": { "image": "latest" }
+      "ios": { "image": "sdk-55" }
     },
     "production": {
-      "ios": { "image": "latest", "autoIncrement": "version" },
+      "ios": { "image": "sdk-55", "autoIncrement": "version" },
       "android": { "autoIncrement": "versionCode" }
     }
   },

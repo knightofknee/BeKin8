@@ -189,7 +189,8 @@ export default function SignUp() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <SafeAreaView style={{ flex: 1 }}>
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        {/* Native only: on web a click into a field bubbles up here and the dismiss blurs it, so typing died. */}
+        <TouchableWithoutFeedback onPress={Platform.OS === "web" ? undefined : Keyboard.dismiss} accessible={false}>
           <ScrollView
             ref={scrollRef}
             keyboardShouldPersistTaps="handled"

@@ -15,7 +15,7 @@ type TourCtx = {
   measureTarget: (key: string) => Promise<Rect | null>;
   startTour: (
     steps: TourStep[],
-    opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; startAtStepId?: string; isReplay?: boolean }
+    opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; startAtStepId?: string; isReplay?: boolean; dismissLabel?: string }
   ) => void;
   /**
    * Replace a SINGLE step (matched by id) in the active tour, splicing the provider's OWN current
@@ -26,11 +26,6 @@ type TourCtx = {
    */
   updateStepById: (id: string, next: TourStep) => void;
   endTour: (finished: boolean) => void;
-  /**
-   * Jump the active tour to the step whose target matches `key` (e.g. an optional branch).
-   * `pushHistory` defaults true; pass false for a branch that should show no Back button.
-   */
-  goToTarget: (key: string, opts?: { pushHistory?: boolean }) => void;
   /** Advance the active tour to the next step (e.g. a screen reacting to the sheet closing). */
   advance: () => void;
   /**
@@ -42,9 +37,6 @@ type TourCtx = {
   advanceFromStepId: (id: string) => void;
   /** Step the active tour BACK (e.g. the sheet's own Cancel button returning to the previous step). */
   back: () => void;
-  /** Swap the active tour to a new step array and restart from the first step (same onFinish/onClose).
-   *  Used by the "Speed tour" button to switch the full tour into the short path. */
-  restart: (steps: TourStep[]) => void;
   /** `id` of the step currently showing, so screens can react to which step is active. */
   currentStepId?: string;
   /** `target` of the step currently showing, so screens can react to it (e.g. open the sheet). */
@@ -61,11 +53,9 @@ const Ctx = createContext<TourCtx>({
   startTour: () => {},
   updateStepById: () => {},
   endTour: () => {},
-  goToTarget: () => {},
   advance: () => {},
   advanceFromStepId: () => {},
   back: () => {},
-  restart: () => {},
   currentStepId: undefined,
   currentStepTarget: undefined,
   navDir: "forward",
@@ -74,6 +64,11 @@ const Ctx = createContext<TourCtx>({
 
 export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const targets = useRef<Map<string, TargetRef>>(new Map());
+  // The overlay is drawn inside this provider's root view, so targets are measured RELATIVE to it.
+  // On native the root is the whole window (offset 0,0, same size); on the web build the app sits in
+  // a centered phone-width column, so window coordinates would put the spotlight in the wrong place.
+  const rootRef = useRef<View | null>(null);
+  const [frame, setFrame] = useState<{ width: number; height: number } | null>(null);
   const cb = useRef<{ onFinish?: () => void; onClose?: () => void }>({});
   // Stack of step indices actually visited, so Back follows the real path (handles branches).
   const history = useRef<number[]>([]);
@@ -90,6 +85,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   // "Skip tour" on the first run (you're opting out of onboarding) and "Close" on a replay (you've
   // already seen it, you're just leaving).
   const [isReplay, setIsReplay] = useState(false);
+  const [dismissLabel, setDismissLabel] = useState<string | undefined>(undefined);
 
   const registerTarget = useCallback((key: string, ref: TargetRef | null) => {
     if (ref) targets.current.set(key, ref);
@@ -97,22 +93,22 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, []);
 
   const measureTarget = useCallback((key: string): Promise<Rect | null> => {
-    return new Promise((resolve) => {
-      const node = targets.current.get(key)?.current as any;
-      if (!node || typeof node.measureInWindow !== "function") {
-        resolve(null);
-        return;
-      }
-      node.measureInWindow((x: number, y: number, width: number, height: number) => {
-        resolve(width || height ? { x, y, width, height } : null);
+    const inWindow = (node: any) =>
+      new Promise<Rect | null>((resolve) => {
+        if (!node || typeof node.measureInWindow !== "function") return resolve(null);
+        node.measureInWindow((x: number, y: number, width: number, height: number) =>
+          resolve(width || height ? { x, y, width, height } : null)
+        );
       });
-    });
+    return Promise.all([inWindow(targets.current.get(key)?.current), inWindow(rootRef.current)]).then(([r, root]) =>
+      r && root ? { ...r, x: r.x - root.x, y: r.y - root.y } : r
+    );
   }, []);
 
   const startTour = useCallback(
     (
       s: TourStep[],
-      opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; startAtStepId?: string; isReplay?: boolean }
+      opts?: { onFinish?: () => void; onClose?: () => void; startAtTarget?: string; startAtStepId?: string; isReplay?: boolean; dismissLabel?: string }
     ) => {
       if (activeRef.current) return; // a tour is already running, don't clobber it
       activeRef.current = true;
@@ -120,6 +116,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       history.current = [];
       setNavDir("forward");
       setIsReplay(!!opts?.isReplay);
+      setDismissLabel(opts?.dismissLabel);
       setRunId((r) => r + 1);
       // Optionally start mid-flow (e.g. the resume banner jumping to the first incomplete step).
       // History stays empty so Back is hidden until the user moves forward from here.
@@ -154,18 +151,6 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     });
   }, []);
 
-  // Swap the running tour to a new step array and restart from the first step (clears history), keeping
-  // the same onFinish/onClose. Bumps runId so SpotlightTour remounts and the new first step's onEnter
-  // runs. Used by the "Speed tour" button to switch the full tour into the short path.
-  const restart = useCallback((s: TourStep[]) => {
-    if (!activeRef.current) return;
-    history.current = [];
-    setNavDir("forward");
-    setIndex(0);
-    setSteps(s);
-    setRunId((r) => r + 1);
-  }, []);
-
   const endTour = useCallback((finished: boolean) => {
     if (!activeRef.current) return; // idempotent: a double end (Next-past-last twice, or Next then Skip) is a no-op
     activeRef.current = false;
@@ -181,14 +166,7 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     setNavDir("forward");
     setIndex((i) => {
       if (!steps) return i;
-      const cur = steps[i];
-      let next: number;
-      if (cur?.nextTarget) {
-        const ni = steps.findIndex((s) => s.target === cur.nextTarget);
-        next = ni >= 0 ? ni : i + 1;
-      } else {
-        next = i + 1;
-      }
+      const next = i + 1;
       if (next > steps.length - 1) {
         // Past the last step → finish (deferred out of the state updater).
         setTimeout(() => endTour(true), 0);
@@ -238,22 +216,6 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     return () => sub.remove();
   }, [steps, onPrev, onSkip]);
 
-  const goToTarget = useCallback(
-    (key: string, opts?: { pushHistory?: boolean }) => {
-      setNavDir("jump");
-      setIndex((i) => {
-        if (!steps) return i;
-        const ni = steps.findIndex((s) => s.target === key);
-        if (ni < 0 || ni === i) return i;
-        // A normal jump is part of the path (Back returns here); a branch entered with
-        // pushHistory:false leaves history untouched so the branch shows no Back button.
-        if (opts?.pushHistory !== false) history.current.push(i);
-        return ni;
-      });
-    },
-    [steps]
-  );
-
   const currentStepId = steps?.[index]?.id;
   const currentStepTarget = steps?.[index]?.target;
   // Interactive steps let the user touch/edit the highlighted element, so the app subtree must stay
@@ -268,11 +230,9 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         startTour,
         updateStepById,
         endTour,
-        goToTarget,
         advance: onNext,
         advanceFromStepId,
         back: onPrev,
-        restart,
         currentStepId,
         currentStepTarget,
         navDir,
@@ -283,6 +243,12 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           coach-mark callout (which is accessibilityViewIsModal). On interactive steps the app subtree
           stays reachable, so screen-reader users can touch/edit the highlighted element and complete
           the gated Done. */}
+      <View
+        ref={rootRef}
+        collapsable={false}
+        style={{ flex: 1 }}
+        onLayout={(e) => setFrame({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+      >
       <View
         style={{ flex: 1 }}
         accessibilityElementsHidden={!!steps && !currentStepInteractive}
@@ -301,8 +267,11 @@ export const TourProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           onPrev={onPrev}
           onSkip={onSkip}
           isReplay={isReplay}
+          dismissLabel={dismissLabel}
+          frame={frame}
         />
       )}
+      </View>
     </Ctx.Provider>
   );
 };

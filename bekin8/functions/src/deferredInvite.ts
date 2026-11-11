@@ -67,7 +67,7 @@ export const recordInviteVisit = onRequest(
 /** First-launch claim: EVERY live visit matching the caller's IP is returned (claim-all). In a
  *  room where several people share their links, the newcomer connects with all of the sharers,
  *  not a timing-lucky one. Visits stay live for further claimers until they expire. */
-export const claimInviteVisit = onCall({ enforceAppCheck: false }, async (req) => {
+export const claimInviteVisit = onCall({ enforceAppCheck: true }, async (req) => {
   const uid = req.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in required.');
 

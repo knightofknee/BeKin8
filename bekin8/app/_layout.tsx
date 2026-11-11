@@ -12,6 +12,8 @@ import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
 import { NetworkProvider, useOnline } from "../providers/NetworkProvider";
 import { TourProvider } from "../providers/TourProvider";
 import { OnboardingProvider } from "../providers/OnboardingProvider";
+import { SetupTourDriver } from "../components/tutorial/setupTour";
+import WebFrame from "../components/WebFrame";
 import OfflineBanner from "../components/OfflineBanner";
 import VerifyEmailGate from "../components/VerifyEmailGate";
 import UpdateRequiredGate from "../components/UpdateRequiredGate";
@@ -95,6 +97,7 @@ function Gate() {
   const [pendingNotif, setPendingNotif] = useState<Record<string, any> | null>(null);
 
   useEffect(() => {
+    if (Platform.OS === "web") return; // no push notifications on the web build
     const stage = (data: Record<string, any> | undefined) => {
       if (data?.type) setPendingNotif(data);
     };
@@ -186,7 +189,7 @@ function Gate() {
         setInviteTick((t) => t + 1);
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // iOS deferred attribution: Apple passes nothing through an App Store install, so once per
@@ -332,9 +335,12 @@ export default function RootLayout() {
       <ThemeProvider>
         <NetworkProvider>
           <OnboardingProvider>
-            <TourProvider>
-              <Gate />
-            </TourProvider>
+            <WebFrame>
+              <TourProvider>
+                <Gate />
+                <SetupTourDriver />
+              </TourProvider>
+            </WebFrame>
           </OnboardingProvider>
         </NetworkProvider>
       </ThemeProvider>

@@ -26,11 +26,22 @@ type Beacon = {
   active?: boolean;
   allowedUids?: string[];
   groupIds?: string[];
+  /** Friends invited one by one (the "+" next to the friend groups). Unioned with the groups'
+   *  members; still filtered to the owner's ACTUAL friends below, so a forged uid reaches no one.
+   *  Not a new exposure: audienceUids on the same doc already lists every friend. */
+  friendUids?: string[];
   startAt?: FirebaseFirestore.Timestamp;
   expiresAt?: FirebaseFirestore.Timestamp;
   timeHHmm?: string | null;
   /** RALLY: this beacon is its owner rallying friends into ANOTHER beacon's chat (that beacon's id). */
   rallyOf?: string;
+  /** Group scheduling (client lib/timePoll.ts): friends vote on day/time options, the owner decides. */
+  timePoll?: {
+    status?: 'open' | 'decided';
+    options?: { id: string; dayMs: number; timeHHmm?: string | null }[];
+    decidedId?: string | null;
+  };
+  audienceUids?: string[];
 };
 
 // ===== Expo client & constants =====
@@ -90,6 +101,8 @@ function whenLabel(b: Beacon, nowMs: number = Date.now()): string {
 
 /** Push body for a beacon: "Friday at 7 PM · Hang out at my place?" */
 function beaconBody(b: Beacon): string {
+  // An open time poll has no time yet: invite the vote instead of naming a day.
+  if (b.timePoll?.status === 'open') return `Time TBD, vote in the chat · ${summarize(b)}`;
   const when = whenLabel(b);
   return when ? `${when} · ${summarize(b)}` : summarize(b);
 }
@@ -203,8 +216,15 @@ async function membersOfGroups(ownerUid: string, groupIds: string[]): Promise<st
   return Array.from(out);
 }
 
+/** The individually invited friends on a beacon, cleaned: strings only, never the owner. */
+function scopedFriendUids(ownerUid: string, friendUids?: string[]): string[] {
+  if (!Array.isArray(friendUids)) return [];
+  return Array.from(new Set(friendUids.filter((u): u is string => typeof u === 'string' && !!u && u !== ownerUid)));
+}
+
 /**
- * Eligible = (group members resolved server-side, OR all accepted friends if unscoped)
+ * Eligible = (group members + individually picked friends resolved server-side, OR all accepted
+ *             friends if unscoped)
  *            ∩ the owner's actual accepted friends
  *            ∩ users who opted in (new subdoc OR legacy notify flag)
  *            − ownerUid
@@ -220,7 +240,8 @@ async function membersOfGroups(ownerUid: string, groupIds: string[]): Promise<st
 async function eligibleRecipients(
   allowed: string[] | undefined,
   ownerUid: string,
-  groupIds?: string[]
+  groupIds?: string[],
+  friendUids?: string[]
 ): Promise<string[]> {
   // Normalize any legacy client-written allowed list (remove falsy, remove owner). New beacons no
   // longer write allowedUids (it leaked the friend graph in a world-readable doc), so this is only a
@@ -234,14 +255,15 @@ async function eligibleRecipients(
   // (e.g. the "test" group with no members) notifies NO ONE. Only an UNSCOPED beacon (no groups =
   // "all friends") falls back to the full friend list. Legacy docs that still carry allowedUids are
   // honored verbatim.
-  const scoped = Array.isArray(groupIds) && groupIds.length > 0;
+  const picked = scopedFriendUids(ownerUid, friendUids);
+  const scoped = (Array.isArray(groupIds) && groupIds.length > 0) || picked.length > 0;
   // Track whether `base` already came straight from the friend list, so the unscoped path doesn't
   // pay for the same lookup twice.
   let baseIsFriendList = false;
   const base: string[] = scoped
     ? normalizedAllowed.length > 0
       ? normalizedAllowed
-      : await membersOfGroups(ownerUid, groupIds as string[])
+      : Array.from(new Set([...(await membersOfGroups(ownerUid, groupIds ?? [])), ...picked]))
     : normalizedAllowed.length > 0
     ? normalizedAllowed
     : ((baseIsFriendList = true), await friendUidsOf(ownerUid));
@@ -524,10 +546,11 @@ async function extendRallyAudience(rallyId: string, b: Beacon): Promise<{ og: Be
   }
 
   const friends = await acceptedFriendUids(b.ownerUid);
-  const scoped = Array.isArray(b.groupIds) && b.groupIds.length > 0;
+  const picked = scopedFriendUids(b.ownerUid, b.friendUids);
+  const scoped = (Array.isArray(b.groupIds) && b.groupIds.length > 0) || picked.length > 0;
   let invited = friends;
   if (scoped) {
-    const members = new Set(await membersOfGroups(b.ownerUid, b.groupIds as string[]));
+    const members = new Set([...(await membersOfGroups(b.ownerUid, b.groupIds ?? [])), ...picked]);
     invited = friends.filter((u) => members.has(u));
   }
   invited = invited.filter((u) => u !== og.ownerUid && !ogAudience.includes(u));
@@ -560,7 +583,7 @@ async function pushBeaconToFriends(
   openId: string = beaconId
 ): Promise<number> {
   const ownerUid = b.ownerUid;
-  const recipients = await eligibleRecipients(b.allowedUids, ownerUid, b.groupIds);
+  const recipients = await eligibleRecipients(b.allowedUids, ownerUid, b.groupIds, b.friendUids);
   logger.info('fanOut recipients', {
     beaconId,
     ownerUid,
@@ -964,6 +987,9 @@ export const onBeaconChangedQueueNotice = onDocumentUpdated('Beacons/{beaconId}'
   const before = event.data?.before?.data() as Beacon | undefined;
   const after = event.data?.after?.data() as Beacon | undefined;
   if (!before || !after) return;
+  // Locking in a voted time has its own immediate notice (onBeaconTimeDecided); don't also queue
+  // the generic "updated their beacon" for the same change.
+  if (isTimeDecided(before, after)) return;
   const wasOn = before.active === true;
   const isOn = after.active === true;
   const detailsChanged =
@@ -1102,13 +1128,85 @@ export const processBeaconNotices = onSchedule('every 2 minutes', async () => {
   }
 });
 
+// ===== 4b2) Group scheduling: the owner locked in a voted time =====
+// Everyone who RSVP'd OR voted hears it right away (not through the quiet-window queue: this is the
+// answer they were waiting on), and the chat gets a "locked in" line. The beacon's startAt/timeHHmm
+// already moved to the chosen option in the same write, so whenLabel/beaconBody describe it.
+
+function isTimeDecided(before: Beacon, after: Beacon): boolean {
+  return before.timePoll?.status === 'open' && after.timePoll?.status === 'decided';
+}
+
+/** "Thursday, Nov 5 at 7 PM" in the OWNER's local day (see ownerOffsetMin). */
+function absoluteWhen(b: Beacon): string {
+  if (!b.startAt) return '';
+  const local = new Date(b.startAt.toMillis() + ownerOffsetMin(b.startAt) * 60_000 + 12 * 3_600_000);
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = `${WEEKDAYS[local.getUTCDay()]}, ${MONTHS[local.getUTCMonth()]} ${local.getUTCDate()}`;
+  const time = formatTime12(b.timeHHmm);
+  return time ? `${day} at ${time}` : day;
+}
+
+export const onBeaconTimeDecided = onDocumentUpdated('Beacons/{beaconId}', async (event) => {
+  const before = event.data?.before?.data() as Beacon | undefined;
+  const after = event.data?.after?.data() as Beacon | undefined;
+  if (!before || !after || !isTimeDecided(before, after)) return;
+  const beaconId = event.params.beaconId as string;
+  const ownerUid = after.ownerUid;
+  const name = (await ownerDisplayName(ownerUid, after)) || 'Your friend';
+  const when = absoluteWhen(after);
+
+  // The chat line, readable by the beacon's audience like every other message.
+  try {
+    await db.collection('Beacons').doc(beaconId).collection('ChatMessages').add({
+      type: 'system',
+      subtype: 'time-decided',
+      text: `📅 ${name} locked in ${when || 'a time'}`,
+      authorUid: ownerUid,
+      createdAt: FieldValue.serverTimestamp(),
+      audienceUids: Array.isArray(after.audienceUids) ? after.audienceUids : [ownerUid],
+    });
+  } catch (err) {
+    logger.error('time-decided chat line failed', { beaconId, err });
+  }
+
+  const votesSnap = await db.collection('Beacons').doc(beaconId).collection('TimeVotes').get();
+  // Only votes on THIS poll's options count: a re-polled same-day beacon keeps older TimeVotes.
+  const currentIds = new Set((after.timePoll?.options ?? []).map((o) => o.id));
+  const voters = votesSnap.docs
+    .filter((d) => {
+      const ids = (d.data() as any)?.optionIds;
+      return Array.isArray(ids) && ids.some((id: unknown) => typeof id === 'string' && currentIds.has(id));
+    })
+    .map((d) => d.id);
+  const recipients = Array.from(new Set([...(await getRsvpUids(beaconId)), ...voters])).filter(
+    (u) => u && u !== ownerUid
+  );
+  if (!recipients.length) return;
+  const unblocked = (
+    await Promise.all(recipients.map(async (u) => ((await eitherBlocked(u, ownerUid)) ? null : u)))
+  ).filter((u): u is string => !!u);
+  if (!unblocked.length) return;
+
+  logger.info('timeDecided send', { beaconId, recipientCount: unblocked.length });
+  await pushToUsers(
+    unblocked,
+    {
+      title: `${name} picked a time`,
+      body: `${when || whenLabel(after)} · ${summarize(after)}`,
+      data: { type: 'beacon', beaconId, ownerUid },
+    },
+    { friendUid: ownerUid, beaconId }
+  );
+});
+
 // ===== 4c) Stoke: the hidden one-time re-nudge =====
 // A relit beacon never re-pings friends (claimFirstFanOut); instead it arms stokeReady. A long press
 // on the lit fire then lets the owner send ONE more push, optionally with a fresh message. Enforced
 // here (owner only, beacon live, armed by a relight, never stoked before) in a transaction. The
 // once-only cap is BeaconNotices.stokedAt (server-only), so a modified client can't stoke twice;
 // the owner-writable stokeReady on the beacon only drives the hidden long press.
-export const stokeBeacon = onCall({ enforceAppCheck: false }, async (req) => {
+export const stokeBeacon = onCall({ enforceAppCheck: true }, async (req) => {
   const uid = req.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in first.');
   const beaconId = String(req.data?.beaconId || '');
@@ -1630,7 +1728,7 @@ async function resolveBrianUid(): Promise<string | null> {
   return snap.docs[0].id;
 }
 
-export const addFriendMutual = onCall({ enforceAppCheck: false }, async (req) => {
+export const addFriendMutual = onCall({ enforceAppCheck: true }, async (req) => {
   const meUid = req.auth?.uid;
   if (!meUid) throw new HttpsError('unauthenticated', 'Sign in required.');
 
