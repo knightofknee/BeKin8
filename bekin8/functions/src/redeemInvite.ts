@@ -12,6 +12,7 @@ import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
+import { sharedBeaconId } from './guestBeacon.js';
 
 const app = getApps().length ? getApp() : initializeApp();
 const db = getFirestore(app);
@@ -233,7 +234,51 @@ export const redeemInvite = onCall({ enforceAppCheck: true }, async (req) => {
   });
 
   if (outcome.status === 'blocked') return { ok: false, error: 'BLOCKED' };
-  if (outcome.status === 'already') return { ok: true, already: true, inviterUid };
+
+  // A link that came from a shared beacon carries its token: make sure the newcomer can see that
+  // beacon even when it is scoped to a group (they are added as an individually invited friend,
+  // the same field the "+" chip writes), and hand its id back so the app can open it.
+  let beaconId: string | null = null;
+  try {
+    beaconId = await sharedBeaconId(String(req.data?.beaconToken ?? ''), inviterUid);
+    if (beaconId) {
+      const bRef = db.collection('Beacons').doc(beaconId);
+      const b = (await bRef.get()).data() as any;
+      const live = b?.active === true && (!(b?.expiresAt?.toMillis?.() > 0) || b.expiresAt.toMillis() > Date.now());
+      if (!live) {
+        beaconId = null;
+      } else {
+        const scoped =
+          (Array.isArray(b.groupIds) && b.groupIds.length > 0) || (Array.isArray(b.friendUids) && b.friendUids.length > 0);
+        if (scoped) await bRef.update({ friendUids: FieldValue.arrayUnion(meUid) });
+      }
+    }
+  } catch (err) {
+    logger.warn('redeemInvite: beacon token handling failed', { meUid, err });
+    beaconId = null;
+  }
+
+  if (outcome.status === 'already') return { ok: true, already: true, inviterUid, beaconId };
+
+  // Attribution (funnel): who brought this account in, written once. `via` is how the code got
+  // here ('link' tapped, 'install' carried through the store, 'web'); it is a label only.
+  try {
+    const via = ['link', 'install', 'web'].includes(String(req.data?.via)) ? String(req.data.via) : 'link';
+    await db.runTransaction(async (tx) => {
+      const meSnap = await tx.get(meUserRef);
+      if (meSnap.exists && !(meSnap.data() as any)?.invitedBy) {
+        tx.set(
+          meUserRef,
+          { invitedBy: inviterUid, invitedAt: FieldValue.serverTimestamp(), invitedVia: via, invitedToBeacon: !!beaconId },
+          { merge: true }
+        );
+        tx.set(invUserRef, { inviteCount: FieldValue.increment(1) }, { merge: true });
+      }
+    });
+  } catch (err) {
+    logger.warn('redeemInvite: attribution write failed', { meUid, err });
+  }
+
   logger.info('redeemInvite: friendship created', { meUid, inviterUid, code });
-  return { ok: true, inviterUid, inviterUsername: outcome.inviterUsername };
+  return { ok: true, inviterUid, inviterUsername: outcome.inviterUsername, beaconId };
 });

@@ -1,4 +1,6 @@
 // lib/googleAuth.ts
+import { signupMeta } from "./signupMeta";
+import { track } from "./analytics";
 import { GoogleSignin, statusCodes } from "@react-native-google-signin/google-signin";
 import { GoogleAuthProvider, signInWithCredential } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
@@ -75,7 +77,9 @@ export async function signInWithGoogle() {
         hasUsername: false,
         bonusPosts: 3,
         createdAt: serverTimestamp(),
+        ...(await signupMeta("google")),
       });
+      track("sign_up", { method: "google" });
     }
 
     // 8. Sync push token (same as email login does)

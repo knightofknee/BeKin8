@@ -17,7 +17,10 @@ export function useGatedClock(motionOn: boolean): { clock: SharedValue<number>; 
   const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
     'worklet';
     if (motion.value === 0) return;
-    clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
+    // Clamp the step. After the app (or the Mac under a simulator) sleeps, the first frame back
+    // reports the whole gap as one step; adding hours to the clock pushes the shaders' noise
+    // coordinates past float precision and the flame collapses into a thin streak until remount.
+    clock.value += Math.min(info.timeSincePreviousFrame ?? 16.6, 100) / 1000;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const fc = useFrameCallback(tick, true);

@@ -38,7 +38,7 @@ import {
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import BottomBar from '../components/BottomBar';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { SCREEN_PAD } from '../components/ui/layout';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import PostComments from '../components/PostComments';
@@ -62,6 +62,11 @@ interface Post {
   url?: string;
   commentsEnabled?: boolean;
   authorCommentsEnabled?: boolean;
+  /** Posted as a complaint (app/create-post.tsx complaint mode); spice = its 1-4 peppers. */
+  complaint?: boolean;
+  spice?: number;
+  /** A complaint its author kept out of friends' feeds (it still shows on their profile). */
+  feedHidden?: boolean;
   // cursor support, raw timestamp for pagination
   _timestamp: number;
 }
@@ -372,6 +377,9 @@ export default function Feed() {
           url: data.url ?? data.link ?? data.href ?? undefined,
           commentsEnabled: data.commentsEnabled !== false,
           authorCommentsEnabled: author.commentsEnabled,
+          complaint: data.complaint === true,
+          spice: typeof data.spice === 'number' ? data.spice : undefined,
+          feedHidden: data.feedHidden === true,
           _timestamp: cursorTs,
         });
       });
@@ -583,6 +591,8 @@ export default function Feed() {
   const displayedPosts = useMemo(() => {
     const me = auth.currentUser?.uid;
     let base = effectiveShowMine || !me ? posts : posts.filter((p) => p.authorUid !== me);
+    // A complaint kept out of feeds is only ever in its own author's.
+    base = base.filter((p) => !p.feedHidden || p.authorUid === me);
     if (blockedUids.size) base = base.filter((p) => !blockedUids.has(p.authorUid));
     if (canFilterAuthors && hiddenAuthors.size) base = base.filter((p) => !hiddenAuthors.has(p.authorUid));
     return base;
@@ -877,6 +887,16 @@ export default function Feed() {
             <View style={[styles.headerCol, { backgroundColor: tc.card, borderBottomColor: tc.border }]}>
               <Text style={[styles.headerTitle, { color: tc.text }]}>Feed</Text>
               <View style={styles.headerBtnRow}>
+                {/* Writing a post starts here (it used to be its own tab). */}
+                <Pressable
+                  onPress={() => { tap(); router.navigate('/create-post'); }}
+                  style={({ pressed }) => [styles.toggleBtn, styles.newPostBtn, pressed && { opacity: 0.85 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Write a new post"
+                >
+                  <Ionicons name="create-outline" size={15} color="#fff" />
+                  <Text style={styles.toggleBtnText}>New post</Text>
+                </Pressable>
                 <Pressable
                   onPress={() => {
                     tap();
@@ -967,6 +987,14 @@ export default function Feed() {
                   </Pressable>
                 </View>
 
+                {item.complaint ? (
+                  <View style={styles.complaintTag} accessibilityLabel={`Complaint, ${Math.max(1, Math.min(4, item.spice ?? 1))} of 5 peppers`}>
+                    <Text style={styles.complaintTagPeppers}>{'🌶️'.repeat(Math.max(1, Math.min(4, item.spice ?? 1)))}</Text>
+                    <Text style={styles.complaintTagTxt}>
+                      Complaint{item.feedHidden ? ' · only you see it here' : ''}
+                    </Text>
+                  </View>
+                ) : null}
                 {item.title ? (
                   <Text selectable style={[styles.postTitle, { color: tc.text }]} numberOfLines={2}>{item.title}</Text>
                 ) : null}
@@ -1193,6 +1221,7 @@ const styles = StyleSheet.create({
   toggleBtn: { alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#2F6FED' },
   toggleBtnText: { color: '#fff', fontWeight: '800' },
   headerBtnRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 },
+  newPostBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#A855F7' },
   filterBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1 },
   filterBtnText: { fontWeight: '800' },
   filterTitle: { fontSize: 16, fontWeight: '800', textAlign: 'center', paddingTop: 10, paddingBottom: 4 },
@@ -1213,6 +1242,9 @@ const styles = StyleSheet.create({
 
   postAuthor: { fontWeight: 'bold', marginBottom: 4, color: '#111827' },
   postAuthorLink: { color: '#2F6FED' },
+  complaintTag: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 4 },
+  complaintTagPeppers: { fontSize: 12 },
+  complaintTagTxt: { fontSize: 12, fontWeight: '800', color: '#E0452B' },
   postTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 6 },
   postLink: { color: '#2F6FED', textDecorationLine: 'underline', fontWeight: '600' },
   postContent: { marginBottom: 8, color: '#111827', marginTop: 4 },

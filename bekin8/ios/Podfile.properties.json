@@ -3,6 +3,6 @@
   "EX_DEV_CLIENT_NETWORK_INSPECTOR": "true",
   "expo-image.disable-libdav1d": "false",
   "ios.useFrameworks": "static",
-  "ios.forceStaticLinking": "[\"RNFBApp\",\"RNFBAppCheck\"]",
+  "ios.forceStaticLinking": "[\"RNFBApp\",\"RNFBAppCheck\",\"RNFBAnalytics\"]",
   "apple.privacyManifestAggregationEnabled": "true"
 }

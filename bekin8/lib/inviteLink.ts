@@ -22,14 +22,23 @@ export function buildInviteUrl(code: string): string {
  */
 export function parseInviteCode(url: string | null | undefined): string | null {
   if (!url) return null;
-  // Anchor to the two shapes we actually issue so a hostile page can't fire
+  // Anchor to the shapes we actually issue so a hostile page can't fire
   // bekin8://anything/invite/XXXXXX and silently friend the user via the custom scheme.
-  const m = url.match(
-    /^(?:bekin8:\/\/invite\/|https:\/\/www\.waldgrave\.com\/bekin\/invite\/)([A-Za-z0-9]{6})(?:[/?#]|$)/i
-  );
+  const m =
+    url.match(/^(?:bekin8:\/\/invite\/|https:\/\/www\.waldgrave\.com\/bekin\/invite\/)([A-Za-z0-9]{6})(?:[/?#]|$)/i) ||
+    // The web app, opened from the invite page ("use BeKin in your browser"): /bekin/app?invite=CODE
+    url.match(/^https:\/\/www\.waldgrave\.com\/bekin\/app\/?[^#]*[?&]invite=([A-Za-z0-9]{6})(?:[&#]|$)/i);
   if (!m) return null;
   const code = m[1].toUpperCase();
   return CODE_RE.test(code) ? code : null;
+}
+
+/** The shared-beacon token riding on an invite link (?b=...), if any. Only read from URLs that
+ *  parseInviteCode accepts, so it can't arrive on its own. */
+export function parseBeaconToken(url: string | null | undefined): string | null {
+  if (!url || !parseInviteCode(url)) return null;
+  const m = url.match(/[?&]b=([a-z0-9]{16})(?:[&#]|$)/);
+  return m ? m[1] : null;
 }
 
 /**
@@ -65,9 +74,37 @@ export async function getPendingInvite(): Promise<string | null> {
 
 export async function clearPendingInvite(): Promise<void> {
   try {
-    await AsyncStorage.removeItem(PENDING_KEY);
+    await AsyncStorage.multiRemove([PENDING_KEY, PENDING_BEACON_KEY, PENDING_VIA_KEY]);
   } catch {
     /* ignore */
+  }
+}
+
+// A pending invite can carry the shared beacon it came from, and how it arrived ('link' = tapped,
+// 'install' = carried through the store, 'web' = the browser app). Both ride along to redeem.
+const PENDING_BEACON_KEY = "@bekin_pending_invite_beacon";
+const PENDING_VIA_KEY = "@bekin_pending_invite_via";
+export type InviteVia = "link" | "install" | "web";
+
+export async function stashPendingInviteExtras(beaconToken: string | null, via: InviteVia): Promise<void> {
+  try {
+    if (beaconToken && /^[a-z0-9]{16}$/.test(beaconToken)) await AsyncStorage.setItem(PENDING_BEACON_KEY, beaconToken);
+    else await AsyncStorage.removeItem(PENDING_BEACON_KEY);
+    await AsyncStorage.setItem(PENDING_VIA_KEY, via);
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function getPendingInviteExtras(): Promise<{ beaconToken?: string; via: InviteVia }> {
+  try {
+    const [[, b], [, v]] = await AsyncStorage.multiGet([PENDING_BEACON_KEY, PENDING_VIA_KEY]);
+    return {
+      beaconToken: b && /^[a-z0-9]{16}$/.test(b) ? b : undefined,
+      via: v === "install" || v === "web" ? v : "link",
+    };
+  } catch {
+    return { via: "link" };
   }
 }
 
@@ -80,12 +117,17 @@ export type RedeemResult = {
   already?: boolean;
   inviterUid?: string;
   inviterUsername?: string;
+  /** The live shared beacon this link came from, when it carried one. */
+  beaconId?: string | null;
 };
 
 /** Call the server to redeem a code into an accepted friendship. */
-export async function redeemInviteCode(code: string): Promise<RedeemResult> {
+export async function redeemInviteCode(
+  code: string,
+  extras?: { beaconToken?: string; via?: InviteVia }
+): Promise<RedeemResult> {
   const fn = httpsCallable(getFunctions(), "redeemInvite");
-  const res = await fn({ code });
+  const res = await fn({ code, beaconToken: extras?.beaconToken, via: extras?.via });
   return ((res.data as RedeemResult) ?? { ok: false });
 }
 
@@ -136,9 +178,13 @@ export async function captureInstallReferrerInvite(): Promise<boolean> {
     // Burn the one-shot only after a successful read, so a dev client without the native module
     // (pre-rebuild) doesn't permanently skip the check.
     AsyncStorage.setItem(REFERRER_CHECKED_KEY, "1").catch(() => {});
+    // Keep the raw referrer for signup attribution: an ad install carries utm_* / gclid here.
+    if (ref) AsyncStorage.setItem("@bekin_install_referrer", ref.slice(0, 500)).catch(() => {});
     const m = /(?:^|[&?])bekin_invite=([A-Za-z0-9]{6})(?:&|$)/.exec(ref);
     if (!m) return false;
+    const b = /(?:^|[&?])bekin_b=([a-z0-9]{16})(?:&|$)/.exec(ref);
     await stashPendingInvite(m[1].toUpperCase());
+    await stashPendingInviteExtras(b ? b[1] : null, "install");
     return true;
   } catch {
     return false; // module missing or referrer unavailable; retry next launch is fine
@@ -148,7 +194,7 @@ export async function captureInstallReferrerInvite(): Promise<boolean> {
 // iOS: Apple passes nothing through an App Store install, so the landing page records the visit
 // (code + hashed IP) server-side and the app claims it here on first launch. CLAIM-ALL: every
 // live visit on this network comes back, so a room of sharers all connect with the newcomer.
-export type DeferredInvite = { code: string; inviterUsername?: string };
+export type DeferredInvite = { code: string; inviterUsername?: string; beaconToken?: string };
 export async function claimDeferredInvites(): Promise<DeferredInvite[]> {
   const fn = httpsCallable(getFunctions(), "claimInviteVisit");
   const res = await fn({});
@@ -159,5 +205,6 @@ export async function claimDeferredInvites(): Promise<DeferredInvite[]> {
     .map((i: any) => ({
       code: String(i.code),
       inviterUsername: typeof i.inviterUsername === "string" && i.inviterUsername ? i.inviterUsername : undefined,
+      beaconToken: typeof i.beaconToken === "string" && /^[a-z0-9]{16}$/.test(i.beaconToken) ? i.beaconToken : undefined,
     }));
 }

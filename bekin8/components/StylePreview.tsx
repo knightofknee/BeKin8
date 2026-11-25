@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { BeaconSkin } from '../lib/beaconSkins';
 import BeaconStructure from './BeaconStructure';
 import BeaconScene from './BeaconScene';
-import { ARRIVE_MS, RELAY_FIRST_MS, RELAY_STEP_MS, type ScenePerson } from './scenes/BeaconsScene';
+import { ARRIVE_MS, RELAY_MAX_MS, type ScenePerson } from './scenes/BeaconsScene';
 import BeaconFire from './BeaconFireSkia';
 import BeaconBonfireFlame from './BeaconBonfireFlame';
 import BeaconPrintFire from './BeaconPrintFire';
@@ -47,7 +47,7 @@ const SAMPLE_PEOPLE: ScenePerson[] = [
   { id: 'sample-sam', name: 'Sam' },
 ];
 const SAMPLE_LATE: ScenePerson = { id: 'sample-devin', name: 'Devin' };
-const LATE_AT_MS = RELAY_FIRST_MS + 2 * RELAY_STEP_MS + 3 * RELAY_STEP_MS - ARRIVE_MS;
+const LATE_AT_MS = RELAY_MAX_MS + 2000 - ARRIVE_MS; // after every site has caught
 const PEOPLE_BURN_MS = LATE_AT_MS + 5_000; // let the late arrival burn a while before the cycle ends
 const PEOPLE_FULL = [...SAMPLE_PEOPLE, SAMPLE_LATE];
 const NO_PEOPLE: ScenePerson[] = [];

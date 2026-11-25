@@ -1,6 +1,8 @@
 // functions/src/index.ts
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { acceptedFriendUids } from './audience.js';
+import { whenLabel, formatTime12, ownerOffsetMin, WEEKDAYS } from './beaconWhen.js';
+import { markOnce } from './funnel.js';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { onDocumentCreated, onDocumentUpdated, onDocumentDeleted } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
@@ -56,48 +58,8 @@ function titleFor(beacon: Beacon): string {
   return beacon.ownerName ? `${beacon.ownerName} lit a beacon` : 'A friend lit a beacon';
 }
 
-// ===== Helpers: "when" copy for pushes =====
-// The server runs in UTC but a beacon's day is the OWNER's local day. startAt is always written as
-// the owner's local midnight, so its UTC clock time IS the owner's UTC offset (negated): local
-// midnight at 05:00Z means UTC-5. Mapped into (-11h, +13h]: that covers New Zealand's daylight
-// time and Tonga (+13); the only zones it misreads are UTC-11/-12 (American Samoa, Niue, Baker
-// Island) and Kiribati's +14.
-function ownerOffsetMin(startAt: FirebaseFirestore.Timestamp): number {
-  const d = startAt.toDate();
-  let off = -(d.getUTCHours() * 60 + d.getUTCMinutes());
-  if (off <= -11 * 60) off += 24 * 60;
-  return off;
-}
-
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-/** "18:30" -> "6:30 PM", "19:00" -> "7 PM"; '' when unset or malformed. */
-function formatTime12(hhmm?: string | null): string {
-  const m = /^(\d{1,2}):(\d{2})$/.exec((hhmm || '').trim());
-  if (!m) return '';
-  const h24 = parseInt(m[1], 10);
-  const min = parseInt(m[2], 10);
-  if (h24 > 23 || min > 59) return '';
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return `${h12}${min ? `:${String(min).padStart(2, '0')}` : ''} ${h24 < 12 ? 'AM' : 'PM'}`;
-}
-
-/** "Tonight at 8 PM", "Tomorrow", "Friday at 7:30 PM", relative to the owner's local today. */
-function whenLabel(b: Beacon, nowMs: number = Date.now()): string {
-  if (!b.startAt) return '';
-  const off = ownerOffsetMin(b.startAt) * 60_000;
-  const startMs = b.startAt.toMillis();
-  const localDay = (ms: number) => Math.floor((ms + off) / 86_400_000);
-  const diff = localDay(startMs) - localDay(nowMs);
-  const time = formatTime12(b.timeHHmm);
-  const evening = /^(1[7-9]|2\d):/.test((b.timeHHmm || '').trim());
-  let day: string;
-  if (diff === 0) day = evening ? 'Tonight' : 'Today';
-  else if (diff === -1) day = 'Tonight'; // last night's beacon, inside its after-midnight grace
-  else if (diff === 1) day = 'Tomorrow';
-  else day = WEEKDAYS[new Date(startMs + off + 12 * 3_600_000).getUTCDay()];
-  return time ? `${day} at ${time}` : day;
-}
+// The "when" copy helpers (whenLabel and friends) live in ./beaconWhen.ts, shared with the guest
+// beacon page endpoints.
 
 /** Push body for a beacon: "Friday at 7 PM · Hang out at my place?" */
 function beaconBody(b: Beacon): string {
@@ -518,7 +480,11 @@ async function fanOutForBeacon(beaconId: string, b: Beacon) {
     );
     return;
   }
-  await pushBeaconToFriends(beaconId, b, name ? `${name} lit a beacon` : 'A friend lit a beacon', beaconBody(b));
+  const reached = await pushBeaconToFriends(beaconId, b, name ? `${name} lit a beacon` : 'A friend lit a beacon', beaconBody(b));
+  // Funnel stamps (see funnel.ts): the first beacon this person ever lit, and the first one that
+  // actually reached somebody. Test-group beacons reach nobody, so only the first stamp lands.
+  await markOnce(ownerUid, 'firstBeaconAt');
+  if (reached > 0) await markOnce(ownerUid, 'firstBeaconReachedAt', { firstBeaconReach: reached });
 }
 
 /**
@@ -1861,7 +1827,10 @@ export { dailyBonusAccrual } from './dailyBonusAccrual.js';
 // returns. (See functions/src/portAccount.ts, kept dormant.)
 export { ensureInviteCode, redeemInvite } from './redeemInvite.js';
 export { recordInviteVisit, claimInviteVisit } from './deferredInvite.js';
+export { assignDefaultUsername } from './username.js';
+export { ensureBeaconShare, invitePreview, guestRsvp, guestChat } from './guestBeacon.js';
 export { getFriendsOfFriends } from './friendsOfFriends.js';
+export { ucsAnalyze, ucsName, ucsSubmit } from './ucs.js';
 export { fetchLinkPreview } from './fetchLinkPreview.js';
 // Username -> uid for add-friend / unblock, now that Profiles are audience-scoped and a client can
 // no longer query a stranger's profile. Returns uid + display name only.

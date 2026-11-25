@@ -1,7 +1,7 @@
 // providers/ThemeProvider.tsx
 // App theme. The user picks System (follow the phone's light/dark setting, live), Light, or Dark.
 // Stored per device. Anyone who chose Light or Dark before System existed keeps that choice; with
-// nothing stored, the app follows the system.
+// nothing stored, the app is Dark (the default); System is still there for anyone who picks it.
 import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
 import { useColorScheme } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -25,19 +25,19 @@ type ThemeCtx = {
 };
 
 const ThemeContext = createContext<ThemeCtx>({
-  theme: "light",
-  pref: "system",
+  theme: "dark",
+  pref: "dark",
   setPref: () => {},
   toggleTheme: () => {},
-  colors: lightColors,
-  isDark: false,
+  colors: darkColors,
+  isDark: true,
 });
 
 export const ThemeProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   // Live system scheme: re-renders when the phone switches light/dark (iOS "automatic"
   // interface style + Android uiMode config change are both set up for this).
   const system = useColorScheme() === "dark" ? "dark" : "light";
-  const [pref, setPrefState] = useState<ThemePref>("system");
+  const [pref, setPrefState] = useState<ThemePref>("dark");
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)

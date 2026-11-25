@@ -22,7 +22,7 @@ import { makeShaderEffect } from '../lib/makeShaderEffect';
 import { useGatedClock } from '../lib/useGatedClock';
 
 // #RRGGBB -> [r,g,b] in 0..1 (shader uniforms). Falls back to mid-grey on a bad value.
-function rgb(hex: string): [number, number, number] {
+export function rgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
   if (!m) return [0.5, 0.5, 0.5];
   const n = parseInt(m[1], 16);
@@ -126,6 +126,8 @@ half4 main(vec2 fragCoord){
 `;
 
 const effect = makeShaderEffect(FIRE_SKSL, 'BeaconFireSkia');
+/** The same fire, for scenes that burn it elsewhere at another size (The Beacons' chain). */
+export const fireEffect = effect;
 
 export type BeaconFireProps = {
   skin: BeaconSkin;

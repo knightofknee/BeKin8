@@ -4,6 +4,8 @@
 import { signInWithPopup, type AuthProvider } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase.config";
+import { signupMeta } from "./signupMeta";
+import { track } from "./analytics";
 
 export async function popupSignIn(provider: AuthProvider) {
   const { user } = await signInWithPopup(auth, provider);
@@ -18,7 +20,9 @@ export async function popupSignIn(provider: AuthProvider) {
       hasUsername: false,
       bonusPosts: 3,
       createdAt: serverTimestamp(),
+      ...(await signupMeta(provider.providerId === "apple.com" ? "apple" : "google")),
     });
+    track("sign_up", { method: provider.providerId });
   }
   return { user, isNewUser };
 }

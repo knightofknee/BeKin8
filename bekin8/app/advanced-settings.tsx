@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -29,6 +29,7 @@ import BottomBar from "../components/BottomBar";
 import { SCREEN_PAD } from "../components/ui/layout";
 import { useTheme } from "../providers/ThemeProvider";
 import { selection } from "../utils/haptics";
+import { makeNameShuffler, ucsName } from "../lib/ucs/api";
 
 const FEEDBACK_URL = "https://forms.gle/7Lyih79emL37g2ke8";
 
@@ -36,6 +37,19 @@ export default function AdvancedSettingsScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const functions = getFunctions();
+
+  // Their name on the Universal Complaint System (complaint posts). Shuffle swaps it; once they
+  // have posted under a name, the next one applies to new complaints only (one new name a day).
+  const [complaintName, setComplaintName] = useState<string | null>(null);
+  const complaintNameRef = useRef<string | null>(null);
+  complaintNameRef.current = complaintName;
+  useEffect(() => {
+    ucsName().then((n) => setComplaintName(n || null)).catch(() => {});
+  }, []);
+  const shuffleComplaintName = useMemo(
+    () => makeNameShuffler(() => complaintNameRef.current, setComplaintName, (msg) => Alert.alert("Couldn't change your name", msg)),
+    []
+  );
 
   // Friends-of-friends posts opt-in (symmetric; lives on Profiles/{uid}.friendsOfFriendsPosts)
   const [fofEnabled, setFofEnabled] = useState(false);
@@ -178,6 +192,21 @@ export default function AdvancedSettingsScreen() {
               thumbColor="#fff"
               {...WEB_WHITE_KNOB}
             />
+          </View>
+
+          <View style={[s.divider, { backgroundColor: colors.border }]} />
+
+          <Text style={[s.h2, { color: colors.text }]}>Complaints</Text>
+          <View style={[s.row, s.rowBetween, { borderBottomColor: colors.border }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[s.link, { color: colors.text }]}>{complaintName ?? "Complaint name"}</Text>
+              <Text style={[s.rowSub, { color: colors.subtle }]}>
+                Your name on the Universal Complaint System. Complaints you already posted keep the name they went up under.
+              </Text>
+            </View>
+            <Pressable onPress={() => { selection(); shuffleComplaintName(); }} disabled={!complaintName} hitSlop={8} accessibilityRole="button" accessibilityLabel="Shuffle your complaint name">
+              <Text style={[s.link, { color: colors.primary, opacity: complaintName ? 1 : 0.4 }]}>Shuffle</Text>
+            </Pressable>
           </View>
 
           <View style={[s.divider, { backgroundColor: colors.border }]} />

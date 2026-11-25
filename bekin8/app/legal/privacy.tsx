@@ -40,6 +40,13 @@ export default function Privacy() {
           (accounts, feeds, notifications) and to keep the community safe (reporting, blocking, moderation).
         </Text>
         <Text style={[s.p, { color: colors.text }]}>
+          We also collect beacon chat messages and RSVPs, how your account was created, who invited
+          you, and usage data (which screens and features are used) through Google Analytics for
+          Firebase. We do not collect your advertising ID or precise location. Contacts you pick to
+          text a beacon to stay on your phone and are never sent to us. A beacon you share by link
+          can be seen, and joined by name, by anyone who has that link.
+        </Text>
+        <Text style={[s.p, { color: colors.text }]}>
           Your posts are shown to the friends you have added. If you turn on the optional
           &quot;Friends of friends&quot; setting, your posts are also shown to friends of your friends who
           turned that same setting on, and their posts appear in your feed. That sharing is mutual,

@@ -88,6 +88,17 @@ service cloud.firestore {
       // silencedPosts collection listener fell through to the catch-all and was denied, which
       // silently broke muting (the listener has no error callback, so the muted set just stayed
       // empty). Path-keyed, so the collection listener is provable against it.
+      // Complaints this person sent to the Universal Complaint System from a post (functions/src/
+      // ucs.ts writes them with the Admin SDK). Owner-only reads: the doc holds the UCS link, which
+      // shows their random UCS name, so nobody else may ever see it.
+      match /complaints/{submissionId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        // The owner adds their own copy of what they wrote and where it shows (title, content,
+        // postId, visibility). They may not forge the server's fields or invent a complaint.
+        allow update: if request.auth != null && request.auth.uid == userId
+                      && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['url', 'authorName', 'joined', 'added', 'createdAt']);
+        allow create, delete: if false;
+      }
       match /silencedPosts/{postId} {
         allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
       }

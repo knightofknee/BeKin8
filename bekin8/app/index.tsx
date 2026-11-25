@@ -20,8 +20,11 @@ import {
   View,
 } from "react-native";
 import { Link, Stack, useRouter } from "expo-router";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../firebase.config";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "../firebase.config";
+import { sendInitialVerification } from "../lib/emailVerification";
+import { signupMeta } from "../lib/signupMeta";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { initNotifications, syncPushTokenIfGranted } from "../lib/push";
 import { statusCodes } from "@react-native-google-signin/google-signin";
@@ -31,6 +34,7 @@ import { signInWithApple } from "../lib/appleAuth";
 import GoogleLogo from "../components/GoogleLogo";
 import PasswordInput from "../components/PasswordInput";
 import { useTheme } from "../providers/ThemeProvider";
+import { track } from "../lib/analytics";
 
 const TOP_OFFSET = 64; // consistent "reach-friendly" offset
 const BOTTOM_GAP = 28; // desired minimal space between keyboard and card
@@ -66,6 +70,10 @@ export default function Index() {
 
   useEffect(() => {
     initNotifications();
+  }, []);
+
+  useEffect(() => {
+    track("welcome_view");
   }, []);
 
   const recomputeShift = (kbHeight: number, duration?: number) => {
@@ -137,24 +145,52 @@ export default function Index() {
     return () => subs.forEach((s) => s.remove());
   }, [recomputeShift, shift]);
 
-  const handleLogin = async () => {
+  // ONE form for both: a new email creates the account, a known email signs in. Creating is tried
+  // first because Firebase answers "already in use" plainly there, while a failed sign-in won't say
+  // whether the account exists.
+  const handleContinue = async () => {
     setError(null);
-    if (!email || !password) {
+    const mail = email.trim();
+    if (!mail || !password) {
       setError("Email and password are required.");
+      return;
+    }
+    if (password.trim().length < 6) {
+      setError("Password must be at least 6 characters.");
       return;
     }
     try {
       Keyboard.dismiss();
       setSubmitting(true);
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, mail, password);
+        // Fire-and-forget: the in-app banner offers a resend if this fails.
+        sendInitialVerification(cred.user).catch(() => {});
+        await setDoc(doc(db, "users", cred.user.uid), {
+          uid: cred.user.uid,
+          email: mail,
+          username: null,
+          hasUsername: false,
+          bonusPosts: 3,
+          createdAt: serverTimestamp(),
+          ...(await signupMeta("password")),
+        });
+        track("sign_up", { method: "password" });
+      } catch (e: any) {
+        if (e?.code !== "auth/email-already-in-use") throw e;
+        await signInWithEmailAndPassword(auth, mail, password);
+        track("login", { method: "password" });
+      }
       await syncPushTokenIfGranted();
     } catch (e: any) {
-      const code = e?.code || "";
-      let msg = "Login failed. Please try again.";
+      const code = String(e?.code || "");
+      let msg = "That didn't work. Please try again.";
       if (code.includes("auth/invalid-credential") || code.includes("auth/wrong-password"))
-        msg = "Invalid email or password.";
-      if (code.includes("auth/user-not-found")) msg = "No account found for that email.";
+        msg = "There's already an account with this email, and that password doesn't match it. If you signed up with Google or Apple, use that button.";
+      if (code.includes("auth/invalid-email")) msg = "That email address looks invalid.";
+      if (code.includes("auth/weak-password")) msg = "Password must be at least 6 characters.";
       if (code.includes("auth/too-many-requests")) msg = "Too many attempts. Try again later.";
+      if (code.includes("auth/network-request-failed")) msg = "Network error. Check your connection and try again.";
       setError(msg);
     } finally {
       setSubmitting(false);
@@ -226,17 +262,66 @@ export default function Index() {
                   style={styles.logo}
                   resizeMode="contain"
                 />
-                <Text style={[styles.title, { color: colors.text }]}>Welcome back</Text>
-                <Text style={[styles.subtitle, { color: colors.subtle }]}>Sign in to BeKin</Text>
+                <Text style={[styles.title, { color: colors.text }]}>Free to hang?{"\n"}Light your beacon.</Text>
               </View>
 
               {/* card */}
               <View ref={cardRef} style={[styles.card, { backgroundColor: colors.card }]}>
-                <View style={styles.topRow}>
-                  <Text style={{ color: colors.subtle }}>New here?</Text>
-                  <Link href="/signup" style={[styles.link, { color: colors.primary }]}>
-                    Create an account
-                  </Link>
+                <View style={styles.ssoRow}>
+                  <Pressable
+                    onPress={handleGoogleSignIn}
+                    disabled={anyLoading}
+                    style={({ pressed }) => [
+                      styles.googleBtn,
+                      { borderColor: colors.border, backgroundColor: colors.inputBg },
+                      pressed && { opacity: 0.85 },
+                      anyLoading && { opacity: 0.7 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Continue with Google"
+                  >
+                    {googleLoading ? (
+                      <ActivityIndicator color={colors.text} />
+                    ) : (
+                      <View style={styles.ssoBtnInner}>
+                        <GoogleLogo size={22} />
+                        <Text style={[styles.googleBtnText, { color: colors.text }]}>Google</Text>
+                      </View>
+                    )}
+                  </Pressable>
+
+                  {/* Apple Sign-In is iOS-only (expo-apple-authentication has no Android
+                      implementation); on Android the button did nothing, so don't show it. */}
+                  {Platform.OS === "ios" && (
+                    <Pressable
+                      onPress={handleAppleSignIn}
+                      disabled={anyLoading}
+                      style={({ pressed }) => [
+                        styles.appleBtn,
+                        { backgroundColor: isDark ? "#FFFFFF" : "#000" },
+                        pressed && { opacity: 0.85 },
+                        anyLoading && { opacity: 0.7 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Continue with Apple"
+                    >
+                      {appleLoading ? (
+                        <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
+                      ) : (
+                        <View style={styles.ssoBtnInner}>
+                          <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
+                          <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  )}
+                </View>
+
+                {/* One page for new and returning people: Apple / Google in one tap, or an email. */}
+                <View style={styles.dividerRow}>
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+                  <Text style={[styles.dividerText, { color: colors.subtle }]}>or use your email</Text>
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
                 </View>
 
                 {error ? <Text style={[styles.error, { color: colors.error }]}>{error}</Text> : null}
@@ -292,14 +377,14 @@ export default function Index() {
                       onFocus={() => { setPwFocused(true); /* no recompute on focus */ }}
                       onBlur={() => setPwFocused(false)}
                       returnKeyType="go"
-                      onSubmitEditing={handleLogin}
+                      onSubmitEditing={handleContinue}
                       toggleColor={colors.primary}
                     />
                   </View>
                 </View>
 
                 <Pressable
-                  onPress={handleLogin}
+                  onPress={handleContinue}
                   disabled={anyLoading}
                   style={({ pressed }) => [
                     styles.primaryBtn,
@@ -308,12 +393,12 @@ export default function Index() {
                     anyLoading && { opacity: 0.7 },
                   ]}
                   accessibilityRole="button"
-                  accessibilityLabel="Sign in"
+                  accessibilityLabel="Continue with email"
                 >
                   {submitting ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.primaryBtnText}>Enter</Text>
+                    <Text style={styles.primaryBtnText}>Continue</Text>
                   )}
                 </Pressable>
 
@@ -322,63 +407,9 @@ export default function Index() {
                     Forgot password?
                   </Link>
                 </View>
-
-                {/* SSO divider */}
-                <View style={styles.dividerRow}>
-                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-                  <Text style={[styles.dividerText, { color: colors.subtle }]}>or sign in with</Text>
-                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-                </View>
-
-                <View style={styles.ssoRow}>
-                  <Pressable
-                    onPress={handleGoogleSignIn}
-                    disabled={anyLoading}
-                    style={({ pressed }) => [
-                      styles.googleBtn,
-                      { borderColor: colors.border, backgroundColor: colors.inputBg },
-                      pressed && { opacity: 0.85 },
-                      anyLoading && { opacity: 0.7 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Sign in with Google"
-                  >
-                    {googleLoading ? (
-                      <ActivityIndicator color={colors.text} />
-                    ) : (
-                      <View style={styles.ssoBtnInner}>
-                        <GoogleLogo size={22} />
-                        <Text style={[styles.googleBtnText, { color: colors.text }]}>Google</Text>
-                      </View>
-                    )}
-                  </Pressable>
-
-                  {/* Apple Sign-In is iOS-only (expo-apple-authentication has no Android
-                      implementation); on Android the button did nothing, so don't show it. */}
-                  {Platform.OS === "ios" && (
-                    <Pressable
-                      onPress={handleAppleSignIn}
-                      disabled={anyLoading}
-                      style={({ pressed }) => [
-                        styles.appleBtn,
-                        { backgroundColor: isDark ? "#FFFFFF" : "#000" },
-                        pressed && { opacity: 0.85 },
-                        anyLoading && { opacity: 0.7 },
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel="Sign in with Apple"
-                    >
-                      {appleLoading ? (
-                        <ActivityIndicator color={isDark ? "#000" : "#FFF"} />
-                      ) : (
-                        <View style={styles.ssoBtnInner}>
-                          <Ionicons name="logo-apple" size={22} color={isDark ? "#000" : "#FFF"} />
-                          <Text style={[styles.appleBtnText, { color: isDark ? "#000" : "#FFF" }]}>Apple</Text>
-                        </View>
-                      )}
-                    </Pressable>
-                  )}
-                </View>
+                <Text style={[styles.newHint, { color: colors.subtle }]}>
+                  New here? Just enter an email and pick a password.
+                </Text>
 
                 {/* Terms / Privacy notice */}
                 <View style={styles.termsRow}>
@@ -454,8 +485,8 @@ const styles = StyleSheet.create({
   containerAndroid: { flexGrow: 1, paddingHorizontal: 20 },
   header: { alignItems: "center", marginBottom: 18 },
   logo: { width: 84, height: 84, marginBottom: 12 },
-  title: { fontSize: 28, fontWeight: "800" },
-  subtitle: { marginTop: 6, fontSize: 16 },
+  title: { fontSize: 28, lineHeight: 34, fontWeight: "800", textAlign: "center" },
+  subtitle: { marginTop: 8, fontSize: 16, textAlign: "center" },
 
   card: {
     borderRadius: 16,
@@ -571,6 +602,7 @@ const styles = StyleSheet.create({
     bottom: -40,
     left: -30,
   },
+  newHint: { textAlign: "center", fontSize: 13, marginTop: 10 },
   blocker: {
     position: "absolute",
     top: 0,

@@ -1,7 +1,7 @@
 // app/_layout.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { Stack, usePathname, useRouter, useRootNavigationState } from "expo-router";
-import { ActivityIndicator, Alert, Platform, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Platform, View } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
@@ -30,7 +30,14 @@ import {
   prefetchMyInviteCode,
   captureInstallReferrerInvite,
   claimDeferredInvites,
+  parseBeaconToken,
+  stashPendingInviteExtras,
+  getPendingInviteExtras,
 } from "../lib/inviteLink";
+import { doc, setDoc, serverTimestamp, arrayUnion } from "firebase/firestore";
+import { db } from "../firebase.config";
+import { ensureAutoUsername } from "../lib/autoUsername";
+import { setAnalyticsUser, track, trackScreen } from "../lib/analytics";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -61,7 +68,7 @@ const PUBLIC_ROUTES = new Set<string>([
 ]);
 
 function Gate() {
-  const { user, initialized } = useAuth();
+  const { user, initialized, profile, profileLoaded } = useAuth();
   const { colors, isDark } = useTheme();
   const router = useRouter();
   const pathname = usePathname();
@@ -87,6 +94,49 @@ function Gate() {
     // hide splash only once we can safely render/navigate
     SplashScreen.hideAsync().catch(() => {});
   }, [initialized, navState?.key, user, pathname, router]);
+
+  // --- Funnel plumbing ---
+  // Analytics identity + a screen view per route (expo-router has no automatic screen tracking).
+  useEffect(() => {
+    setAnalyticsUser(user?.uid ?? null);
+  }, [user?.uid]);
+  useEffect(() => {
+    if (initialized && navState?.key) trackScreen(pathname === "/" ? "/welcome" : pathname);
+  }, [initialized, navState?.key, pathname]);
+
+  // Every account has a username from the start: one is assigned (from their name or email) the
+  // first time we see a signed-in profile without one. Editable later on Friends.
+  useEffect(() => {
+    if (user?.uid && profileLoaded && !profile?.username?.trim()) void ensureAutoUsername(user.uid);
+  }, [user?.uid, profileLoaded, profile?.username]);
+
+  // One "was here today" stamp per day on the owner-only users doc: enough to read retention
+  // (came back on day 1 / day 7) per signup cohort without any analytics console. Capped by the
+  // server-side report at what it needs; a day string is ~10 bytes.
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) return;
+    const stamp = async () => {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const key = `@bekin_active_day:${uid}`;
+        if ((await AsyncStorage.getItem(key)) === today) return;
+        await setDoc(
+          doc(db, "users", uid),
+          { lastActiveAt: serverTimestamp(), activeDays: arrayUnion(today) },
+          { merge: true }
+        );
+        await AsyncStorage.setItem(key, today);
+      } catch {
+        // best effort; tomorrow's launch tries again
+      }
+    };
+    stamp();
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "active") stamp();
+    });
+    return () => sub.remove();
+  }, [user?.uid]);
 
   // --- Notification deep linking ---
   // Taps are STAGED into state and routed only once auth + the navigator have settled on a real
@@ -125,6 +175,7 @@ function Gate() {
     const t = String(data.type);
     const enc = (v: any) => encodeURIComponent(String(v));
     if ((t === "beacon" || t === "beacon_comment") && data.beaconId) {
+      track("beacon_opened_from_push", { kind: t });
       const beaconId = enc(data.beaconId);
       if (t === "beacon_comment" && data.messageId) {
         const messageId = enc(data.messageId);
@@ -173,11 +224,21 @@ function Gate() {
   useEffect(() => {
     const code = parseInviteCode(incomingUrl);
     if (!code) return;
-    Promise.resolve(stashPendingInvite(code)).then(() => {
-      redeemDoneRef.current = false;
-      setInviteTick((t) => t + 1);
-    });
+    // A link shared from a lit beacon also carries that beacon's token (?b=); keep it with the code
+    // so the redeem can let this person into the beacon and the app can open it.
+    const via = Platform.OS === "web" ? "web" : "link";
+    Promise.resolve(stashPendingInvite(code))
+      .then(() => stashPendingInviteExtras(parseBeaconToken(incomingUrl), via))
+      .then(() => {
+        redeemDoneRef.current = false;
+        setInviteTick((t) => t + 1);
+      });
   }, [incomingUrl]);
+
+  // A redeemed link that came from a shared beacon lands on that beacon. Held until any
+  // celebration is dismissed (it is a Modal and would sit on top of the chat), and delayed a beat
+  // so the server has stamped the new friend into the beacon's audience before they try to RSVP.
+  const [pendingBeaconId, setPendingBeaconId] = useState<string | null>(null);
 
   // Android deferred attribution: on first launch, read the Play Install Referrer (the store
   // carries the invite code through install). A found code is stashed like a tapped link, then the
@@ -216,8 +277,10 @@ function Gate() {
         let created = 0;
         for (const inv of invites) {
           try {
-            const res = await redeemInviteCode(inv.code);
+            const res = await redeemInviteCode(inv.code, { beaconToken: inv.beaconToken, via: "install" });
+            if (res.ok && res.beaconId) setPendingBeaconId(res.beaconId);
             if (res.ok && !res.already) {
+              track("invite_redeemed", { via: "install", beacon: !!res.beaconId });
               created += 1;
               const n = res.inviterUsername || inv.inviterUsername;
               if (n) names.push(n);
@@ -252,11 +315,14 @@ function Gate() {
           redeemDoneRef.current = true; // nothing pending, done for this session
           return;
         }
-        const res = await redeemInviteCode(code);
+        const extras = await getPendingInviteExtras();
+        const res = await redeemInviteCode(code, extras);
         if (res.ok) {
           await clearPendingInvite();
           redeemDoneRef.current = true;
+          if (res.beaconId) setPendingBeaconId(res.beaconId);
           if (!res.already) {
+            track("invite_redeemed", { via: extras.via, beacon: !!res.beaconId });
             // New users (tutorial not completed yet) get the first-friend celebration, then land
             // on the tutorial when they dismiss it. Existing users get the quicker 'link' variant.
             const tourDone = await getSeen("beacon").catch(() => false);
@@ -283,6 +349,18 @@ function Gate() {
     // inviteTick: a link that arrives mid-session stashes a fresh code + un-latches DONE above,
     // and this dep makes the redeem pass actually re-run for it (after the stash write landed).
   }, [initialized, navState?.key, user?.uid, online, inviteTick]);
+
+  useEffect(() => {
+    if (!pendingBeaconId || celebrate || !user) return;
+    if (pathname === "/" || pathname === "/signup") return;
+    const id = pendingBeaconId;
+    const t = setTimeout(() => {
+      setPendingBeaconId(null);
+      track("beacon_opened_from_link");
+      router.replace(`/home?beaconId=${encodeURIComponent(id)}`);
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [pendingBeaconId, celebrate, user, pathname, router]);
 
   if (!initialized || !navState?.key) {
     return (

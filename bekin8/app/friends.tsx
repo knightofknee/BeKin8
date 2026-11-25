@@ -11,11 +11,9 @@ import {
   Linking,
   Pressable,
   Switch,
-  Share,
 } from "react-native";
 import { WEB_WHITE_KNOB } from "@/components/ui/webSwitch";
 import { useRouter } from "expo-router";
-import * as Clipboard from "expo-clipboard";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { auth, db } from "../firebase.config";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -47,11 +45,12 @@ import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { useOnline } from "../providers/NetworkProvider";
 import { tap } from "../utils/haptics";
-import { buildInviteUrl, prefetchMyInviteCode } from "../lib/inviteLink";
+import { prefetchMyInviteCode } from "../lib/inviteLink";
 import TutorialResumeBanner from "@/components/tutorial/TutorialResumeBanner";
 import { useSetupTour } from "@/components/tutorial/setupTour";
 import { useTour } from "../providers/TourProvider";
 import { addBrianAsFriend } from "../lib/addBrian";
+import { shareMyFriendLink } from "../lib/shareInvite";
 import { useOnboarding } from "../providers/OnboardingProvider";
 import { emitNotifyPermissionChange } from "../lib/notifyPermission";
 
@@ -167,29 +166,11 @@ export default function FriendsScreen() {
   }, [currentStepTarget, measureTarget]);
 
   const handleShareInvite = async () => {
-    const code = inviteCode ?? profile?.inviteCode; // state first; profile fallback during migration
-    if (!code) return;
-    const url = buildInviteUrl(code);
-    // Share the LINK, nothing else. The sender adds their own words; no canned marketing blurb.
-    try {
-      if (Platform.OS === "web") {
-        // Browsers: the system share sheet when there is one (phones), else copy the link.
-        const nav: any = typeof navigator !== "undefined" ? navigator : null;
-        if (nav?.share) {
-          await nav.share({ url });
-        } else {
-          await Clipboard.setStringAsync(url);
-          showMessage("Friend link copied. Paste it to a friend.", "success");
-        }
-      } else if (Platform.OS === "ios") {
-        await Share.share({ url }, { subject: "Add me on BeKin" });
-      } else {
-        // Android ignores `url`, so the link is the message.
-        await Share.share({ message: url }, { dialogTitle: "Share your friend link" });
-      }
-    } catch {
-      // user cancelled or share failed, no-op
-    }
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    // The LINK, nothing else (lib/shareInvite): the sender adds their own words.
+    const res = await shareMyFriendLink(uid, inviteCode ?? profile?.inviteCode, "friends");
+    if (res === "copied") showMessage("Friend link copied. Paste it to a friend.", "success");
   };
 
   // Prevent double-toggles per-UID
@@ -560,6 +541,8 @@ export default function FriendsScreen() {
 
       setCurrentUsername(desired);
       nameCacheRef.current[user.uid] = desired;
+      // Keep the owner-only users doc in step (the server falls back to it for friend docs).
+      setDoc(doc(db, "users", user.uid), { username: desired, hasUsername: true, usernameAuto: false }, { merge: true }).catch(() => {});
       showMessage("Username saved!", "success");
     } catch (e) {
       if (__DEV__) console.error("handleSetUsername error", e);
@@ -1136,7 +1119,7 @@ export default function FriendsScreen() {
         ListHeaderComponent={
           <View style={styles.headerWrap}>
             <TutorialResumeBanner
-              visible={onboarding.loaded && !onboarding.allDone && !tourActive}
+              visible={!__DEV__ && onboarding.loaded && !onboarding.allDone && !tourActive}
               doneCount={onboarding.doneCount}
               total={onboarding.total}
               nextLabel={onboarding.firstIncomplete?.label}
@@ -1235,7 +1218,7 @@ export default function FriendsScreen() {
               {visibleFriends.length === 0 && (
                 online ? (
                   <>
-                    <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet. Search for a username above to send a request.</Text>
+                    <Text style={[styles.subtle, { color: tc.subtle }]}>No friends yet. Share your link above with someone you&apos;d hang out with, or add them by username.</Text>
 
                     {/* First-friend suggestion */}
                     <View style={[styles.brianCard, { borderColor: tc.primary, backgroundColor: tc.inputBg }]}>
@@ -1243,7 +1226,7 @@ export default function FriendsScreen() {
                         <Text style={{ color: "#fff", fontWeight: "800", fontSize: 18 }}>B</Text>
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={[styles.brianTitle, { color: tc.text }]}>New here? Add Brian, the creator of BeKin, as your first friend!</Text>
+                        <Text style={[styles.brianTitle, { color: tc.text }]}>Nobody around yet? Add Brian, BeKin&apos;s creator, to see how it looks with a friend.</Text>
                       </View>
                       <Pressable
                         onPress={handleAddBrian}

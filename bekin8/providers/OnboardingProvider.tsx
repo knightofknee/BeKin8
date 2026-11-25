@@ -9,6 +9,7 @@ import * as Notifications from "expo-notifications";
 import { db } from "../firebase.config";
 import { useAuth } from "./AuthProvider";
 import { onNotifyPermissionChange } from "../lib/notifyPermission";
+import { track } from "../lib/analytics";
 
 export type OnboardingStepKey = "username" | "friend" | "notifications";
 
@@ -149,6 +150,17 @@ export const OnboardingProvider: React.FC<React.PropsWithChildren> = ({ children
   // Any in-app permission grant (tour, Settings toggles, per-friend/all-friends notify, the
   // post-beacon prompt) emits this so the banner updates without waiting for a foreground.
   useEffect(() => onNotifyPermissionChange(checkNotif), [checkNotif]);
+
+  // Funnel: the moment this account goes from no friends to one (once per device session).
+  const hadFriendRef = React.useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!friendLoaded) {
+      hadFriendRef.current = null;
+      return;
+    }
+    if (hadFriendRef.current === false && hasFriend) track("friend_added", { first: true });
+    hadFriendRef.current = hasFriend;
+  }, [friendLoaded, hasFriend]);
 
   const hasUsername = !!profile?.username?.trim();
   const steps: OnboardingStep[] = [

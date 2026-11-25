@@ -67,6 +67,8 @@
     <array>
       <string>_expo._tcp</string>
     </array>
+    <key>NSContactsUsageDescription</key>
+    <string>Pick people to text your beacon to. BeKin only gets the contact you choose, and it stays on your phone.</string>
     <key>NSFaceIDUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your Face ID biometric data.</string>
     <key>NSLocalNetworkUsageDescription</key>

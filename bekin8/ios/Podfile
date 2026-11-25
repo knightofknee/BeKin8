@@ -26,6 +26,10 @@ platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 # opt RNFB back into plain CocoaPods resolution. Must be set before any target block.
 $RNFirebaseDisableSPM = true
 
+# Firebase Analytics WITHOUT the advertising-id (IDFA) pod: funnel events only, no ad tracking, so
+# no App Tracking Transparency prompt and nothing to declare as "tracking".
+$RNFirebaseAnalyticsWithoutAdIdSupport = true
+
 prepare_react_native_project!
 
 target 'BeKin' do

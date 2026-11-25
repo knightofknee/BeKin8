@@ -94,6 +94,9 @@ import { useTheme } from '../providers/ThemeProvider';
 import { useOnline } from '../providers/NetworkProvider';
 import { tap, press, selection, success, warning } from '../utils/haptics';
 import TutorialResumeBanner from '../components/tutorial/TutorialResumeBanner';
+import BeaconShareSheet from '../components/BeaconShareSheet';
+import { ensureAutoUsername } from '../lib/autoUsername';
+import { track } from '../lib/analytics';
 import WackyWednesday from '../components/WackyWednesday';
 import { useSetupTour, makeWelcomeBeaconStep, WELCOME_BEACON_ID, type WelcomeBeaconCtx } from '../components/tutorial/setupTour';
 import { useTour, useTourTarget } from '../providers/TourProvider';
@@ -345,6 +348,10 @@ export default function HomeScreen() {
   // Fire-and-forget: if OS notification permission is undetermined or denied,
   // show the beacon-specific onboarding modal. Called from both beacon-creation
   // paths (toggleBeacon's "Light" branch and saveBeaconOptions).
+  // "Share" for my lit beacon (components/BeaconShareSheet): text it to people who aren't on BeKin,
+  // or share its link. Opens by itself after a light that nobody in the app can see.
+  const [shareOpen, setShareOpen] = useState(false);
+
   const maybePromptForBeaconNotifications = async () => {
     // Never pop over the tour: the tour's own scripted light/save calls this, and its notifications
     // step already handles permission. The modal would otherwise cover the coach-mark.
@@ -894,15 +901,31 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onboarding.loaded]);
 
+  // A new account's username is assigned in the background at first launch (lib/autoUsername). Hold
+  // the auto-shown tour until that has landed (or clearly isn't going to), so setup doesn't open
+  // on a "pick a username" step that finishes itself a second later.
+  const [nameWaitOver, setNameWaitOver] = useState(false);
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid) return;
+    let live = true;
+    Promise.race([ensureAutoUsername(uid), new Promise((r) => setTimeout(r, 4000))]).then(() => {
+      // A beat for the profile listener to deliver the new name.
+      setTimeout(() => live && setNameWaitOver(true), 800);
+    });
+    return () => { live = false; };
+  }, [user?.uid]);
+  const usernameReady = !!profile?.username?.trim() || nameWaitOver;
+
   // Start the auto-shown tour only once Home's content (hence the spotlight targets) is mounted,
   // i.e. after isLit resolves.
   useEffect(() => {
-    if (pendingAutoStart && isLit !== null) {
+    if (pendingAutoStart && isLit !== null && usernameReady) {
       setPendingAutoStart(false);
       beginWelcome(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingAutoStart, isLit]);
+  }, [pendingAutoStart, isLit, usernameReady]);
 
   // Anyone with a friend should have notifications on: otherwise a friend's beacon never reaches
   // them (receivers who skip the tour and never light a beacon were never asked). Once they have a
@@ -1003,6 +1026,15 @@ export default function HomeScreen() {
         message: "Your friends were notified when you first lit it, so they won't get another notification.",
       };
     }
+    // No friends on BeKin yet: nobody in the app will see it, so don't claim "all your friends
+    // will". Lighting it is still worth it, because it can be shared out (the share sheet opens).
+    if (onboarding.loaded && !hasFriend) {
+      return {
+        title: 'Light your beacon?',
+        message:
+          "You don't have friends on BeKin yet, so nobody will see it in the app. Light it, then share it: people can open it and say they're in without the app.",
+      };
+    }
     if (selectedGroupIds.length === 0 && selectedFriendUids.length === 0) {
       return {
         title: 'Light beacon for all friends?',
@@ -1086,6 +1118,7 @@ export default function HomeScreen() {
               const mm = String(sd.getMonth() + 1).padStart(2, '0');
               const dd = String(sd.getDate()).padStart(2, '0');
               const deterministicId = `${user.uid}_${yyyy}${mm}${dd}`;
+              const groupIdsWritten = tourSafeGroupIds();
 
               await setDoc(
                 doc(db, 'Beacons', deterministicId),
@@ -1099,20 +1132,29 @@ export default function HomeScreen() {
                   createdAt: Timestamp.now(),
                   updatedAt: serverTimestamp(),
                   startAt: Timestamp.fromDate(sd),
-                  expiresAt: Timestamp.fromDate(ed),
-                  groupIds: tourSafeGroupIds(), // tour-time lights are ALWAYS test-scoped
+                  // A planned beacon with an open time vote keeps the vote's own end (its last
+                  // option day) and has no single time yet.
+                  ...(myTimePoll?.status === 'open' ? {} : { expiresAt: Timestamp.fromDate(ed), timeHHmm }),
+                  groupIds: groupIdsWritten, // tour-time lights are ALWAYS test-scoped
                   friendUids: tourSafeFriendUids(),
                   // NOTE: allowedUids is intentionally NOT written. It used to embed the owner's
                   // friend uids in this world-readable doc (a friend-graph leak). The server now
                   // resolves the notification audience from groupIds + the private FriendGroups.
-                  timeHHmm,
                 },
                 { merge: true }
               );
 
-              // First-time creator might not have notification permission yet,
-              // prompt them so they actually receive friend RSVPs and comments.
-              maybePromptForBeaconNotifications();
+              const isTestOnly = groupIdsWritten.length === 1 && groupIdsWritten[0] === `${user.uid}__tutorial_test`;
+              track('beacon_lit', { has_friends: hasFriend, test: isTestOnly });
+              if (onboarding.loaded && !hasFriend && !isActive && !isTestOnly) {
+                // Lit with nobody on BeKin to see it: go straight to sharing it out. The
+                // notifications ask waits until the sheet closes (two modals can't stack).
+                setShareOpen(true);
+              } else {
+                // First-time creator might not have notification permission yet,
+                // prompt them so they actually receive friend RSVPs and comments.
+                maybePromptForBeaconNotifications();
+              }
 
               const qDay = query(
                 beaconsRef,
@@ -1145,6 +1187,7 @@ export default function HomeScreen() {
     if (toggleBusyRef.current) return; // an in-flight toggle: ignore rapid re-taps
     // Welcome step 1: a local practice light (see practiceLit). No confirm, no write.
     if (onWelcomeBeacon && !isLit) {
+      if (!practiceLit) track('practice_light');
       setPracticeLit((v) => !v);
       return;
     }
@@ -1241,8 +1284,8 @@ export default function HomeScreen() {
       const ownerName = profile?.displayName || profile?.username || null;
 
       const timeHHmm = buildTimeHHmm(timeHourInput, timeMinuteInput, timeMeridiem);
-      // A time poll replaces the day/time with its options (see openPollBeaconFields), and saving one
-      // LIGHTS the beacon: friends can only vote on a beacon they can see. Turning voting off on an
+      // A time poll replaces the day/time with its options (see openPollBeaconFields). Saving one does
+      // NOT light the beacon (Brian, 2026-11-24): friends vote once he lights it. Turning voting off on an
       // open poll removes it; a decided poll is left alone as the record of what was picked.
       const pollFields = pollOn ? openPollBeaconFields(pollOptions) : null;
       const dropOpenPoll = !pollOn && myTimePoll?.status === 'open' ? { timePoll: deleteField() } : {};
@@ -1279,7 +1322,8 @@ export default function HomeScreen() {
             ownerName,
             message: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
             details: (message || '').trim() || DEFAULT_BEACON_MESSAGE,
-            active: !!pollFields,
+            // Saving is saving: it never lights the beacon, vote or not. Friends vote once it is lit.
+            active: false,
             scheduled: true,
             startAt: Timestamp.fromDate(sd),
             expiresAt: Timestamp.fromDate(ed),
@@ -1365,6 +1409,78 @@ export default function HomeScreen() {
     return `Planned for ${when}. Tap the ${skin.tap.noun} to light it`;
   })();
 
+  // Day chips + time fields. One block, two homes: on its own in the sheet for a plain beacon, or
+  // inside the vote card (voting on), where it composes each option to add.
+  const dayTimeFields = (
+    <>
+                  {/* Day */}
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Day</Text>
+                  <View style={styles.daysWrap}>
+                    {next7Days.map((d) => (
+                      <Pressable
+                        key={d.offset}
+                        onPress={() => { selection(); setDayOffset(d.offset); }}
+                        style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, d.offset === dayOffset && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
+                      >
+                        <Text style={[styles.dayChipText, { color: colors.text }, d.offset === dayOffset && styles.dayChipTextActive]}>
+                          {d.label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  {/* Time (optional) */}
+                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Time</Text>
+                  <View ref={timeRef} collapsable={false} style={styles.timeRow}>
+                    <TextInput
+                      style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      placeholder="--"
+                      placeholderTextColor={colors.subtle}
+                      value={timeHourInput}
+                      onChangeText={(s) => setTimeHourInput(s.replace(/\D/g, '').slice(0, 2))}
+                      onFocus={() => scrollSheetFieldIntoView(timeRef)}
+                      returnKeyType="next"
+                      accessibilityLabel="Hour"                    />
+                    <Text style={[styles.timeColon, { color: colors.text }]}>:</Text>
+                    <TextInput
+                      style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      placeholder="00"
+                      placeholderTextColor={colors.subtle}
+                      value={timeMinuteInput}
+                      onChangeText={(s) => setTimeMinuteInput(s.replace(/\D/g, '').slice(0, 2))}
+                      onFocus={() => scrollSheetFieldIntoView(timeRef)}
+                      returnKeyType="done"
+                      accessibilityLabel="Minute"                    />
+                    <Pressable
+                      onPress={() => { selection(); setTimeMeridiem((m) => (m === 'AM' ? 'PM' : 'AM')); }}
+                      style={[styles.meridiemBtn, { backgroundColor: colors.inputBg, borderColor: colors.border }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Toggle meridiem, currently ${timeMeridiem}`}
+                    >
+                      <Text style={[styles.meridiemTxt, { color: colors.text }]}>{timeMeridiem}</Text>
+                    </Pressable>
+                    {(timeHourInput || timeMinuteInput) ? (
+                      <Pressable
+                        onPress={() => { tap(); setTimeHourInput(''); setTimeMinuteInput(''); }}
+                        hitSlop={8}
+                        style={styles.timeClearBtn}
+                        accessibilityRole="button"
+                        accessibilityLabel="Clear time"
+                      >
+                        <Text style={[styles.timeClearTxt, { color: colors.primary }]}>Clear</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {timeRangeError ? (
+                    <Text style={[styles.timeError, { color: colors.error }]}>{timeRangeError}</Text>
+                  ) : null}
+    </>
+  );
+
   return (
     <>
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={['top', 'left', 'right']}>
@@ -1394,7 +1510,8 @@ export default function HomeScreen() {
             <BeaconBonfireFlame skin={skin} active={fireLit} anchorX={beaconAnchor.x} anchorY={anchorY} measured={beaconAnchor.measured} focused={isFocused} />
           )}
           {(() => {
-            const resumeVisible = onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart;
+            // Never in a dev build: dev accounts and simulators are rarely fully set up, and the bar is noise there.
+            const resumeVisible = !__DEV__ && onboarding.loaded && !onboarding.allDone && !isActive && !pendingAutoStart;
             const banner = (
               <TutorialResumeBanner
                 visible={resumeVisible}
@@ -1461,12 +1578,15 @@ export default function HomeScreen() {
                   [lit] or the caption [unlit], both centered in it. */}
               <View style={styles.beaconActionSlot}>
                 {isLit && myActiveBeacon ? (
-                  // Compact ember-glass pill. Who's going rides inside it, except on skins whose
-                  // scene already shows the people by name (skin.showsPeople, e.g. The Beacons).
+                  // Chat pill + Share, side by side in the same 46pt row (the slot height, and so
+                  // the structure above it, does not change).
+                  <View style={styles.beaconActionRow}>
+                  {/* Compact ember-glass pill. Who's going rides inside it, except on skins whose
+                      scene already shows the people by name (skin.showsPeople, e.g. The Beacons). */}
                   <TouchableOpacity
                     onPress={() => { tap(); setSelectedBeacon(myActiveBeacon); }}
                     activeOpacity={0.8}
-                    style={styles.chatPill}
+                    style={[styles.chatPill, styles.chatPillShared]}
                     accessibilityRole="button"
                     accessibilityLabel={myUnread > 0 ? `Open beacon chat, ${myUnread} unread` : 'Open beacon chat'}
                   >
@@ -1483,6 +1603,19 @@ export default function HomeScreen() {
                       </View>
                     )}
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => { tap(); setShareOpen(true); }}
+                    activeOpacity={0.8}
+                    style={styles.sharePill}
+                    accessibilityRole="button"
+                    accessibilityLabel="Share your beacon"
+                  >
+                    <Ionicons name="share-outline" size={18} color={EMBER_TEXT} />
+                    {/* When the chat pill is carrying names, Share shrinks to its icon so the
+                        names are never cut off. */}
+                    {!skin.showsPeople && myGoing.going.length > 0 ? null : <Text style={styles.chatPillTxt}>Share</Text>}
+                  </TouchableOpacity>
+                  </View>
                 ) : null}
                 {(isLit && myActiveBeacon) || practiceLit ? null : (
                   <Text style={[styles.logHint, { color: skin.tap.tint }]}>{unlitCaption}</Text>
@@ -1613,71 +1746,9 @@ export default function HomeScreen() {
 
                   {/* Day, time, friend groups, and message: wrapped so the tour highlights them together. */}
                   <View>
-                  {/* Day */}
-                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Day</Text>
-                  <View style={styles.daysWrap}>
-                    {next7Days.map((d) => (
-                      <Pressable
-                        key={d.offset}
-                        onPress={() => { selection(); setDayOffset(d.offset); }}
-                        style={[styles.dayChip, { backgroundColor: colors.inputBg, borderColor: colors.border }, d.offset === dayOffset && [styles.dayChipActive, { backgroundColor: colors.primary, borderColor: colors.primary }]]}
-                      >
-                        <Text style={[styles.dayChipText, { color: colors.text }, d.offset === dayOffset && styles.dayChipTextActive]}>
-                          {d.label}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-
-                  {/* Time (optional) */}
-                  <Text style={[styles.modalLabel, { marginTop: 12, color: colors.text }]}>Time</Text>
-                  <View ref={timeRef} collapsable={false} style={styles.timeRow}>
-                    <TextInput
-                      style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
-                      keyboardType="number-pad"
-                      maxLength={2}
-                      placeholder="--"
-                      placeholderTextColor={colors.subtle}
-                      value={timeHourInput}
-                      onChangeText={(s) => setTimeHourInput(s.replace(/\D/g, '').slice(0, 2))}
-                      onFocus={() => scrollSheetFieldIntoView(timeRef)}
-                      returnKeyType="next"
-                      accessibilityLabel="Hour"                    />
-                    <Text style={[styles.timeColon, { color: colors.text }]}>:</Text>
-                    <TextInput
-                      style={[styles.timeInput, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.text }]}
-                      keyboardType="number-pad"
-                      maxLength={2}
-                      placeholder="00"
-                      placeholderTextColor={colors.subtle}
-                      value={timeMinuteInput}
-                      onChangeText={(s) => setTimeMinuteInput(s.replace(/\D/g, '').slice(0, 2))}
-                      onFocus={() => scrollSheetFieldIntoView(timeRef)}
-                      returnKeyType="done"
-                      accessibilityLabel="Minute"                    />
-                    <Pressable
-                      onPress={() => { selection(); setTimeMeridiem((m) => (m === 'AM' ? 'PM' : 'AM')); }}
-                      style={[styles.meridiemBtn, { backgroundColor: colors.inputBg, borderColor: colors.border }]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Toggle meridiem, currently ${timeMeridiem}`}
-                    >
-                      <Text style={[styles.meridiemTxt, { color: colors.text }]}>{timeMeridiem}</Text>
-                    </Pressable>
-                    {(timeHourInput || timeMinuteInput) ? (
-                      <Pressable
-                        onPress={() => { tap(); setTimeHourInput(''); setTimeMinuteInput(''); }}
-                        hitSlop={8}
-                        style={styles.timeClearBtn}
-                        accessibilityRole="button"
-                        accessibilityLabel="Clear time"
-                      >
-                        <Text style={[styles.timeClearTxt, { color: colors.primary }]}>Clear</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                  {timeRangeError ? (
-                    <Text style={[styles.timeError, { color: colors.error }]}>{timeRangeError}</Text>
-                  ) : null}
+                  {/* Day + time. With voting on they move into the vote card below, where they
+                      compose each option. */}
+                  {pollOn ? null : dayTimeFields}
 
                   {/* Group scheduling: offer several day/time options and let friends vote in the chat.
                       With it on, the Day chips + Time fields above compose the option to add. */}
@@ -1688,7 +1759,7 @@ export default function HomeScreen() {
                         <Text style={[styles.pollTitle, { color: colors.text }]}>Let friends vote on the time</Text>
                         <Text style={[styles.pollSub, { color: colors.subtle }]}>
                           {pollOn
-                            ? 'Pick a day and time above, then add it. Friends vote in the chat and you lock one in.'
+                            ? 'Add each day and time you want to offer. Friends vote in the chat and you lock one in.'
                             : "Not sure when? Offer a few options."}
                         </Text>
                       </View>
@@ -1721,27 +1792,33 @@ export default function HomeScreen() {
                           </View>
                         )}
                         {pollOptions.length < MAX_TIME_OPTIONS ? (
-                          <Pressable
-                            onPress={addPollOption}
-                            style={({ pressed }) => [styles.pollAddBtn, { borderColor: colors.primary }, pressed && { opacity: 0.8 }]}
-                            accessibilityRole="button"
-                          >
-                            <Ionicons name="add-circle" size={18} color={colors.primary} />
-                            <Text style={[styles.pollAddTxt, { color: colors.primary }]} numberOfLines={1}>
-                              {(() => {
-                                const o = composedOption();
-                                if (!o) return 'Add this time';
-                                // Already in the list: say so instead of offering a button that just buzzes.
-                                if (pollOptions.some((x) => sameOption(x, o))) return 'Added. Pick another day or time';
-                                return `Add ${optionLabel({ id: '', ...o })}`;
-                              })()}
-                            </Text>
-                          </Pressable>
+                          <>
+                            {dayTimeFields}
+                            {(() => {
+                              const o = composedOption();
+                              const dup = !!o && pollOptions.some((x) => sameOption(x, o));
+                              const off = !o || dup;
+                              return (
+                                <Pressable
+                                  onPress={addPollOption}
+                                  disabled={off}
+                                  style={({ pressed }) => [styles.pollAddBtn, { borderColor: off ? colors.border : colors.primary }, pressed && { opacity: 0.8 }]}
+                                  accessibilityRole="button"
+                                  accessibilityState={{ disabled: off }}
+                                >
+                                  {off ? null : <Ionicons name="add-circle" size={18} color={colors.primary} />}
+                                  <Text style={[styles.pollAddTxt, { color: off ? colors.subtle : colors.primary }]} numberOfLines={1}>
+                                    {!o ? 'Add an hour, or clear the time' : dup ? `${optionLabel({ id: '', ...o })} is on the list` : `Add ${optionLabel({ id: '', ...o })}`}
+                                  </Text>
+                                </Pressable>
+                              );
+                            })()}
+                          </>
                         ) : null}
                         <Text style={[styles.pollHint, { color: colors.subtle }]}>
                           {pollOptions.length < 2
-                            ? `Add at least ${2 - pollOptions.length} more. Saving lights your beacon so friends can vote.`
-                            : 'Saving lights your beacon so friends can vote.'}
+                            ? `Add at least ${2 - pollOptions.length} more. Friends vote once your beacon is lit.`
+                            : 'Friends vote once your beacon is lit.'}
                         </Text>
                       </>
                     ) : myTimePoll?.status === 'decided' ? (
@@ -1808,6 +1885,14 @@ export default function HomeScreen() {
                       </Pressable>
                     </View>
                   )}
+                  {/* Everyone they could invite, in one place: people who are not on BeKin get it by text
+                      from Share, which exists once the beacon is lit. */}
+                  <View style={styles.offAppRow}>
+                    <Ionicons name="share-outline" size={15} color={colors.subtle} />
+                    <Text style={[styles.offAppTxt, { color: colors.subtle }]}>
+                      Not on BeKin? Once your beacon is lit, tap Share to text them.
+                    </Text>
+                  </View>
                   {!loadingGroups && groups.length === 0 && selectedFriendUids.length === 0 && (
                     <Text style={{ color: colors.subtle, marginTop: 6, marginBottom: 6 }}>
                       {online ? 'No groups yet. Create some in Friends, or tap + to pick friends.' : "Can't load groups. No internet connection."}
@@ -1941,6 +2026,26 @@ export default function HomeScreen() {
       {!optionsRendered && <BottomBar />}
 
       {/* First-time beacon notification onboarding */}
+      <BeaconShareSheet
+        visible={shareOpen && !!myActiveBeacon && isLit === true}
+        onClose={() => {
+          setShareOpen(false);
+          // The ask that was held back while the sheet was up (see the light path).
+          maybePromptForBeaconNotifications();
+        }}
+        beacon={
+          myActiveBeacon
+            ? {
+                id: myActiveBeacon.id,
+                ownerName: profile?.displayName || profile?.username || '',
+                startAt: myActiveBeacon.startAt,
+                timeHHmm: myActiveBeacon.timeHHmm ?? null,
+                message: myActiveBeacon.message,
+              }
+            : null
+        }
+        noFriendsYet={onboarding.loaded && !hasFriend}
+      />
       <StokeModal
         visible={stokeOpen}
         beaconId={myActiveBeacon?.id ?? null}
@@ -2159,6 +2264,21 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(253,186,116,0.55)',
   },
   chatPillTxt: { color: EMBER_TEXT, fontSize: 16, fontWeight: '700', flexShrink: 1 },
+  // Chat + Share share one row: the chat pill gives up its wide minimum and flexes instead.
+  beaconActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, maxWidth: '96%' },
+  chatPillShared: { minWidth: 150, maxWidth: undefined, flexShrink: 1 },
+  sharePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 46,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    backgroundColor: 'rgba(15,23,42,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(253,186,116,0.55)',
+  },
   chatPillGoing: { fontWeight: '500' },
   // Unread count: a solid ember dot, so "something to see" reads at a glance against the glass.
   unreadBadge: {
@@ -2205,6 +2325,8 @@ const styles = StyleSheet.create({
   },
   dayChipActive: { backgroundColor: '#2F6FED', borderColor: '#2F6FED' },
   // The "+" (add friends) chip: same height as a text chip, squared off so it reads as a button.
+  offAppRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  offAppTxt: { fontSize: 13, flexShrink: 1 },
   plusChip: { paddingHorizontal: 9, paddingVertical: 5, alignItems: 'center', justifyContent: 'center' },
   // Style-picker chips: FIXED width (3 per row) so selection (bold text) never reflows the grid.
   skinChip: { width: '31.5%', alignItems: 'center', paddingHorizontal: 4 },

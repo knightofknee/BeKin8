@@ -32,6 +32,7 @@
 import { getApps, getApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from 'firebase-functions/v2/firestore';
+import { markOnce } from './funnel.js';
 import { logger } from 'firebase-functions';
 
 const app = getApps().length ? getApp() : initializeApp();
@@ -280,7 +281,11 @@ export const onFriendEdgeCreatedSyncAudience = onDocumentCreated(
   'FriendEdges/{edgeId}',
   async (event) => {
     const pair = edgeUids(event.data?.data());
-    if (pair) await handleEdgeChange(pair, 'friendship added');
+    if (pair) {
+      // Funnel stamp: when each side got their first friend (see funnel.ts).
+      await Promise.all(pair.map((u) => markOnce(u, 'firstFriendAt')));
+      await handleEdgeChange(pair, 'friendship added');
+    }
   }
 );
 

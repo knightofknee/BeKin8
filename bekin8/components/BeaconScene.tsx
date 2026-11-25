@@ -8,7 +8,9 @@ import React from 'react';
 import BeaconSeaScene from './BeaconSeaScene';
 import LakeshoreScene from './scenes/LakeshoreScene';
 import CampfireScene from './scenes/CampfireScene';
-import OldGuardScene from './scenes/OldGuardScene';
+import StainedGlassScene from './scenes/StainedGlassScene';
+import CastleScene from './scenes/CastleScene';
+import { castleWallArt } from './scenes/paintedArt';
 import BonfireScene from './scenes/BonfireScene';
 import BeaconsScene, { type ScenePerson } from './scenes/BeaconsScene';
 import AuroraScene from './scenes/AuroraScene';
@@ -38,8 +40,10 @@ function BeaconScene(props: BeaconSceneProps) {
       return <LakeshoreScene {...props} />;
     case 'logs':
       return <CampfireScene {...props} />;
-    case 'brazier':
-      return <OldGuardScene {...props} />;
+    case 'stainedglass':
+      return <StainedGlassScene {...props} />;
+    case 'castlewall':
+      return <CastleScene art={castleWallArt} {...props} />;
     case 'bonfire':
       return <BonfireScene {...props} />;
     case 'mountains':

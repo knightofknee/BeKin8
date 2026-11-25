@@ -1,6 +1,11 @@
 // app/create-post.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ComplaintPanel, ComplaintReview } from '../components/ucs/ComplaintMode';
+import { Celebration } from '../components/ucs/Rudy';
+import { MIN_WORDS, readComplaint } from '../lib/ucs/read';
+import { makeNameShuffler, ucsAnalyze, ucsName, ucsSubmit, type Analysis, type ComplaintVisibility } from '../lib/ucs/api';
 import {
+  Switch,
   View,
   Text,
   TextInput,
@@ -19,7 +24,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase.config';
-import { collection, addDoc, doc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, doc, getCountFromServer, onSnapshot, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import BottomBar from '@/components/BottomBar';
 import { SCREEN_PAD } from '@/components/ui/layout';
@@ -120,6 +125,44 @@ export default function CreatePostScreen() {
     availableDay: string;
   } | null>(null);
   const [checkingLimit, setCheckingLimit] = useState(true);
+
+  // COMPLAINT MODE (components/ucs/ComplaintMode): the post is also recorded on the Universal
+  // Complaint System, and its author picks how much of it friends see here.
+  const [complaintOn, setComplaintOn] = useState(false);
+  const [notSure, setNotSure] = useState(false);
+  const [visibility, setVisibility] = useState<ComplaintVisibility>('profile');
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [postingComplaint, setPostingComplaint] = useState(false);
+  const [celebrate, setCelebrate] = useState<{ detail: string; postId: string | null } | null>(null);
+  // Their random complaint name, fetched the first time complaint mode is turned on.
+  const [complaintName, setComplaintName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!complaintOn || complaintName) return;
+    let live = true;
+    ucsName().then((n) => { if (live && n) setComplaintName(n); }).catch(() => {});
+    return () => { live = false; };
+  }, [complaintOn, complaintName]);
+  const complaintNameRef = useRef<string | null>(null);
+  complaintNameRef.current = complaintName;
+  const shuffleName = useMemo(
+    () => makeNameShuffler(() => complaintNameRef.current, setComplaintName, (msg) => Alert.alert("Couldn't change your name", msg)),
+    []
+  );
+  // The posting-pace line is for newcomers: once they have posted 3 times they know it.
+  const [knowsPace, setKnowsPace] = useState(false);
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    getCountFromServer(query(collection(db, 'Posts'), where('author', '==', uid)))
+      .then((c) => setKnowsPace(c.data().count >= 3))
+      .catch(() => {});
+  }, []);
+  // UCS reads one piece of text: the title leads (it usually names who it is about).
+  const complaintText = useMemo(() => `${title.trim()}\n${content.trim()}`.trim().slice(0, 4000), [title, content]);
+  const read = useMemo(() => readComplaint(complaintText, { notSure }), [complaintText, notSure]);
+  const complaintReady =
+    read.words >= MIN_WORDS && (read.quiet || (read.goals.who && read.goals.what && read.goals.better));
   const { startTour } = useTour();
   const limitTarget = useTourTarget('post-limit');
   const bonusTarget = useTourTarget('post-bonus');
@@ -264,12 +307,12 @@ export default function CreatePostScreen() {
   };
 
   // ── Write post to Firestore ───────────────────────────────────────────────
-  const writePost = async () => {
+  const writePost = async (extra: Record<string, unknown> = {}, quiet = false): Promise<string | null> => {
     const user = auth.currentUser;
     if (!user) {
       Alert.alert('Not signed in', 'Please sign in to create a post.');
       router.replace('/');
-      return;
+      return null;
     }
     // Trim content so whitespace-only padding doesn't end up persisted.
     const trimmedContent = content.trim();
@@ -286,15 +329,96 @@ export default function CreatePostScreen() {
       timestamp: Date.now(),
       timestampServer: serverTimestamp(),
       tags,
+      ...extra,
     });
     await AsyncStorage.removeItem(DRAFT_KEY);
     setTitle('');
     setLink('');
     setContent('');
+    if (quiet) return ref.id;
     Alert.alert('Posted!', 'Your post is live.');
     // Land on the feed scrolled to the just-created post. The feed reads scrollToPostId
     // and forces "show mine" on, so the user's own post isn't hidden by the default filter.
     router.push({ pathname: '/feed', params: { scrollToPostId: ref.id } });
+    return ref.id;
+  };
+
+  // ── Complaint mode ────────────────────────────────────────────────────────
+  // Next: the complaint system's model reads it. Nothing is posted anywhere yet.
+  const handleComplaintNext = async () => {
+    press();
+    if (analyzing || !auth.currentUser) return;
+    if (!validateFields()) return;
+    // Only a complaint going to friends' feeds spends a post: say so before the wait.
+    if (visibility === 'feed' && (rateLimitInfo?.limited ?? false) && bonusPosts <= 0) {
+      Alert.alert('No posts left right now', 'Pick "My profile only" to post it without using one, or wait for your next post.');
+      return;
+    }
+    Keyboard.dismiss();
+    setAnalyzing(true);
+    try {
+      setAnalysis(await ucsAnalyze(complaintText, notSure));
+    } catch (e: any) {
+      Alert.alert("Couldn't check it", e?.message ?? 'Try again in a moment.');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  // Post it: on the complaint system first (it can still refuse), then as a BeKin post unless the
+  // author hid it from friends.
+  const handleComplaintPost = async (o: { useRewrite: boolean; removePII: boolean; keepPoints: number[]; acceptTerms: boolean }) => {
+    press();
+    if (postingComplaint || !analysis) return;
+    setPostingComplaint(true);
+    try {
+      const limited = rateLimitInfo?.limited ?? false;
+      if (visibility === 'feed' && !limited) {
+        // Not limited: this check spends nothing, it only catches the daily cap before we record.
+        const ok = (await checkPostAllowed({ useBonus: false })).data;
+        if (!ok.allowed) {
+          Alert.alert('No posts left right now', 'Go back and pick "My profile only" to post it without using one.');
+          return;
+        }
+      }
+      const out = await ucsSubmit({ draftId: analysis.draftId, ...o, visibility });
+      let postId: string | null = null;
+      // Kept for the author under users/{uid}/complaints (owner-only): what they wrote, and which
+      // BeKin post carries it, so their profile can list every complaint and hide one later.
+      const mine = { title: title.trim(), content: content.trim(), link: link.trim() || null, spice: analysis.result.spice ?? 1 };
+      if (visibility === 'hidden') {
+        await AsyncStorage.removeItem(DRAFT_KEY);
+        setTitle(''); setLink(''); setContent('');
+      } else {
+        const spend = visibility === 'feed' && limited ? (await checkPostAllowed({ useBonus: true })).data : { allowed: true };
+        if (spend.allowed) {
+          postId = await writePost(
+            { complaint: true, spice: analysis.result.spice ?? 1, ...(visibility === 'profile' ? { feedHidden: true } : {}) },
+            true
+          );
+        }
+      }
+      if (out.submissionId && auth.currentUser) {
+        await setDoc(
+          doc(db, 'users', auth.currentUser.uid, 'complaints', out.submissionId),
+          { ...mine, postId, visibility: postId ? visibility : 'hidden' },
+          { merge: true }
+        ).catch(() => {});
+      }
+      setAnalysis(null);
+      setComplaintOn(false);
+      setNotSure(false);
+      setCelebrate({
+        detail:
+          (out.joined > 0 ? 'It joined an issue other people have too.' : 'You started a new issue.') +
+          (visibility === 'hidden' ? ' Nobody on BeKin sees it.' : postId ? '' : ' It is on the record, but you were out of BeKin posts, so friends will not see it.'),
+        postId,
+      });
+    } catch (e: any) {
+      Alert.alert("Couldn't post it", (e?.message ?? 'Try again in a moment.') + ' Your draft is still here.');
+    } finally {
+      setPostingComplaint(false);
+    }
   };
 
   // ── Normal submit ─────────────────────────────────────────────────────────
@@ -395,12 +519,33 @@ export default function CreatePostScreen() {
               <TutorialButton onPress={startPostTour} style={styles.headerHelp} />
             </View>
             <View ref={limitTarget} collapsable={false}>
-            <Text style={[styles.rateNote, { color: colors.subtle }]}>
-              1 post every other day · Bank up to 3 bonus posts by taking days off
-            </Text>
+            {knowsPace ? null : (
+              <Text style={[styles.rateNote, { color: colors.subtle }]}>
+                1 post every other day · Bank up to 3 bonus posts by taking days off
+              </Text>
+            )}
             </View>
 
             <View style={[styles.form, { flex: 1 }]}>
+              {/* Two kinds of post: something nice, or a complaint. A complaint gets the Universal
+                  Complaint System's help (Rudy below) and its own choices about who sees it. */}
+              <View style={[styles.complaintRow, { borderColor: complaintOn ? '#E0452B' : colors.border, backgroundColor: colors.inputBg }]}>
+                <Text style={styles.complaintEmoji}>🌶️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.complaintTitle, { color: colors.text }]}>Post as a complaint</Text>
+                  <Text style={[styles.complaintSub, { color: colors.subtle }]}>
+                    Universal Complaint System. No limit unless it goes to friends&apos; feeds.
+                  </Text>
+                </View>
+                <Switch
+                  value={complaintOn}
+                  onValueChange={(v) => { tap(); setComplaintOn(v); }}
+                  trackColor={{ false: colors.border, true: '#E0452B' }}
+                  thumbColor="#fff"
+                  accessibilityLabel="Post as a complaint"
+                />
+              </View>
+
               <FloatField
                 label="Title"
                 value={title}
@@ -460,8 +605,35 @@ export default function CreatePostScreen() {
                 </View>
               </View>
 
+              {complaintOn ? (
+                <>
+                  <ComplaintPanel
+                    read={read}
+                    notSure={notSure}
+                    onNotSure={() => setNotSure((n) => !n)}
+                    visibility={visibility}
+                    onVisibility={setVisibility}
+                    reading={analyzing}
+                    name={complaintName}
+                    onShuffle={shuffleName}
+                  />
+                  <Pressable
+                    onPress={handleComplaintNext}
+                    disabled={!complaintReady || analyzing}
+                    style={({ pressed }) => [
+                      styles.submitBtn,
+                      { backgroundColor: '#E0452B', shadowColor: '#E0452B' },
+                      (!complaintReady || analyzing) && [styles.submitBtnDisabled, { backgroundColor: colors.border }],
+                      pressed && { opacity: 0.88 },
+                    ]}
+                  >
+                    {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitTxt}>Next</Text>}
+                  </Pressable>
+                </>
+              ) : null}
+
               {/* Primary action: full-width, centered, nothing riding beside it. */}
-              <Pressable
+              {complaintOn ? null : <Pressable
                 onPress={handleSubmit}
                 disabled={submitting || isLimited || checkingLimit}
                 style={({ pressed }) => [
@@ -475,17 +647,17 @@ export default function CreatePostScreen() {
                   ? <ActivityIndicator color="#fff" />
                   : <Text style={styles.submitTxt}>Post</Text>
                 }
-              </Pressable>
+              </Pressable>}
 
               {/* Available day message when rate-limited */}
-              {isLimited && (
+              {isLimited && !complaintOn && (
                 <Text style={[styles.availableText, { color: colors.subtle }]}>
                   Next free post available: {availableDay}
                 </Text>
               )}
 
               {/* Bonus post button, shown when rate-limited */}
-              {isLimited && (
+              {isLimited && !complaintOn && (
                 <Pressable
                   onPress={handleBonusSubmit}
                   disabled={submitting || bonusPosts <= 0}
@@ -512,6 +684,27 @@ export default function CreatePostScreen() {
         </KeyboardAvoidingView>
 
         <BottomBar />
+
+        {analysis ? (
+          <ComplaintReview
+            analysis={analysis}
+            text={complaintText}
+            posting={postingComplaint}
+            onBack={() => setAnalysis(null)}
+            onPostNormally={() => { setAnalysis(null); setComplaintOn(false); }}
+            onPost={handleComplaintPost}
+          />
+        ) : null}
+        <Celebration
+          visible={!!celebrate}
+          detail={celebrate?.detail ?? ''}
+          onDone={() => {
+            const id = celebrate?.postId ?? null;
+            setCelebrate(null);
+            if (id) router.push({ pathname: '/feed', params: { scrollToPostId: id } });
+            else router.push('/feed');
+          }}
+        />
 
         {kbVisible && (
           <Pressable
@@ -571,6 +764,10 @@ const styles = StyleSheet.create({
   counterExceeded: { fontSize: 12, fontWeight: '600' },
 
   // ── submit ──
+  complaintRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10 },
+  complaintEmoji: { fontSize: 22 },
+  complaintTitle: { fontSize: 15, fontWeight: '800' },
+  complaintSub: { fontSize: 12, marginTop: 1 },
   submitBtn: {
     borderRadius: 14,
     paddingVertical: 15,

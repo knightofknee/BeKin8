@@ -62,7 +62,10 @@ export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPos
       .where('author', '==', uid)
       .where('timestampServer', '>=', Timestamp.fromMillis(startToday))
       .get();
-    const todayCount = todaySnap.size;
+    // A complaint kept out of friends' feeds (create-post complaint mode, `feedHidden`) is not a
+    // post in the rationed sense: nobody's feed carries it, so it spends nothing.
+    const rationed = (snap: FirebaseFirestore.QuerySnapshot) => snap.docs.filter((d) => d.get('feedHidden') !== true).length;
+    const todayCount = rationed(todaySnap);
 
     // Count posts yesterday
     const yesterdaySnap = await db
@@ -71,7 +74,7 @@ export const checkPostAllowed = onCall<CheckPostAllowedRequest, Promise<CheckPos
       .where('timestampServer', '>=', Timestamp.fromMillis(startYesterday))
       .where('timestampServer', '<', Timestamp.fromMillis(startToday))
       .get();
-    const yesterdayCount = yesterdaySnap.size;
+    const yesterdayCount = rationed(yesterdaySnap);
 
     // ── 5/day hard cap ────────────────────────────────────────────────────────
     if (todayCount >= 5) {

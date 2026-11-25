@@ -52,6 +52,15 @@ export default function FriendsProfileAndInvite({
   // In-person friending: the friend link rendered as a QR. A small tile sits beside the Share
   // button; tapping it opens the full-size code (see the Modal at the bottom).
   const [qrOpen, setQrOpen] = useState(false);
+  // A username is assigned at signup, so changing it is an edit: the pencil swaps the name for the
+  // same input the first-time setter uses. Closes itself when the saved name changes.
+  const [editingName, setEditingName] = useState(false);
+  React.useEffect(() => {
+    setEditingName(false);
+  }, [currentUsername]);
+  React.useEffect(() => {
+    if (message.type === "success") setEditingName(false); // re-saving the same name closes it too
+  }, [message.type]);
   const inviteUrl = inviteCode ? buildInviteUrl(inviteCode) : null;
   // Setup-tour targets: "Pick a username" spotlights the username block; "Add a friend" the whole card.
   const usernameTarget = useTourTarget("friends-username");
@@ -60,13 +69,23 @@ export default function FriendsProfileAndInvite({
     <View ref={addCardTarget} collapsable={false} style={[styles.card, { backgroundColor: colors.card }]}>
       <View>
       {/* Username + display name */}
-      {currentUsername ? (
+      {currentUsername && !editingName ? (
         <>
           <View style={styles.usernameRow}>
-            <View ref={usernameTarget} collapsable={false}>
+            <Pressable
+              ref={usernameTarget}
+              collapsable={false}
+              onPress={() => { tap(); onChangeUsername(currentUsername); setEditingName(true); }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={`Your username is ${currentUsername}. Tap to change it.`}
+            >
               <Text style={[styles.label, { color: colors.text, marginBottom: 4 }]}>Your username</Text>
-              <Text style={[styles.rowTitle, { color: colors.text }]}>{currentUsername}</Text>
-            </View>
+              <Text style={[styles.rowTitle, { color: colors.text }]}>
+                {currentUsername}
+                <Text style={{ color: colors.primary, fontSize: 13, fontWeight: "600" }}>{"  Edit"}</Text>
+              </Text>
+            </Pressable>
             <Pressable onPress={() => { press(); onPressDisplayName(); }} hitSlop={8}>
               <Text style={[styles.label, { color: colors.text, marginBottom: 4 }]}>Display name</Text>
               <Text style={[styles.displayNameLink, { color: colors.primary }]} numberOfLines={1} ellipsizeMode="tail">
@@ -77,7 +96,14 @@ export default function FriendsProfileAndInvite({
         </>
       ) : (
         <View ref={usernameTarget} collapsable={false}>
-          <Text style={[styles.label, { color: colors.text }]}>Set your username</Text>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={[styles.label, { color: colors.text }]}>{currentUsername ? "Change your username" : "Set your username"}</Text>
+            {currentUsername ? (
+              <Pressable onPress={() => { tap(); setEditingName(false); }} hitSlop={10}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </Pressable>
+            ) : null}
+          </View>
           <View style={styles.inputRow}>
             <TextInput
               value={usernameInput}
@@ -121,7 +147,7 @@ export default function FriendsProfileAndInvite({
           <View collapsable={false} style={[styles.cardInner, { marginTop: 14 }]}>
             <Text style={[styles.label, { color: colors.text }]}>Invite friends</Text>
             <Text style={[styles.subtle, { color: colors.subtle, marginBottom: 8 }]}>
-              Share your link. When a friend taps it, you’re instantly connected. No accept needed. Works for new signups too.
+Share your friend link. When someone taps it, you’re instantly connected, even if they’re new to BeKin.
             </Text>
             {/* Share button + a small QR tile (the SAME link, drawn as a code for in-person adds:
                 a friend points their camera at it and the universal link does the rest). QR stays
@@ -132,7 +158,7 @@ export default function FriendsProfileAndInvite({
                 onPress={() => { press(); onShareInvite(); }}
                 style={[styles.btn, { flex: 1, opacity: inviteCode ? 1 : 0.5, backgroundColor: colors.primary }]}
               >
-                <Text style={styles.btnText}>Share friend link</Text>
+                <Text style={styles.btnText}>Share</Text>
               </Pressable>
               {inviteUrl ? (
                 <Pressable

@@ -6,13 +6,13 @@
 // fire to the full-screen Skia flame anchored at skin.origin.
 import React from 'react';
 import DriftwoodPyre from './structures/DriftwoodPyre';
-import CampfireLogs from './structures/CampfireLogs';
-import GuardBrazier from './structures/GuardBrazier';
+import PaintedSprite from './structures/PaintedSprite';
+import { campfireArt, castleWallArt, smokeArt } from './scenes/paintedArt';
+import GlassWatchfire from './structures/GlassWatchfire';
 import BonfirePyre from './structures/BonfirePyre';
 import BeaconPyre from './structures/BeaconPyre';
 import AuroraStone from './structures/AuroraStone';
 import SignalLanterns from './structures/SignalLanterns';
-import SignalFireRing from './structures/SignalFireRing';
 import FireworkRocket from './structures/FireworkRocket';
 import LanternStand from './structures/LanternStand';
 import RooftopSearchlight from './structures/RooftopSearchlight';
@@ -27,9 +27,11 @@ function BeaconStructure({ skin, size = 180, lit = false, focused = true }: Prop
     case 'lakeshore':
       return <DriftwoodPyre size={size} lit={lit} focused={focused} />;
     case 'logs':
-      return <CampfireLogs size={size} lit={lit} focused={focused} />;
-    case 'brazier':
-      return <GuardBrazier size={size} lit={lit} focused={focused} />;
+      return <PaintedSprite art={campfireArt} size={size} lit={lit} focused={focused} />;
+    case 'stainedglass':
+      return <GlassWatchfire size={size} lit={lit} focused={focused} />;
+    case 'castlewall':
+      return <PaintedSprite art={castleWallArt} size={size} lit={lit} focused={focused} />;
     case 'bonfire':
       return <BonfirePyre size={size} lit={lit} focused={focused} />;
     case 'mountains':
@@ -50,7 +52,7 @@ function BeaconStructure({ skin, size = 180, lit = false, focused = true }: Prop
       return <StormRod size={size} lit={lit} focused={focused} />;
     case 'smokesignal':
     default:
-      return <SignalFireRing size={size} lit={lit} focused={focused} />;
+      return <PaintedSprite art={smokeArt} size={size} lit={lit} focused={focused} />;
   }
 }
 

@@ -4,9 +4,10 @@
 //   WELCOME (Home only, auto-shown once, replayed by the ? button)
 //     1. "This is your beacon"  tap it for a PRACTICE light (local only, nothing is written)
 //     2. "Plan it out"          points at Beacon options
-//     3. "N quick things"       the setup checklist, only if something is left
 //   SETUP (one step per unfinished item; also what the setup bar starts, from any screen)
-//     username -> add a friend -> notifications
+//     add a friend -> notifications
+//     (A username is assigned automatically at signup, see lib/autoUsername, so "pick a username"
+//     only ever shows if that assignment failed, e.g. the first launch was offline.)
 //     Each step is the real control under a spotlight. Doing the thing completes the step on its
 //     own: the callout flips to a check + "Next up", a success haptic fires, and it moves on.
 //     "Skip for now" moves past it; "Later" closes the tour and the bar keeps what's left.
@@ -29,6 +30,8 @@ import { ensureNotifyPermission, emitNotifyPermissionChange, onNotifyPermissionC
 import { syncPushTokenIfGranted } from "../../lib/push";
 import { enableDefaultNotifyFlags } from "../../lib/rsvp";
 import { addBrianAsFriend } from "../../lib/addBrian";
+import { shareMyFriendLink } from "../../lib/shareInvite";
+import { track } from "../../lib/analytics";
 import { setSeen } from "../../lib/tutorialFlags";
 import { success, tap } from "../../utils/haptics";
 
@@ -67,28 +70,6 @@ function DoneBody({ after }: { after: OnboardingStepKey }) {
           ? `Next up: ${next.nextLabel.toLowerCase()}.`
           : "That's everything on the list."}
       </Text>
-    </View>
-  );
-}
-
-// The setup checklist, live: items check off as they're done. Same order + wording as the bar.
-function Checklist() {
-  const { colors } = useTheme();
-  const { steps } = useOnboarding();
-  return (
-    <View style={s.todoList}>
-      {steps.map((st) => (
-        <View key={st.key} style={s.todoRow}>
-          <Ionicons
-            name={st.done ? "checkmark-circle" : "ellipse-outline"}
-            size={22}
-            color={st.done ? colors.success : colors.subtle}
-          />
-          <Text style={[s.todoTxt, { color: st.done ? colors.subtle : colors.text }, st.done && s.todoDone]}>
-            {st.label}
-          </Text>
-        </View>
-      ))}
     </View>
   );
 }
@@ -169,39 +150,24 @@ function makeWelcomeOptionsStep(isLast: boolean): TourStep {
   };
 }
 
-function SetupIntroBody() {
-  const { colors } = useTheme();
-  return (
-    <View>
-      <Checklist />
-      <Text style={[s.note, { color: colors.subtle }]}>
-        Skip any of them and they&apos;ll wait for you in the bar at the top of Home.
-      </Text>
-    </View>
-  );
-}
-
-function makeSetupIntroStep(remaining: number): TourStep {
-  const words = ["", "One quick thing", "Two quick things", "Three quick things"];
-  return {
-    id: "welcome-setup",
-    eyebrow: "LET'S GET YOU SET UP",
-    title: `${words[remaining] ?? `${remaining} quick things`} and you're in`,
-    body: <SetupIntroBody />,
-    placement: "center",
-    cta: "Let's go",
-    onEnter: goHome,
-  };
-}
-
 // ---------- setup steps ----------
 
 function FriendStepBody() {
   const { colors } = useTheme();
-  const { profile } = useAuth();
+  const { user, profile } = useAuth();
   const hasUsername = !!profile?.username?.trim();
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const share = async () => {
+    if (sharing || !user?.uid) return;
+    tap();
+    setErr(null);
+    setSharing(true);
+    const res = await shareMyFriendLink(user.uid, null, "tour");
+    setSharing(false);
+    if (res === "no-code") setErr("Couldn't get your link. Check your connection and try again.");
+  };
   const addBrian = async () => {
     if (busy) return;
     tap();
@@ -218,28 +184,45 @@ function FriendStepBody() {
     <View>
       <Text style={[s.body, { color: colors.text }]}>
         {hasUsername
-          ? "Share your friend link: whoever taps it is connected with you instantly. Or send a request to their username."
+          ? "Send your friend link to someone you'd actually hang out with. When they tap it, you're connected, even if they're new to BeKin."
           : "You'll need a username first, so pick one at the top. Then share your friend link."}
       </Text>
+      {/* Sharing with a real friend is the point; it comes first. */}
       <Pressable
-        onPress={addBrian}
-        disabled={!hasUsername || busy}
+        onPress={share}
+        disabled={!hasUsername || sharing}
         style={({ pressed }) => [
           s.actionBtn,
           { backgroundColor: colors.primary },
-          (!hasUsername || busy) && { opacity: 0.5 },
+          (!hasUsername || sharing) && { opacity: 0.5 },
           pressed && { opacity: 0.8 },
         ]}
         accessibilityRole="button"
-        accessibilityLabel="Add Brian, the creator of BeKin, as your first friend"
+        accessibilityLabel="Share your friend link"
       >
-        {busy ? (
+        {sharing ? (
           <ActivityIndicator color="#fff" />
         ) : (
           <>
-            <Ionicons name="person-add" size={17} color="#fff" />
-            <Text style={[s.actionTxt, { color: "#fff" }]}>Nobody yet? Add Brian, BeKin&apos;s creator</Text>
+            <Ionicons name="share-outline" size={18} color="#fff" />
+            <Text style={[s.actionTxt, { color: "#fff" }]}>Share</Text>
           </>
+        )}
+      </Pressable>
+      {/* Brian is the extra: someone to see content from while nobody else is here yet. */}
+      <Pressable
+        onPress={addBrian}
+        disabled={!hasUsername || busy}
+        style={({ pressed }) => [s.quietBtn, (!hasUsername || busy) && { opacity: 0.5 }, pressed && { opacity: 0.7 }]}
+        accessibilityRole="button"
+        accessibilityLabel="Add Brian, the creator of BeKin, as a friend"
+      >
+        {busy ? (
+          <ActivityIndicator color={colors.primary} />
+        ) : (
+          <Text style={[s.quietTxt, { color: colors.subtle }]}>
+            Nobody around yet? <Text style={{ color: colors.primary, fontWeight: "700" }}>Add Brian, BeKin&apos;s creator</Text>
+          </Text>
         )}
       </Pressable>
       {err ? <Text style={[s.note, { color: colors.error }]}>{err}</Text> : null}
@@ -258,6 +241,7 @@ async function turnOnNotifications(): Promise<void> {
       if (granted) {
         try { await syncPushTokenIfGranted(); } catch { /* ignore */ }
       }
+      track("notif_permission", { granted, source: "tour" });
       emitNotifyPermissionChange(); // a denial also resolves the step (it can't be asked again)
     } else if (!granted) {
       granted = await ensureNotifyPermission();
@@ -317,8 +301,13 @@ function NotifStepBody() {
   );
 }
 
+// Where each mission sits among the ones actually being shown this run ("SETUP · 1 OF 2"), set
+// when the steps are built so the live done-state swap (SetupTourDriver) keeps the same numbering.
+const shownAt = new Map<string, { pos: number; total: number }>();
+
 function makeMissionStep(m: Mission, done: boolean): TourStep {
-  const eyebrow = `SETUP · ${m.n} OF ${MISSIONS.length}`;
+  const at = shownAt.get(m.id);
+  const eyebrow = at && at.total > 1 ? `SETUP · ${at.pos} OF ${at.total}` : "SETUP";
   const common = { id: m.id, eyebrow, hideBack: true } as const;
   const where: Partial<TourStep> =
     m.key === "username"
@@ -380,11 +369,16 @@ export function useSetupTour() {
   const onboarding = useOnboarding();
   const missing = MISSIONS.filter((m) => !onboarding.steps.find((st) => st.key === m.key)?.done);
 
-  const setupSteps = (): TourStep[] => [...missing.map((m) => makeMissionStep(m, false)), makeFinaleStep(false)];
+  const setupSteps = (): TourStep[] => {
+    shownAt.clear();
+    missing.forEach((m, i) => shownAt.set(m.id, { pos: i + 1, total: missing.length }));
+    return [...missing.map((m) => makeMissionStep(m, false)), makeFinaleStep(false)];
+  };
   const handlers = (opts?: StartOpts) => ({
     onFinish: () => {
       success();
       setSeen("beacon");
+      track("tutorial_complete");
     },
     onClose: () => {
       setSeen("beacon_intro");
@@ -407,7 +401,9 @@ export function useSetupTour() {
   const startWelcome = useCallback(
     (ctx: WelcomeBeaconCtx & StartOpts & { isReplay?: boolean }) => {
       const steps: TourStep[] = [makeWelcomeBeaconStep(ctx, false), makeWelcomeOptionsStep(missing.length === 0)];
-      if (missing.length) steps.push(makeSetupIntroStep(missing.length), ...setupSteps());
+      // Straight from the welcome beats into the first unfinished item: no checklist screen in between.
+      if (missing.length) steps.push(...setupSteps());
+      if (!ctx.isReplay) track("tutorial_begin");
       startTour(steps, {
         isReplay: ctx.isReplay,
         dismissLabel: missing.length ? "Later" : ctx.isReplay ? "Close" : "Skip",
@@ -480,10 +476,6 @@ const s = StyleSheet.create({
   body: { fontSize: 15, lineHeight: 22 },
   note: { fontSize: 13, lineHeight: 18, marginTop: 12 },
   doneRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  todoList: { gap: 10 },
-  todoRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  todoTxt: { fontSize: 16, fontWeight: "700" },
-  todoDone: { textDecorationLine: "line-through" },
   actionBtn: {
     marginTop: 14,
     borderRadius: 12,
@@ -496,6 +488,8 @@ const s = StyleSheet.create({
     minHeight: 46,
   },
   actionTxt: { fontSize: 15, fontWeight: "700" },
+  quietBtn: { marginTop: 10, minHeight: 36, alignItems: "center", justifyContent: "center" },
+  quietTxt: { fontSize: 14, textAlign: "center" },
   finaleIcon: {
     width: 64,
     height: 64,

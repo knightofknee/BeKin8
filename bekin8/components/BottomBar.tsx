@@ -8,7 +8,7 @@ import { auth, db } from "../firebase.config";
 import { useTheme } from "../providers/ThemeProvider";
 import { tap } from "../utils/haptics";
 
-type TabKey = "home" | "feed" | "friends" | "create-post" | "settings";
+type TabKey = "home" | "feed" | "friends" | "settings";
 type IoniconName = keyof typeof Ionicons.glyphMap;
 type Tab = {
   key: TabKey;
@@ -24,7 +24,6 @@ const TABS: Tab[] = [
   { key: "home",        label: "Home",     icon: "home-outline",      iconActive: "home",      color: "#2F6FED", href: "/home" },
   { key: "feed",        label: "Feed",     icon: "newspaper-outline", iconActive: "newspaper", color: "#F97316", href: "/feed" },
   { key: "friends",     label: "Friends",  icon: "people-outline",    iconActive: "people",    color: "#10B981", href: "/friends" },
-  { key: "create-post", label: "Post",     icon: "create-outline",    iconActive: "create",    color: "#A855F7", href: "/create-post" },
   { key: "settings",    label: "Settings", icon: "settings-outline",  iconActive: "settings",  color: "#64748B", href: "/settings" },
 ];
 
@@ -38,7 +37,8 @@ export default function BottomBar() {
     if (pathname?.startsWith("/home"))         return "home";
     if (pathname?.startsWith("/feed"))         return "feed";
     if (pathname?.startsWith("/friends"))      return "friends";
-    if (pathname?.startsWith("/create-post"))  return "create-post";
+    // Writing a post is part of Feed (its "New post" button); there is no Post tab.
+    if (pathname?.startsWith("/create-post"))  return "feed";
     if (pathname?.startsWith("/settings"))     return "settings";
     return null;
   }, [pathname]);
@@ -72,7 +72,9 @@ export default function BottomBar() {
     // Already on this tab: do nothing. router.push would stack a duplicate mounted instance
     // (extra Firestore listeners, audio, Skia; broken Android back). navigate dedupes to the
     // existing route rather than pushing a new one.
-    if (isActive) return;
+    // (A tab can be lit while a child screen of it is showing, e.g. Feed on the new-post screen:
+    // then the tap goes back to the tab's own screen.)
+    if (isActive && pathname === href) return;
     router.navigate(href as any);
   };
 

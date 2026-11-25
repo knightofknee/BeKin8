@@ -35,6 +35,7 @@ import {
   startAfter,
   QueryDocumentSnapshot,
   onSnapshot,
+  getDoc,
 } from 'firebase/firestore';
 import PostComments from '../../components/PostComments';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -94,8 +95,34 @@ interface Post {
   createdAt: Date;
   commentsEnabled?: boolean;
   authorCommentsEnabled: boolean;
+  /** Posted as a complaint (create-post complaint mode); spice = its peppers. */
+  complaint?: boolean;
+  spice?: number;
+  feedHidden?: boolean;
   _timestamp: number;
 }
+
+/** One row of the Complaints section. On your own profile these come from users/{me}/complaints
+ *  (every complaint, hidden ones too); on someone else's, from their complaint posts. */
+interface ComplaintRow {
+  id: string;
+  title: string;
+  content: string;
+  spice: number;
+  createdAt: Date | null;
+  /** The BeKin post that shows it to friends, if any. */
+  post: Post | null;
+  postId: string | null;
+  visibility: 'feed' | 'profile' | 'hidden';
+  /** Its page on the Universal Complaint System (owner only). */
+  url: string | null;
+}
+
+const COMPLAINT_RED = '#E0452B';
+const PINS_SHOWN = 10;
+const POSTS_SHOWN = 10;
+const COMPLAINTS_SHOWN = 3;
+const LIST_LINES = 10;
 
 interface ListItem {
   text: string;
@@ -295,6 +322,25 @@ export default function ProfileScreen() {
     return unsub;
   }, [resolvedUid]);
 
+  const toPost = (id: string, data: any, uid: string, commentsOn: boolean): Post => {
+    const rawTs = data.timestamp ?? data.createdAt;
+    return {
+      id,
+      authorUid: uid,
+      authorUsername: displayName,
+      title: data.title ?? '',
+      content: data.content ?? '',
+      url: data.url ?? data.link ?? data.href ?? undefined,
+      createdAt: toDate(rawTs),
+      commentsEnabled: data.commentsEnabled !== false,
+      authorCommentsEnabled: commentsOn,
+      complaint: data.complaint === true,
+      spice: typeof data.spice === 'number' ? data.spice : undefined,
+      feedHidden: data.feedHidden === true,
+      _timestamp: toTimestamp(rawTs),
+    };
+  };
+
   const loadPage = useCallback(async (
     uid: string,
     commentsOn: boolean,
@@ -315,22 +361,7 @@ export default function ProfileScreen() {
     setLastDoc(snap.docs[snap.docs.length - 1] ?? null);
     setHasMore(snap.docs.length >= PAGE_SIZE);
 
-    return snap.docs.map((d) => {
-      const data = d.data() as any;
-      const rawTs = data.timestamp ?? data.createdAt;
-      return {
-        id: d.id,
-        authorUid: uid,
-        authorUsername: displayName,
-        title: data.title ?? '',
-        content: data.content ?? '',
-        url: data.url ?? data.link ?? data.href ?? undefined,
-        createdAt: toDate(rawTs),
-        commentsEnabled: data.commentsEnabled !== false,
-        authorCommentsEnabled: commentsOn,
-        _timestamp: toTimestamp(rawTs),
-      };
-    });
+    return snap.docs.map((d) => toPost(d.id, d.data(), uid, commentsOn));
   }, [displayName]);
 
   // Load first page once uid is resolved
@@ -352,6 +383,113 @@ export default function ProfileScreen() {
     } catch {} finally {
       setLoadingMore(false);
     }
+  };
+
+  // ── Pinned posts ──
+  // Profiles/{uid}.pinnedPostIds, in the owner's order. Shown above Lists.
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
+  const [pinnedPosts, setPinnedPosts] = useState<Post[]>([]);
+  const [pinsOpen, setPinsOpen] = useState(false);
+  const [postsShown, setPostsShown] = useState(POSTS_SHOWN);
+  const [complaintsOpen, setComplaintsOpen] = useState(false);
+  const [myComplaints, setMyComplaints] = useState<ComplaintRow[] | null>(null);
+  const [complaintMenuFor, setComplaintMenuFor] = useState<ComplaintRow | null>(null);
+
+  useEffect(() => {
+    if (!resolvedUid) return;
+    return onSnapshot(doc(db, 'Profiles', resolvedUid), (snap) => {
+      const ids = (snap.data() as any)?.pinnedPostIds;
+      setPinnedIds(Array.isArray(ids) ? ids.filter((x: any) => typeof x === 'string') : []);
+    }, () => {});
+  }, [resolvedUid]);
+
+  const pinKey = pinnedIds.join(',');
+  useEffect(() => {
+    if (!resolvedUid) return;
+    if (!pinnedIds.length) { setPinnedPosts([]); return; }
+    let live = true;
+    Promise.all(pinnedIds.map((id) => getDoc(doc(db, 'Posts', id)).catch(() => null))).then((snaps) => {
+      if (!live) return;
+      setPinnedPosts(
+        snaps
+          .filter((x): x is NonNullable<typeof x> => !!x && x.exists() && (x.data() as any)?.author === resolvedUid)
+          .map((x) => toPost(x.id, x.data(), resolvedUid, authorCommentsEnabled))
+      );
+    });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedUid, pinKey, authorCommentsEnabled]);
+
+  const savePins = async (ids: string[]) => {
+    if (!me) return;
+    setPinnedIds(ids);
+    try { await setDoc(doc(db, 'Profiles', me.uid), { pinnedPostIds: ids }, { merge: true }); } catch {}
+  };
+  const togglePin = (p: Post) => {
+    selection();
+    void savePins(pinnedIds.includes(p.id) ? pinnedIds.filter((x) => x !== p.id) : [...pinnedIds, p.id]);
+  };
+  const swapPins = (a: number, b: number) => {
+    if (a < 0 || b < 0 || a >= pinnedIds.length || b >= pinnedIds.length) return;
+    tap();
+    const next = [...pinnedIds];
+    [next[a], next[b]] = [next[b], next[a]];
+    void savePins(next);
+  };
+
+  // ── Complaints ──
+  // Mine: everything I sent to the complaint system from here, hidden ones included.
+  useEffect(() => {
+    if (!isOwnProfile || !me) { setMyComplaints(null); return; }
+    return onSnapshot(collection(db, 'users', me.uid, 'complaints'), (snap) => {
+      const rows: ComplaintRow[] = snap.docs.map((d) => {
+        const c = d.data() as any;
+        return {
+          id: d.id,
+          title: typeof c.title === 'string' ? c.title : '',
+          content: typeof c.content === 'string' ? c.content : '',
+          spice: typeof c.spice === 'number' ? c.spice : 1,
+          createdAt: typeof c.createdAt?.toDate === 'function' ? c.createdAt.toDate() : null,
+          post: null,
+          postId: typeof c.postId === 'string' ? c.postId : null,
+          visibility: c.visibility === 'feed' || c.visibility === 'profile' ? c.visibility : 'hidden',
+          url: typeof c.url === 'string' ? c.url : null,
+        };
+      });
+      rows.sort((a, b) => (b.createdAt?.getTime() ?? Infinity) - (a.createdAt?.getTime() ?? Infinity));
+      setMyComplaints(rows);
+    }, () => setMyComplaints([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOwnProfile, me?.uid]);
+
+  const regularPosts = posts.filter((p) => !p.complaint);
+  const complaintRows: ComplaintRow[] = myComplaints
+    ? myComplaints.map((c) => ({ ...c, post: posts.find((p) => p.id === c.postId) ?? null }))
+    : posts.filter((p) => p.complaint).map((p) => ({
+        id: p.id, title: p.title ?? '', content: p.content, spice: p.spice ?? 1, createdAt: p.createdAt,
+        post: p, postId: p.id, visibility: p.feedHidden ? 'profile' as const : 'feed' as const, url: null,
+      }));
+
+  /** Take a complaint away from friends for good: its BeKin post goes, the record stays. */
+  const hideComplaint = (c: ComplaintRow) => {
+    if (!me) return;
+    Alert.alert('Hide from friends?', 'Nobody on BeKin will see it any more, and its comments here go with it. It stays on the Universal Complaint System.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Hide', style: 'destructive',
+        onPress: async () => {
+          warning();
+          try {
+            if (c.postId) await deleteDoc(doc(db, 'Posts', c.postId));
+            await updateDoc(doc(db, 'users', me.uid, 'complaints', c.id), { visibility: 'hidden', postId: null });
+            setPosts((prev) => prev.filter((x) => x.id !== c.postId));
+            if (c.postId && pinnedIds.includes(c.postId)) void savePins(pinnedIds.filter((x) => x !== c.postId));
+          } catch (e: any) {
+            Alert.alert('Error', e?.message ?? 'Could not hide it.');
+          }
+        },
+      },
+    ]);
   };
 
   // ── Color picker ──
@@ -561,6 +699,7 @@ export default function ProfileScreen() {
           try {
             await deleteDoc(doc(db, 'Posts', p.id));
             setPosts((prev) => prev.filter((x) => x.id !== p.id));
+            if (pinnedIds.includes(p.id)) void savePins(pinnedIds.filter((x) => x !== p.id));
           } catch (e: any) {
             Alert.alert('Error', e?.message ?? 'Could not delete post.');
           }
@@ -640,8 +779,8 @@ export default function ProfileScreen() {
 
         {lists.map((list, listIndex) => {
           const expanded = expandedListId === list.id;
-          const visibleItems = expanded ? list.items : list.items.slice(0, 3);
-          const hasMore = list.items.length > 3;
+          const visibleItems = expanded ? list.items : list.items.slice(0, LIST_LINES);
+          const hasMore = list.items.length > LIST_LINES;
 
           return (
             <Pressable
@@ -722,6 +861,148 @@ export default function ProfileScreen() {
             </Pressable>
           );
         })}
+      </View>
+    );
+  };
+
+  const renderPost = (item: Post) => {
+              const commentsVisible =
+                item.commentsEnabled !== false && item.authorCommentsEnabled === true;
+              return (
+                // The whole card opens the thread (inner pressables like the link and the menu
+                // dots still win their own taps); profile posts used to be static, which read
+                // as broken next to the tappable feed.
+                <Pressable
+                  onPress={() => { tap(); setSelectedPost(item); }}
+                  style={({ pressed }) => [
+                    styles.postContainer,
+                    { backgroundColor: colors.postBg, borderColor: colors.border },
+                    pressed && { opacity: 0.94 },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <View style={{ flex: 1 }}>
+                      {item.title ? (
+                        <Text style={[styles.postTitle, { color: colors.text }]} numberOfLines={2}>{item.title}</Text>
+                      ) : null}
+                    </View>
+                    {isOwnProfile && (
+                      <Pressable onPress={() => setMenuFor(item)} hitSlop={10} style={{ padding: 4 }}>
+                        <Text style={{ fontSize: 18, color: colors.subtle }}>⋯</Text>
+                      </Pressable>
+                    )}
+                  </View>
+
+                  {item.url ? (
+                    <Pressable
+                      onPress={() =>
+                        Linking.openURL(
+                          /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
+                        )
+                      }
+                      style={{ marginBottom: 6 }}
+                    >
+                      <Text style={[styles.postLink, { color: colors.linkText }]} numberOfLines={1}>
+                        {String(item.url).replace(/^https?:\/\//i, '')}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+
+                  <LinkifiedText
+                    text={item.content}
+                    style={[styles.postContent, { color: colors.text }]}
+                    linkColor={colors.linkText}
+                  />
+
+                  <View style={styles.postFooter}>
+                    {commentsVisible ? (
+                      <Pressable
+                        onPress={() => setSelectedPost(item)}
+                        hitSlop={8}
+                        style={({ pressed }) => [styles.viewCommentsBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Text style={[styles.viewCommentsTxt, { color: colors.primary }]}>View comments</Text>
+                      </Pressable>
+                    ) : <View />}
+                    <Text style={[styles.postDate, { color: colors.subtle }]}>{item.createdAt.toLocaleString()}</Text>
+                  </View>
+                </Pressable>
+              );
+  };
+
+  // Pinned posts: the owner's picks, in their order, above Lists.
+  const renderPinnedSection = () => {
+    if (pinnedPosts.length === 0) return null;
+    const shown = pinsOpen ? pinnedPosts : pinnedPosts.slice(0, PINS_SHOWN);
+    return (
+      <View style={{ marginBottom: 8 }}>
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Pinned</Text>
+        </View>
+        {shown.map((p) => {
+          const at = pinnedIds.indexOf(p.id);
+          return (
+            <View key={`pin:${p.id}`}>
+              {renderPost(p)}
+              {isOwnProfile && pinnedIds.length > 1 ? (
+                <View style={styles.pinReorder}>
+                  <Pressable onPress={() => swapPins(at, at - 1)} hitSlop={8} disabled={at === 0} style={[styles.reorderBtn, { opacity: at === 0 ? 0.2 : 1 }]} accessibilityLabel="Move pin up">
+                    <Text style={{ fontSize: 16, color: colors.subtle }}>▲</Text>
+                  </Pressable>
+                  <Pressable onPress={() => swapPins(at, at + 1)} hitSlop={8} disabled={at === pinnedIds.length - 1} style={[styles.reorderBtn, { opacity: at === pinnedIds.length - 1 ? 0.2 : 1 }]} accessibilityLabel="Move pin down">
+                    <Text style={{ fontSize: 16, color: colors.subtle }}>▼</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+        {pinnedPosts.length > PINS_SHOWN ? (
+          <Pressable onPress={() => { tap(); setPinsOpen((o) => !o); }} hitSlop={6} style={styles.section}>
+            <Text style={[styles.expandBtn, { color: colors.primary }]}>{pinsOpen ? 'Show less' : `See more (${pinnedPosts.length - PINS_SHOWN})`}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  };
+
+  // Complaints: their own tinted block under the posts, so it is plain you have left the posts.
+  const renderComplaintsSection = () => {
+    if (complaintRows.length === 0) return null;
+    const shown = complaintsOpen ? complaintRows : complaintRows.slice(0, COMPLAINTS_SHOWN);
+    const where = { feed: "In friends' feeds", profile: 'On your profile', hidden: 'Hidden from friends' } as const;
+    return (
+      <View style={[styles.complaintsBlock, { backgroundColor: COMPLAINT_RED + '14', borderColor: COMPLAINT_RED + '55' }]}>
+        <Text style={[styles.sectionTitle, { color: COMPLAINT_RED }]}>🌶️ Complaints</Text>
+        {shown.map((c) => (
+          <Pressable
+            key={`c:${c.id}`}
+            onPress={() => { if (c.post) { tap(); setSelectedPost(c.post); } }}
+            style={[styles.complaintCard, { backgroundColor: colors.postBg, borderColor: COMPLAINT_RED + '66' }]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.complaintPeppers}>{'🌶️'.repeat(Math.max(1, Math.min(4, Math.round(c.spice))))}</Text>
+                {c.title ? <Text style={[styles.postTitle, { color: colors.text }]} numberOfLines={2}>{c.title}</Text> : null}
+              </View>
+              {isOwnProfile ? (
+                <Pressable onPress={() => { tap(); setComplaintMenuFor(c); }} hitSlop={10} style={{ padding: 4 }} accessibilityLabel="Complaint options">
+                  <Text style={{ fontSize: 18, color: colors.subtle }}>⋯</Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {c.content ? <Text style={[styles.postContent, { color: colors.text }]} numberOfLines={6}>{c.content}</Text> : null}
+            <View style={styles.postFooter}>
+              <Text style={[styles.postDate, { color: COMPLAINT_RED, fontWeight: '700' }]}>{isOwnProfile ? where[c.visibility] : ''}</Text>
+              <Text style={[styles.postDate, { color: colors.subtle }]}>{c.createdAt ? c.createdAt.toLocaleDateString() : ''}</Text>
+            </View>
+          </Pressable>
+        ))}
+        {complaintRows.length > COMPLAINTS_SHOWN ? (
+          <Pressable onPress={() => { tap(); setComplaintsOpen((o) => !o); }} hitSlop={6}>
+            <Text style={[styles.expandBtn, { color: COMPLAINT_RED }]}>{complaintsOpen ? 'Show less' : `More (${complaintRows.length - COMPLAINTS_SHOWN})`}</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   };
@@ -820,7 +1101,8 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      {/* Lists section */}
+      {/* Pinned posts, then Lists */}
+      {renderPinnedSection()}
       {renderListSection()}
 
       {/* Posts header */}
@@ -873,7 +1155,7 @@ export default function ProfileScreen() {
           </View>
         ) : (
           <FlatList
-            data={posts}
+            data={regularPosts.slice(0, postsShown)}
             keyExtractor={(item) => item.id}
             contentContainerStyle={[styles.list, { backgroundColor: colors.bg }]}
             keyboardShouldPersistTaps="handled"
@@ -892,90 +1174,25 @@ export default function ProfileScreen() {
                 </Text>
               </View>
             }
-            renderItem={({ item }) => {
-              const commentsVisible =
-                item.commentsEnabled !== false && item.authorCommentsEnabled === true;
-              return (
-                // The whole card opens the thread (inner pressables like the link and the menu
-                // dots still win their own taps); profile posts used to be static, which read
-                // as broken next to the tappable feed.
-                <Pressable
-                  onPress={() => { tap(); setSelectedPost(item); }}
-                  style={({ pressed }) => [
-                    styles.postContainer,
-                    { backgroundColor: colors.postBg, borderColor: colors.border },
-                    pressed && { opacity: 0.94 },
-                  ]}
-                >
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <View style={{ flex: 1 }}>
-                      {item.title ? (
-                        <Text style={[styles.postTitle, { color: colors.text }]} numberOfLines={2}>{item.title}</Text>
-                      ) : null}
-                    </View>
-                    {isOwnProfile && (
-                      <Pressable onPress={() => setMenuFor(item)} hitSlop={10} style={{ padding: 4 }}>
-                        <Text style={{ fontSize: 18, color: colors.subtle }}>⋯</Text>
-                      </Pressable>
-                    )}
-                  </View>
-
-                  {item.url ? (
-                    <Pressable
-                      onPress={() =>
-                        Linking.openURL(
-                          /^https?:\/\//i.test(item.url!) ? item.url! : `https://${item.url}`
-                        )
-                      }
-                      style={{ marginBottom: 6 }}
-                    >
-                      <Text style={[styles.postLink, { color: colors.linkText }]} numberOfLines={1}>
-                        {String(item.url).replace(/^https?:\/\//i, '')}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-
-                  <LinkifiedText
-                    text={item.content}
-                    style={[styles.postContent, { color: colors.text }]}
-                    linkColor={colors.linkText}
-                  />
-
-                  <View style={styles.postFooter}>
-                    {commentsVisible ? (
-                      <Pressable
-                        onPress={() => setSelectedPost(item)}
-                        hitSlop={8}
-                        style={({ pressed }) => [styles.viewCommentsBtn, pressed && { opacity: 0.7 }]}
-                      >
-                        <Text style={[styles.viewCommentsTxt, { color: colors.primary }]}>View comments</Text>
-                      </Pressable>
-                    ) : <View />}
-                    <Text style={[styles.postDate, { color: colors.subtle }]}>{item.createdAt.toLocaleString()}</Text>
-                  </View>
-                </Pressable>
-              );
-            }}
+            renderItem={({ item }) => renderPost(item)}
             ListFooterComponent={
-              posts.length === 0 ? null :
-              hasMore ? (
-                <Pressable
-                  onPress={loadMore}
-                  disabled={loadingMore}
-                  style={({ pressed }) => [
-                    styles.loadMoreBtn,
-                    { backgroundColor: colors.primary },
-                    pressed && { opacity: 0.8 },
-                    loadingMore && { opacity: 0.6 },
-                  ]}
-                >
-                  {loadingMore
-                    ? <ActivityIndicator color="#fff" />
-                    : <Text style={styles.loadMoreTxt}>Load more</Text>}
-                </Pressable>
-              ) : (
-                <Text style={[styles.endTxt, { color: colors.subtle }]}>All posts loaded</Text>
-              )
+              <View>
+                {regularPosts.length > postsShown || hasMore ? (
+                  <Pressable
+                    onPress={() => { tap(); setPostsShown((n) => n + POSTS_SHOWN); if (hasMore) void loadMore(); }}
+                    disabled={loadingMore}
+                    style={({ pressed }) => [
+                      styles.loadMoreBtn,
+                      { backgroundColor: colors.primary },
+                      pressed && { opacity: 0.8 },
+                      loadingMore && { opacity: 0.6 },
+                    ]}
+                  >
+                    {loadingMore ? <ActivityIndicator color="#fff" /> : <Text style={styles.loadMoreTxt}>See more</Text>}
+                  </Pressable>
+                ) : null}
+                {renderComplaintsSection()}
+              </View>
             }
           />
         )}
@@ -1131,6 +1348,9 @@ export default function ProfileScreen() {
             <Pressable style={styles.menuRow} onPress={() => { const p = menuFor; setMenuFor(null); if (p) handleStartEdit(p); }}>
               <Text style={[styles.menuText, { color: colors.text }]}>Edit post</Text>
             </Pressable>
+            <Pressable style={styles.menuRow} onPress={() => { const p = menuFor; setMenuFor(null); if (p) togglePin(p); }}>
+              <Text style={[styles.menuText, { color: colors.text }]}>{menuFor && pinnedIds.includes(menuFor.id) ? 'Unpin from profile' : 'Pin to profile'}</Text>
+            </Pressable>
             <Pressable style={styles.menuRow} onPress={() => { const p = menuFor; setMenuFor(null); if (p) handleDeletePost(p); }}>
               <Text style={[styles.menuText, { color: colors.error }]}>Delete post</Text>
             </Pressable>
@@ -1140,6 +1360,27 @@ export default function ProfileScreen() {
               </Pressable>
             )}
             <Pressable style={[styles.menuRow, { borderTopWidth: 1, borderTopColor: colors.border }]} onPress={() => { tap(); setMenuFor(null); }}>
+              <Text style={[styles.menuText, { color: colors.subtle }]}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Complaint menu modal (own profile) */}
+      <Modal visible={!!complaintMenuFor} animationType="fade" transparent onRequestClose={() => setComplaintMenuFor(null)}>
+        <Pressable style={[styles.menuBackdrop, { backgroundColor: colors.backdrop }]} onPress={() => { tap(); setComplaintMenuFor(null); }}>
+          <Pressable style={[styles.menuSheet, { backgroundColor: colors.card }]} onPress={(e) => e.stopPropagation()}>
+            {complaintMenuFor?.visibility !== 'hidden' ? (
+              <Pressable style={styles.menuRow} onPress={() => { const c = complaintMenuFor; setComplaintMenuFor(null); if (c) hideComplaint(c); }}>
+                <Text style={[styles.menuText, { color: colors.error }]}>Hide from friends</Text>
+              </Pressable>
+            ) : null}
+            {complaintMenuFor?.url ? (
+              <Pressable style={styles.menuRow} onPress={() => { const c = complaintMenuFor; setComplaintMenuFor(null); if (c?.url) Linking.openURL(c.url); }}>
+                <Text style={[styles.menuText, { color: colors.text }]}>Open on the Universal Complaint System</Text>
+              </Pressable>
+            ) : null}
+            <Pressable style={[styles.menuRow, { borderTopWidth: 1, borderTopColor: colors.border }]} onPress={() => { tap(); setComplaintMenuFor(null); }}>
               <Text style={[styles.menuText, { color: colors.subtle }]}>Cancel</Text>
             </Pressable>
           </Pressable>
@@ -1536,6 +1777,10 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: 1,
   },
+  pinReorder: { flexDirection: 'row', justifyContent: 'flex-end', gap: 4, marginTop: -10, marginBottom: 8, marginRight: 20 },
+  complaintsBlock: { marginTop: 8, marginHorizontal: 10, marginBottom: 24, padding: 12, borderRadius: 16, borderWidth: 1 },
+  complaintCard: { marginTop: 10, padding: 14, borderRadius: 12, borderWidth: 1 },
+  complaintPeppers: { fontSize: 12, marginBottom: 2 },
   reorderBtns: {
     alignItems: 'center',
     justifyContent: 'center',

@@ -20,7 +20,8 @@
 export type BeaconStructureKind =
   | 'lakeshore'
   | 'logs'
-  | 'brazier'
+  | 'stainedglass'
+  | 'castlewall'
   | 'bonfire'
   | 'mountains'
   | 'aurora'
@@ -96,9 +97,10 @@ export type BeaconSkin = {
   tap: { noun: string; tint: string };
 };
 
-// Campfire (DEFAULT): a STORYBOOK night clearing. Soft-painted pines, moon, fireflies; the tap target
-// is a big readable log teepee on a stone ring with a breathing ember hint while unlit. Real Skia
-// flame + ambient smoke when lit (the old pixel-art WebP pit is gone).
+// Campfire: a STORYBOOK forest clearing at night, PAINTED (gouache) since 2026-11-23: big framing
+// trees, a dim forest, trodden earth, and a log teepee in a ring of river stones as the tap target.
+// Lightning bugs roam the whole screen and carry the going friends' names. Real Skia flame +
+// ambient smoke when lit.
 const CAMPFIRE: BeaconSkin = {
   id: 'campfire',
   showsPeople: true, // going friends ride the lightning bugs by name (skins spreading this reset it)
@@ -110,7 +112,7 @@ const CAMPFIRE: BeaconSkin = {
   // CONE-FROM-WOOD rule (user): the flame base must match the wood's width where it emerges, so the
   // seat sits INSIDE the stack (the wood above the seat burns inside the flame), never perched on a
   // narrow tip with a wider flame floating over it.
-  origin: 0.62, // seat inside the teepee, where the log spread is ~61px wide
+  origin: 0.66, // seat inside the painted teepee, in the kindling (sprite box 34..95)
   flameScale: 0.9,
   flameShape: { width: 0.23, turb: 1.0, speed: 2.4 }, // base ~61px = teepee width at the seat
   outer: ['#FF8A1F', '#D8431A'],
@@ -163,22 +165,43 @@ const LAKESHORE: BeaconSkin = {
   tap: { noun: 'driftwood', tint: '#FFE7C2' },
 };
 
-// Old Guard: a WATCHFIRE ON THE CASTLE WALL. Battlement parapet spans the bottom, the beacon is a
-// forged-iron fire basket on a stone plinth; lighting it washes the stonework warm.
+// Stained Glass: a watchfire drawn as a full-screen leaded window (scenes/StainedGlassScene).
+const STAINED_GLASS: BeaconSkin = {
+  ...CAMPFIRE,
+  showsPeople: false,
+  id: 'stainedglass',
+  label: 'Stained Glass',
+  blurb: 'A watchfire in stained glass. Light it and the window fills with light.',
+  structure: 'stainedglass',
+  origin: 0.38, // basket rim: the stained-glass scene draws the basket and fire around this seat
+  // The fire is IN the glass (scenes/StainedGlassScene): no flame layer, no smoke.
+  fire: 'none',
+  smokeKind: 'none',
+  ignition: { damping: 15, stiffness: 135, shake: false, shockwave: false },
+  smoke: { tintLow: '#C7A98A', tintHigh: '#9AA3B2', opacity: 0, plumes: 0, rise: 1.0, drift: 26 },
+  sound: { ignite: require('../assets/sounds/oldguard-ignite.m4a'), crackle: require('../assets/sounds/oldguard-crackle.m4a') },
+  tap: { noun: 'window', tint: '#F1E6CE' },
+};
+
+// Old Guard: a WATCHFIRE ON A PAINTED CASTLE (realistic, night), back 2026-11-23 with Brian's
+// art. A deep round iron basket piled with split wood (the tap target) stands on the stone; when
+// you light it the stonework warms and, a few seconds later, the distant watchtower on the hills
+// lights its own. The curtain wall between two merlons (the tower-platform painting was tried as a
+// second skin and cut by Brian 2026-11-23).
 const OLD_GUARD: BeaconSkin = {
   ...CAMPFIRE,
   showsPeople: false,
   id: 'oldguard',
   label: 'Old Guard',
-  blurb: 'A watchfire basket burning on the castle wall.',
-  structure: 'brazier',
-  origin: 0.38, // basket rim seat line (y=38); the flame emerges at exactly the rim's width
+  blurb: 'A watchfire in an iron basket on the castle wall.',
+  structure: 'castlewall',
+  origin: 0.36, // seat in the heaped wood, just under the basket rim (sprite box 13..95)
   flameScale: 1.0,
-  flameShape: { width: 0.32, turb: 0.9, speed: 2.2 }, // base ~95px = the rib basket's rim span
-  ignition: { damping: 15, stiffness: 135, shake: false, shockwave: false }, // dignified, steady
-  smoke: { tintLow: '#C7A98A', tintHigh: '#9AA3B2', opacity: 0.32, plumes: 7, rise: 1.0, drift: 26 },
+  flameShape: { width: 0.3, turb: 0.9, speed: 2.2 }, // base about as wide as the wood load
+  glow: { center: '#FFD89A', edge: '#FF8A2A', cy: -70, rx: 60, ry: 92 },
+  ignition: { damping: 15, stiffness: 135, shake: false, shockwave: false },
   sound: { ignite: require('../assets/sounds/oldguard-ignite.m4a'), crackle: require('../assets/sounds/oldguard-crackle.m4a') },
-  tap: { noun: 'watchfire', tint: '#F1E6CE' },
+  tap: { noun: 'basket', tint: '#F1E6CE' },
 };
 
 // Bonfire, round 4 (2026-07-29): a BIG COUNTRY BONFIRE UNDER THE SETTING SUN. What makes a
@@ -311,19 +334,20 @@ const LIGHTHOUSE: BeaconSkin = {
   tap: { noun: 'lighthouse', tint: '#EAF1FF' },
 };
 
-// Smoke Signal: a GOLDEN-HOUR MESA. Visible stone fire ring + folded signal blanket; a small hot
-// flame, and the hero: discrete white puffs released on a cover-and-lift rhythm (BeaconSmokeSignal).
-// NOTE for the sound pass: still reuses the beacons clips; wants its own (drier, high-desert) pair.
+// Smoke Signal: a PAINTED DESERT IN DAYLIGHT (travel-poster style), rebuilt 2026-11-23 around the
+// smoke itself. A low fire of dry wood under green pine boughs on a sandstone bluff; while lit,
+// round puffs climb the whole sky carrying the first names of the friends who are going
+// (scenes/SmokeSignalScene, which owns the smoke: no smoke overlay here).
 const SMOKE_SIGNAL: BeaconSkin = {
   ...CAMPFIRE,
-  showsPeople: false,
+  showsPeople: true, // going friends' names ride the smoke puffs
   id: 'smokesignal',
   label: 'Smoke Signal',
-  blurb: 'A ridge fire speaking in slow white puffs.',
+  blurb: 'A desert fire speaking in slow white puffs.',
   structure: 'smokesignal',
   fire: 'flame',
-  smokeKind: 'signal',
-  origin: 0.63, // seat inside the fire lay (the crossed tips burn within the flame)
+  smokeKind: 'none',
+  origin: 0.74, // seat in the wood under the pine boughs (painted sprite, box 62..95)
   flameScale: 0.5,
   flameShape: { width: 0.24, turb: 0.85, speed: 2.2 }, // base ~36px = the small lay's spread
   outer: ['#FF8A1F', '#D8431A'],
@@ -464,11 +488,16 @@ export const HIDDEN_BEACON_SKINS: BeaconSkin[] = [SKY_LANTERNS, SEARCHLIGHT, STO
 // once its chain showed real friends (lit beacons / "I'm in" answers). Campfire was the default
 // before that; Lakeshore was tried on 2026-08-30 and rejected before it shipped. Anyone who picked a
 // style keeps it; only people who never chose one move to the new default.
-export const BEACON_SKINS: BeaconSkin[] = [BEACONS, CAMPFIRE, LAKESHORE, OLD_GUARD, AURORA, TOWER, LIGHTHOUSE, SMOKE_SIGNAL, FIREWORKS];
+// LAKESHORE is retired from the picker (Brian, 2026-11-21: "kind of sucks"); its code stays until
+// the slot is reused. OLD GUARD is gone as a skin: its stained-glass rebuild became STAINED GLASS,
+// and a new Old Guard (a realistic castle wall, from painted art) is planned. Anyone whose saved
+// style was 'lakeshore' or 'oldguard' falls back to the default via getSkin.
+void LAKESHORE;
+export const BEACON_SKINS: BeaconSkin[] = [BEACONS, CAMPFIRE, OLD_GUARD, SMOKE_SIGNAL, STAINED_GLASS, AURORA, TOWER, LIGHTHOUSE, FIREWORKS];
 export const DEFAULT_SKIN_ID = 'beacons';
 
 export function getSkin(id: string | null | undefined): BeaconSkin {
-  // Unknown ids (including the retired 'wisp' and the withdrawn 'bonfire') fall back to the
+  // Unknown ids (including the retired 'wisp', 'lakeshore' and the withdrawn 'bonfire') fall back to the
   // default, The Beacons.
   return BEACON_SKINS.find((s) => s.id === id) ?? BEACONS;
 }

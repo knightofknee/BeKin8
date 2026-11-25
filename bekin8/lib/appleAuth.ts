@@ -1,10 +1,13 @@
 // lib/appleAuth.ts
+import { signupMeta } from "./signupMeta";
+import { track } from "./analytics";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as Crypto from "expo-crypto";
 import { OAuthProvider, signInWithCredential } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebase.config";
 import { syncPushTokenIfGranted } from "./push";
+import { stashNameHint } from "./autoUsername";
 
 /**
  * Performs native Apple Sign-In, bridges to Firebase Auth,
@@ -30,6 +33,12 @@ export async function signInWithApple() {
     ],
     nonce: hashedNonce,
   });
+
+  // Apple gives the name to the device on the FIRST sign-in only, and never to Firebase. Keep it
+  // for the default username + display name (lib/autoUsername).
+  const given = appleCredential.fullName?.givenName ?? "";
+  const family = appleCredential.fullName?.familyName ?? "";
+  await stashNameHint(`${given} ${family}`);
 
   const identityToken = appleCredential.identityToken;
   if (!identityToken) {
@@ -63,7 +72,9 @@ export async function signInWithApple() {
       hasUsername: false,
       bonusPosts: 3,
       createdAt: serverTimestamp(),
+      ...(await signupMeta("apple")),
     });
+    track("sign_up", { method: "apple" });
   }
 
   // 6. Sync push token (same as other sign-in methods)

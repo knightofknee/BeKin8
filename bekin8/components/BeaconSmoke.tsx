@@ -84,7 +84,7 @@ export default function BeaconSmoke({ skin, active, anchorX, anchorY, measured }
 
   const tick = useCallback((info: { timeSincePreviousFrame: number | null }) => {
     'worklet';
-    clock.value += (info.timeSincePreviousFrame ?? 16.6) / 1000;
+    clock.value += Math.min(info.timeSincePreviousFrame ?? 16.6, 100) / 1000; // clamped: see lib/useGatedClock
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const frame = useFrameCallback(tick, false);

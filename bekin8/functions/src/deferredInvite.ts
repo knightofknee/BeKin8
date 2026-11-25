@@ -54,8 +54,12 @@ export const recordInviteVisit = onRequest(
       return;
     }
     const hash = ipHash(ip);
+    // A shared-beacon link also carries that beacon's token; keep it with the visit so the app
+    // can land the newcomer on the beacon after install.
+    const b = String((req.body as any)?.b ?? '').trim();
     await db.collection('InviteVisits').doc(`${hash}_${code}`).set({
       code,
+      ...(/^[a-z0-9]{16}$/.test(b) ? { beaconToken: b } : {}),
       ipHash: hash,
       createdAt: FieldValue.serverTimestamp(),
       expiresAt: Timestamp.fromMillis(Date.now() + VISIT_TTL_MS),
@@ -84,7 +88,7 @@ export const claimInviteVisit = onCall({ enforceAppCheck: true }, async (req) =>
     .map((d) => ({ ref: d.ref, data: d.data() as any }))
     .sort((a, b) => (b.data?.createdAt?.toMillis?.() ?? 0) - (a.data?.createdAt?.toMillis?.() ?? 0));
 
-  const invites: Array<{ code: string; inviterUsername: string }> = [];
+  const invites: Array<{ code: string; inviterUsername: string; beaconToken?: string }> = [];
   const seenCodes = new Set<string>();
   for (const { ref, data } of docs) {
     const expMs = data?.expiresAt?.toMillis?.() ?? 0;
@@ -106,7 +110,8 @@ export const claimInviteVisit = onCall({ enforceAppCheck: true }, async (req) =>
 
     // Visits are deliberately NOT deleted on claim: they serve every install from this network
     // until expiry, so a whole group tapping one link all auto-connect (redeem is idempotent).
-    invites.push({ code, inviterUsername });
+    const beaconToken = typeof data?.beaconToken === 'string' ? data.beaconToken : undefined;
+    invites.push({ code, inviterUsername, ...(beaconToken ? { beaconToken } : {}) });
     if (invites.length >= 5) break; // sanity cap
   }
   if (invites.length) logger.info('claimInviteVisit: match', { uid, codes: invites.map((i) => i.code) });

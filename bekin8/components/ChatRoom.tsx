@@ -301,7 +301,8 @@ export default function ChatRoom({ beaconId, maxHeight, onClose, style, targetMe
   // Tap any name (sender, "X is going", the going list, the owner) to see who that is (@username).
   const [peek, setPeek] = useState<PeekTarget | null>(null);
   const openPeek = (uid?: string, name?: string) => {
-    if (!uid) return;
+    // Web guests (people who joined from a shared link, uid "guest_...") have no profile.
+    if (!uid || uid.startsWith('guest_')) return;
     tap();
     setPeek({ uid, name });
   };

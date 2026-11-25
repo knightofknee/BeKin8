@@ -1,23 +1,26 @@
 // components/scenes/BeaconsScene.tsx
-// THE BEACONS backdrop (behind all tiles): the LOTR signal chain, fully procedural, no photos.
-// A cold pre-dawn sky (#0D1626 to #22334F) with faint stars thinning toward the horizon; six
-// hand-crafted ridgeline silhouettes recede into blue haze (nearest darkest and lowest, each
-// farther ridge lighter and higher, sparse snow ticks on the far peaks). The nearest ridge carries
-// a flat ledge aligned to the structure box via anchorX/anchorY: your pyre stands on rock.
+// THE BEACONS backdrop (behind all tiles): the LOTR signal chain on a PAINTED alpine range.
+// The mountains are a painting (art/in, processed by art/build_beacons.py into
+// assets/images/skins/beacons + beaconsArt.ts); so are the huts and the stacked pyres. Everything
+// that moves or changes is drawn here: the fires, their glow, the names, the relay. The painting is
+// placed so the foreground rock it paints for your own pyre sits under the structure box
+// (anchorX/anchorY).
 // HERO: seven beacon piles zigzag up the range on successive ridges. Lighting YOUR beacon lights
 // the whole chain (the relay, below), whether or not anyone has answered yet. The piles are then
 // LABELED with real people: home passes `people` = the friends going to your lit beacon, in answer
 // order, so person i takes pile i, nearest first (earliest answer nearest: history reads front to
 // back). A friend who RALLIED burns at least twice as bright. On your lit edge the piles kindle
-// ONE BY ONE down the range (2.2s, then ~1.75s per link, the watchers seeing each other's light);
+// IN ORDER, nearest first: the first 3 seconds in, each next one a random 3 to 6 seconds after;
 // a new answer while lit FLARES its pile as the name lands. While your beacon is out every pile is
 // dark (a static silhouette with a cool rim, no glow). First mount shows the current state steady.
 import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Path, Ellipse, G, Text as SvgText } from 'react-native-svg';
+import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Path, Ellipse, G, Image as SvgImage, Text as SvgText } from 'react-native-svg';
+import { Canvas, Rect as SkRect, Shader } from '@shopify/react-native-skia';
 import Animated, {
   useSharedValue,
   useAnimatedProps,
+  useDerivedValue,
   withDelay,
   withTiming,
   withSequence,
@@ -27,91 +30,108 @@ import Animated, {
 } from 'react-native-reanimated';
 import { loopNoise, makeSeed, type NoiseSeed } from '../../lib/beaconNoise';
 import { useGatedClock } from '../../lib/useGatedClock';
+import { fireEffect, rgb } from '../BeaconFireSkia';
 import type { BeaconSkin } from '../../lib/beaconSkins';
+import {
+  BEACONS_BG,
+  BEACONS_BG_ASPECT,
+  BEACONS_FLOOR,
+  BEACONS_LEDGE,
+  BEACONS_SITES,
+  BEACONS_SKY,
+  type BeaconSite,
+} from './beaconsArt';
 
 const AnimatedG = Animated.createAnimatedComponent(G);
-const AnimatedPath = Animated.createAnimatedComponent(Path);
 
-// Chain glyphs (pile + flame) drawn a touch larger than the original fire points, so each one can
-// carry a name.
-const GLYPH = 1.2;
-const MAX_LABEL = 9;
-// Relay pacing on your lit edge: the first answered pile catches RELAY_FIRST_MS after ignition, then
-// one per RELAY_STEP_MS (each watcher sees the last light). A later arrival kindles after ARRIVE_MS.
-// Exported so the style preview can time its staged late arrival against the same clock.
-export const RELAY_FIRST_MS = 2200;
-export const RELAY_STEP_MS = 1750;
+const MAX_LABEL = 14;
+// Pacing on your lit edge: the relay runs IN ORDER, nearest site first. The first catches
+// RELAY_FIRST_MS after ignition; each one after it catches a random RELAY_MIN_MS..RELAY_MAX_MS after
+// the one before (each watcher sees the last light, in their own time). A later arrival kindles
+// after ARRIVE_MS. Exported so the style preview can time its staged late arrival.
+export const RELAY_FIRST_MS = 2250;
+export const RELAY_MIN_MS = 3000;
+export const RELAY_MAX_MS = 6000;
 export const ARRIVE_MS = 250; // first names longer than this get an ellipsis (the far piles are tiny)
 const BLOOM = 1.35; // envelope overshoot on kindle; opacity clamps at 1 so it reads as a bright pop
 
-// Faint pre-dawn stars. Opacity is baked per star and thins with y so they fade into the horizon
-// haze; they are static (zero animated nodes) to keep the tile band calm.
-const STARS = [
-  { x: 0.08, y: 0.05, r: 1.2, o: 0.7 }, { x: 0.22, y: 0.09, r: 0.9, o: 0.55 }, { x: 0.35, y: 0.04, r: 1.3, o: 0.75 },
-  { x: 0.5, y: 0.11, r: 1.0, o: 0.5 }, { x: 0.63, y: 0.06, r: 1.2, o: 0.65 }, { x: 0.78, y: 0.03, r: 1.0, o: 0.7 },
-  { x: 0.9, y: 0.08, r: 1.3, o: 0.6 }, { x: 0.15, y: 0.16, r: 0.9, o: 0.4 }, { x: 0.44, y: 0.19, r: 1.0, o: 0.35 },
-  { x: 0.7, y: 0.15, r: 0.9, o: 0.4 }, { x: 0.86, y: 0.2, r: 1.0, o: 0.3 }, { x: 0.3, y: 0.24, r: 0.9, o: 0.22 },
-  { x: 0.58, y: 0.26, r: 0.9, o: 0.18 }, { x: 0.06, y: 0.27, r: 1.0, o: 0.15 },
+// Flicker seeds, one per chain site (incommensurate periods keep the fires from locking step).
+// Must be at least as long as BEACONS_SITES (extras are simply unused).
+const SEEDS = [
+  makeSeed(2.3, 7.1, 1.4, 5.3),
+  makeSeed(5.7, 3.2, 1.3, 6.1),
+  makeSeed(9.1, 11.4, 1.5, 6.9),
+  makeSeed(4.4, 8.8, 1.4, 5.7),
+  makeSeed(12.6, 2.7, 1.3, 7.7),
+  makeSeed(7.9, 13.5, 1.5, 8.3),
+  makeSeed(3.6, 10.2, 1.4, 8.9),
 ];
+const CHAIN = BEACONS_SITES;
+// The painting is drawn this many screen-widths wide (it is cropped at the sides).
+const BG_ZOOM = 1.25;
 
-// Far ridges, drawn far-to-near (the nearest ridge is built in-render around the anchor ledge).
-// lift = crest height above the near ledge line, pts are [xFraction, peakLift], both in units of
-// the ridge band span; each ridge that seats a chain fire has a hand-placed peak under it.
-type RidgeDef = { lift: number; color: string; pts: readonly (readonly [number, number])[] };
-const RIDGES: RidgeDef[] = [
-  { lift: 0.84, color: '#2B4270', pts: [[0, 0.02], [0.07, 0.06], [0.14, 0], [0.22, 0.05], [0.29, 0.01], [0.36, 0.06], [0.43, -0.01], [0.48, 0.04], [0.52, 0.14], [0.56, 0.03], [0.63, 0.07], [0.71, 0], [0.79, 0.05], [0.87, 0.01], [0.94, 0.06], [1, 0.02]] },
-  { lift: 0.7, color: '#24395F', pts: [[0, 0.03], [0.08, 0.02], [0.16, 0.06], [0.24, 0], [0.33, 0.07], [0.41, 0.01], [0.5, 0.05], [0.58, -0.01], [0.64, 0.04], [0.7, 0.13], [0.76, 0.02], [0.84, 0.07], [0.92, 0.01], [1, 0.05]] },
-  { lift: 0.56, color: '#1D3050', pts: [[0, 0.01], [0.09, 0.07], [0.18, 0], [0.28, 0.06], [0.37, -0.01], [0.46, 0.05], [0.55, 0.01], [0.62, 0.06], [0.7, -0.01], [0.79, 0.06], [0.88, 0], [1, 0.06]] },
-  { lift: 0.42, color: '#16253E', pts: [[0, 0.05], [0.08, 0], [0.15, 0.06], [0.21, 0.02], [0.26, 0.06], [0.32, 0], [0.4, 0.07], [0.49, 0.01], [0.58, 0.08], [0.67, 0], [0.76, 0.05], [0.85, -0.01], [0.93, 0.04], [1, 0.01]] },
-  { lift: 0.28, color: '#101B2F', pts: [[0, 0.02], [0.1, 0.08], [0.19, 0], [0.3, 0.06], [0.4, -0.01], [0.5, 0.05], [0.6, 0], [0.7, 0.03], [0.78, 0.08], [0.86, 0.01], [0.94, 0.06], [1, 0.02]] },
-];
-
-// Sparse snow ticks on far, fireless peaks (lift = ridge lift + that peak's dy).
-const SNOW = [
-  { x: 0.22, lift: 0.89 }, { x: 0.63, lift: 0.91 }, { x: 0.94, lift: 0.9 },
-  { x: 0.33, lift: 0.77 }, { x: 0.84, lift: 0.77 },
-];
-
-// THE SIGNAL CHAIN: seven fires zigzagging up the range, each seated on a hand-placed ridge peak
-// (lift = ridge lift + peak dy, so fire y and silhouette agree). Nearer = larger. Incommensurate
-// noise periods keep the flickers from ever locking step.
-const CHAIN = [
-  { x: 0.78, lift: 0.36, s: 6.0, seed: makeSeed(2.3, 7.1, 1.4, 5.3) },
-  { x: 0.26, lift: 0.48, s: 5.2, seed: makeSeed(5.7, 3.2, 1.3, 6.1) },
-  { x: 0.62, lift: 0.62, s: 4.5, seed: makeSeed(9.1, 11.4, 1.5, 6.9) },
-  { x: 0.16, lift: 0.76, s: 3.9, seed: makeSeed(4.4, 8.8, 1.4, 5.7) },
-  { x: 0.7, lift: 0.83, s: 3.4, seed: makeSeed(12.6, 2.7, 1.3, 7.7) },
-  { x: 0.36, lift: 0.9, s: 2.9, seed: makeSeed(7.9, 13.5, 1.5, 8.3) },
-  { x: 0.52, lift: 0.98, s: 2.5, seed: makeSeed(3.6, 10.2, 1.4, 8.9) },
-];
-
-// Tiny flame glyph (same teardrop as BeaconScene's RidgeFlame): base at (x,y), tip at y - 2.7s.
-const flamePath = (x: number, y: number, s: number) =>
-  `M${x} ${y} C${x - s} ${y - s * 1.2} ${x - s * 0.5} ${y - s * 2.2} ${x} ${y - s * 2.7} C${x + s * 0.5} ${y - s * 2.2} ${x + s} ${y - s * 1.2} ${x} ${y} Z`;
-
-// A distant beacon PILE seated on its peak: a squat stack of crossed logs, (x,y) = top-center of the
-// stack where the flame sits. Width ~2.6s, height ~1.3s, so even the farthest (s 2.5) still reads.
-const pilePath = (x: number, y: number, s: number) =>
-  `M${x - 1.3 * s} ${y + 1.3 * s} L${x - 0.75 * s} ${y + 0.1 * s} L${x - 0.2 * s} ${y + 0.35 * s} L${x} ${y - 0.05 * s}` +
-  ` L${x + 0.2 * s} ${y + 0.35 * s} L${x + 0.75 * s} ${y + 0.1 * s} L${x + 1.3 * s} ${y + 1.3 * s} Z`;
-// Cool moonlit rim along the pile's top edge (unlit readability without any glow).
-const pileRimPath = (x: number, y: number, s: number) =>
-  `M${x - 1.3 * s} ${y + 1.3 * s} L${x - 0.75 * s} ${y + 0.1 * s} L${x - 0.2 * s} ${y + 0.35 * s} L${x} ${y - 0.05 * s}` +
-  ` L${x + 0.2 * s} ${y + 0.35 * s} L${x + 0.75 * s} ${y + 0.1 * s}`;
-
-function ridgePath(pts: readonly (readonly [number, number])[], W: number, H: number, crestY: number, span: number): string {
-  let d = `M-2 ${(crestY - pts[0][1] * span).toFixed(1)}`;
-  for (const [xf, dy] of pts) d += ` L${(xf * W).toFixed(1)} ${(crestY - dy * span).toFixed(1)}`;
-  const yEnd = (crestY - pts[pts.length - 1][1] * span).toFixed(1);
-  return d + ` L${(W + 2).toFixed(1)} ${yEnd} L${(W + 2).toFixed(1)} ${(H + 2).toFixed(1)} L-2 ${(H + 2).toFixed(1)} Z`;
-}
-
-const snowPath = (x: number, y: number) =>
-  `M${(x - 7).toFixed(1)} ${(y + 5).toFixed(1)} L${x.toFixed(1)} ${y.toFixed(1)} L${(x + 6).toFixed(1)} ${(y + 4).toFixed(1)}`;
+/** A tall leaning flame: base hw wide at (cx, y), tip h above and `lean` to the side. One mass. */
+const tallFlame = (cx: number, y: number, hw: number, h: number, lean: number) =>
+  `M${cx - hw} ${y} C${cx - hw * 1.35} ${y - h * 0.32} ${cx - hw * 0.3 + lean * 0.4} ${y - h * 0.62} ${cx + lean} ${y - h}` +
+  ` C${cx + hw * 0.25 + lean * 0.5} ${y - h * 0.68} ${cx + hw * 1.4} ${y - h * 0.36} ${cx + hw} ${y} Z`;
 
 function shortName(name: string): string {
   const first = (name || '').trim().split(/\s+/)[0] || '';
   return first.length > MAX_LABEL ? `${first.slice(0, MAX_LABEL - 1)}…` : first;
+}
+
+/** Where a site's fire sits: s = scale unit (the stack is ~2.3s wide), (px, seat) = flame base. */
+function fireSeat(site: BeaconSite, x: number, y: number, w: number, h: number) {
+  const s = (site.pyreW * w) / 2.3;
+  return { s, px: x + site.fireX * w, seat: y + site.fireY * h + 0.35 * s }; // starts INSIDE the stack
+}
+
+// The chain burns THE SAME FIRE as your own pyre (BeaconFireSkia's shader, same colours and
+// shape), only smaller because it is farther away. Each fire is one small shader rect on a shared
+// canvas; env drives its height, so the relay's kindle and the flare on a new answer still read.
+const FLAME_WIDTH = 0.27; // same proportions as the main pyre (skin.flameShape.width)
+type ChainFlameProps = {
+  env: SharedValue<number>;
+  clock: SharedValue<number>;
+  skin: BeaconSkin;
+  px: number;
+  seat: number;
+  /** flame height in px */
+  fh: number;
+  offset: number;
+  rally: boolean;
+};
+function ChainFlame({ env, clock, skin, px, seat, fh, offset, rally }: ChainFlameProps) {
+  const c0 = rgb(skin.core[0]);
+  const c1 = rgb(skin.mid[0]);
+  const c2 = rgb(skin.outer[1]);
+  const gl = rgb(skin.glow.center);
+  const uniforms = useDerivedValue(
+    () => ({
+      u_time: clock.value + offset,
+      u_progress: env.value < 0 ? 0 : env.value,
+      u_ignite: 0,
+      u_shock: 0,
+      u_intensity: rally ? 1.35 : 1.0,
+      u_origin: [px, seat],
+      u_scale: fh,
+      u_width: FLAME_WIDTH,
+      u_turb: skin.flameShape.turb,
+      u_speed: skin.flameShape.speed,
+      u_col0: [c0[0], c0[1], c0[2]],
+      u_col1: [c1[0], c1[1], c1[2]],
+      u_col2: [c2[0], c2[1], c2[2]],
+      u_glow: [gl[0], gl[1], gl[2]],
+    }),
+    [px, seat, fh, offset, rally, skin.id]
+  );
+  if (!fireEffect) return null;
+  // Bounds: glow reaches ~fh to the sides and below, embers ~2.3 fh up (with the kindle overshoot).
+  return (
+    <SkRect x={px - fh * 1.3} y={seat - fh * 2.6} width={fh * 2.6} height={fh * 3.6}>
+      <Shader source={fireEffect} uniforms={uniforms} />
+    </SkRect>
+  );
 }
 
 type ChainFireProps = {
@@ -119,15 +139,20 @@ type ChainFireProps = {
   clock: SharedValue<number>;
   motion: SharedValue<number>;
   seed: NoiseSeed;
+  site: BeaconSite;
+  /** Painted sprite box on screen. */
   x: number;
   y: number;
-  s: number;
-  label: string;
+  w: number;
+  h: number;
   /** This pile's person RALLIED (brought their own friends): it burns at least twice as bright. */
   rally: boolean;
 };
 
-function ChainFire({ env, clock, motion, seed, x, y, s, label, rally }: ChainFireProps) {
+// One chain SITE: the hut where that person lives and their signal pyre beside it, both painted
+// (dark sprite always; the firelit sprite fades in over it as the pyre catches). The fire itself,
+// its glow and the name are drawn here.
+function ChainFire({ env, clock, motion, seed, site, x, y, w, h, rally }: ChainFireProps) {
   const props = useAnimatedProps(() => {
     // Organic flicker while motion runs (0.75..1, a hotter steadier 0.9..1 for a rally); the
     // flicker mean when frozen so end states hold perfectly still. env overshoots 1 on a flare;
@@ -139,47 +164,74 @@ function ChainFire({ env, clock, motion, seed, x, y, s, label, rally }: ChainFir
     const o = env.value * flick;
     return { opacity: o > 1 ? 1 : o };
   });
-  // The name fades in with the fire (no flicker on text).
-  const labelProps = useAnimatedProps(() => {
+  // The firelit painting and the name fade in with the fire (no flicker on either).
+  const warmProps = useAnimatedProps(() => {
     const o = env.value;
     return { opacity: o > 1 ? 1 : o < 0 ? 0 : o };
   });
-  // The pile warms from a cool rim to an ember-lit rim as it catches.
-  const rimProps = useAnimatedProps(() => {
-    const o = env.value;
-    return { opacity: 1 - (o > 1 ? 1 : o) };
-  });
-  const warmRimProps = useAnimatedProps(() => {
-    const o = env.value;
+  // A second tongue on its own rhythm: the two trade places, so the fire changes SHAPE instead of
+  // only dimming like a candle.
+  const tongueProps = useAnimatedProps(() => {
+    let n = loopNoise(clock.value * 1.37 + 11.3, seed);
+    n = n < 0 ? 0 : n > 1 ? 1 : n;
+    const flick = motion.value === 1 ? 0.35 + 0.65 * n : 0.7;
+    const o = env.value * flick;
     return { opacity: o > 1 ? 1 : o };
   });
-  const fontSize = 9 + (s - 2.5) * 0.75;
-  const ly = y + 1.3 * s + fontSize + 2;
+  const tongue2Props = useAnimatedProps(() => {
+    let n = loopNoise(clock.value * 1.83 + 4.7, seed);
+    n = n < 0 ? 0 : n > 1 ? 1 : n;
+    const flick = motion.value === 1 ? 0.25 + 0.75 * n : 0.6;
+    const o = env.value * flick;
+    return { opacity: o > 1 ? 1 : o };
+  });
+  const { s, px, seat } = fireSeat(site, x, y, w, h);
+  const fh = s * (rally ? 6.4 : 4.8); // a giant fire: it towers over the roof
   return (
     <G>
-      <Path d={pilePath(x, y, s)} fill="#070C16" />
-      <AnimatedPath animatedProps={rimProps} d={pileRimPath(x, y, s)} stroke="#5E7397" strokeWidth={0.9} fill="none" strokeLinejoin="round" />
-      <AnimatedPath animatedProps={warmRimProps} d={pileRimPath(x, y, s)} stroke="#FFB45E" strokeWidth={1} fill="none" strokeLinejoin="round" />
-      <AnimatedG animatedProps={props}>
-        {/* contained glow (a distant point, never a blob over the tile band). A rally's fire is
-            built up: a second, much wider glow, a 1.5x flame, and a white core nearly the size of a
-            normal flame, so it reads well over twice as bright at a glance. */}
-        {rally ? <Circle cx={x} cy={y - s * 1.3} r={s * 4.4} fill="url(#bcnGlow)" /> : null}
-        <Circle cx={x} cy={y - s} r={s * (rally ? 2.6 : 1.5)} fill="url(#bcnGlow)" />
-        <Path d={flamePath(x, y, s * (rally ? 1.5 : 1))} fill="url(#bcnFlame)" />
-        <Path d={flamePath(x, y - s * 0.15, s * (rally ? 1.0 : 0.55))} fill="#FFF7D6" />
+      <SvgImage x={x} y={y} width={w} height={h} href={site.dark} preserveAspectRatio="none" />
+      <AnimatedG animatedProps={warmProps}>
+        <SvgImage x={x} y={y} width={w} height={h} href={site.lit} preserveAspectRatio="none" />
       </AnimatedG>
-      {label ? (
-        <AnimatedG animatedProps={labelProps}>
-          <SvgText x={x + 0.8} y={ly + 0.8} fontSize={fontSize} fontWeight="700" fill="#000" opacity={0.75} textAnchor="middle">
-            {label}
-          </SvgText>
-          <SvgText x={x} y={ly} fontSize={fontSize} fontWeight="700" fill="#FFE2B8" textAnchor="middle">
-            {label}
-          </SvgText>
-        </AnimatedG>
-      ) : null}
+      {fireEffect ? null : (
+        <>
+      <AnimatedG animatedProps={props}>
+        {/* contained glow (a distant fire, never a blob over the tile band) */}
+        <Circle cx={px} cy={seat - fh * 0.38} r={s * (rally ? 6 : 4.2)} fill="url(#bcnGlow)" />
+        <Path d={tallFlame(px, seat, 1.05 * s, fh, 0.4 * s)} fill="url(#bcnFlame)" />
+      </AnimatedG>
+      <AnimatedG animatedProps={tongueProps}>
+        <Path d={tallFlame(px - 0.3 * s, seat, 0.8 * s, fh * 0.84, -0.7 * s)} fill="url(#bcnFlame)" />
+      </AnimatedG>
+      <AnimatedG animatedProps={tongue2Props}>
+        <Path d={tallFlame(px + 0.4 * s, seat, 0.6 * s, fh * 0.66, 0.75 * s)} fill="url(#bcnFlame)" />
+      </AnimatedG>
+      <AnimatedG animatedProps={props}>
+        <Path d={tallFlame(px, seat, 0.55 * s, fh * 0.5, 0.1 * s)} fill="url(#bcnCore)" />
+      </AnimatedG>
+        </>
+      )}
     </G>
+  );
+}
+
+/** A person's name under their site; fades in with the fire (no flicker on text). */
+function SiteLabel({ env, x, ground, w, label }: { env: SharedValue<number>; x: number; ground: number; w: number; label: string }) {
+  const props = useAnimatedProps(() => {
+    const o = env.value;
+    return { opacity: o > 1 ? 1 : o < 0 ? 0 : o };
+  });
+  const fontSize = Math.max(8.5, Math.min(12, 6.5 + w * 0.055));
+  const ly = ground + fontSize + 3;
+  return (
+    <AnimatedG animatedProps={props}>
+      <SvgText x={x + 0.8} y={ly + 0.8} fontSize={fontSize} fontWeight="700" fill="#000" opacity={0.8} textAnchor="middle">
+        {label}
+      </SvgText>
+      <SvgText x={x} y={ly} fontSize={fontSize} fontWeight="700" fill="#FFE2B8" textAnchor="middle">
+        {label}
+      </SvgText>
+    </AnimatedG>
   );
 }
 
@@ -213,7 +265,7 @@ export default function BeaconsScene({ skin, active, focused = true, anchorX, an
   // Envelope per pile: 1 = burning, 0 = dark pile. EVERY pile burns while your beacon is lit: your
   // signal lights the whole range. People only LABEL piles, nearest first in answer order, so the
   // history of who answered reads front to back. Explicit hooks (never map over hooks, Rules of
-  // Hooks); this list MUST stay in sync with CHAIN.length (7).
+  // Hooks); this list must be at least CHAIN.length long (extras are unused).
   const env0 = useSharedValue(active ? 1 : 0);
   const env1 = useSharedValue(active ? 1 : 0);
   const env2 = useSharedValue(active ? 1 : 0);
@@ -236,14 +288,17 @@ export default function BeaconsScene({ skin, active, focused = true, anchorX, an
       return;
     }
     if (!wasActive) {
-      // Your lit edge: the relay. Each watcher sees the previous light and kindles theirs, down the
-      // range. Nothing replays on a first mount that's already lit (wasActive starts as active).
+      // Your lit edge: the relay, in order. Nothing replays on a first mount that's already lit (wasActive starts as active).
+      let at = 0;
       envs.forEach((e, i) => {
         cancelAnimation(e);
         if (reduce) { e.value = 1; return; }
+        // In order, nearest first: the first catches RELAY_FIRST_MS in, each one after it a random
+        // RELAY_MIN_MS..RELAY_MAX_MS after the one before.
+        at += i === 0 ? RELAY_FIRST_MS : RELAY_MIN_MS + Math.random() * (RELAY_MAX_MS - RELAY_MIN_MS);
         e.value = 0;
         e.value = withDelay(
-          RELAY_FIRST_MS + i * RELAY_STEP_MS,
+          at,
           withSequence(withTiming(BLOOM, { duration: 220 }), withTiming(1, { duration: 480 }))
         );
       });
@@ -286,55 +341,105 @@ export default function BeaconsScene({ skin, active, focused = true, anchorX, an
   const ax = measured && anchorX != null ? anchorX : W * 0.5;
   const rawTop = measured && anchorY != null ? anchorY - skin.origin * 180 + 180 - 12 : H * 0.74;
   const nearTop = Math.min(Math.max(rawTop, H * 0.62), H * 0.85);
-  const span = nearTop - H * 0.3;
-  const py = (dy: number) => (nearTop - dy * span).toFixed(1);
+  // The painting: BG_ZOOM screen-widths wide, placed so the foreground rock it paints for your pyre
+  // (BEACONS_LEDGE) lands under the structure. It always covers the full width; above it the sky
+  // carries on as flat colour, below it the ground falls away to dark.
+  const imgW = W * BG_ZOOM;
+  const imgH = imgW / BEACONS_BG_ASPECT;
+  const ix = Math.min(0, Math.max(W - imgW, ax - BEACONS_LEDGE.u * imgW));
+  const iy = nearTop - BEACONS_LEDGE.v * imgH;
 
-  // Nearest ridge: jagged foothills either side of a flat, anchor-centered ledge for the pyre.
-  const lEdge = ax - 72;
-  const rEdge = ax + 72;
-  const tail = W + 2 - rEdge;
-  const nearPath =
-    `M-2 ${py(0.05)} L${(lEdge * 0.25).toFixed(1)} ${py(0.1)} L${(lEdge * 0.55).toFixed(1)} ${py(0.03)}` +
-    ` L${(lEdge * 0.82).toFixed(1)} ${py(0.08)} L${lEdge.toFixed(1)} ${py(0.02)}` +
-    ` L${(lEdge + 24).toFixed(1)} ${py(0)} L${(rEdge - 24).toFixed(1)} ${py(0)} L${rEdge.toFixed(1)} ${py(0.02)}` +
-    ` L${(rEdge + tail * 0.3).toFixed(1)} ${py(0.09)} L${(rEdge + tail * 0.6).toFixed(1)} ${py(0.02)}` +
-    ` L${(rEdge + tail * 0.85).toFixed(1)} ${py(0.07)} L${(W + 2).toFixed(1)} ${py(0.03)}` +
-    ` L${(W + 2).toFixed(1)} ${(H + 2).toFixed(1)} L-2 ${(H + 2).toFixed(1)} Z`;
-
-  const hazeY = nearTop - span * 1.08;
-  const hazeH = span * 0.75;
+  // Every site's box on screen, far to near (nearer sites overlap farther ones).
+  const sites = CHAIN.map((_, k) => {
+    const i = CHAIN.length - 1 - k;
+    const c = CHAIN[i];
+    const w = c.w * imgW;
+    const h = w / c.aspect;
+    const cx = ix + c.u * imgW;
+    const ground = iy + c.v * imgH;
+    const x = cx - w / 2;
+    const y = ground - h * c.ground;
+    const rally = i < n && people[i].rally === true && !(i === CHAIN.length - 1 && people.length > CHAIN.length);
+    return { i, c, w, h, cx, ground, x, y, rally, ...fireSeat(c, x, y, w, h) };
+  });
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.base]}>
       <Svg pointerEvents="none" style={styles.fill} width={W} height={H}>
         <Defs>
-          <LinearGradient id="bcnSky" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0%" stopColor="#0D1626" />
-            <Stop offset="36%" stopColor="#22334F" />
-            <Stop offset="100%" stopColor="#22334F" />
-          </LinearGradient>
-          {/* atmospheric haze band over the far ridges, fading before the near ones */}
-          <LinearGradient id="bcnHaze" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0%" stopColor="#9FB3D1" stopOpacity={0} />
-            <Stop offset="40%" stopColor="#9FB3D1" stopOpacity={0.09} />
-            <Stop offset="100%" stopColor="#9FB3D1" stopOpacity={0} />
-          </LinearGradient>
           <RadialGradient id="bcnGlow" cx="50%" cy="50%" r="50%">
             <Stop offset="0%" stopColor={skin.outer[0]} stopOpacity={0.9} />
             <Stop offset="60%" stopColor={skin.outer[1]} stopOpacity={0.25} />
             <Stop offset="100%" stopColor={skin.outer[1]} stopOpacity={0} />
           </RadialGradient>
+          {/* fire: bright at the wood, deepening to red-orange and thinning out at the tips */}
           <LinearGradient id="bcnFlame" x1="0" y1="1" x2="0" y2="0">
-            <Stop offset="0%" stopColor={skin.mid[0]} />
-            <Stop offset="45%" stopColor={skin.mid[1]} />
-            <Stop offset="100%" stopColor={skin.outer[1]} />
+            <Stop offset="0%" stopColor={skin.mid[0]} stopOpacity={0.95} />
+            <Stop offset="35%" stopColor={skin.outer[1]} stopOpacity={0.92} />
+            <Stop offset="78%" stopColor="#F2641E" stopOpacity={0.8} />
+            <Stop offset="100%" stopColor="#D8401A" stopOpacity={0.15} />
+          </LinearGradient>
+          <LinearGradient id="bcnCore" x1="0" y1="1" x2="0" y2="0">
+            <Stop offset="0%" stopColor="#FFF8DC" stopOpacity={1} />
+            <Stop offset="60%" stopColor="#FFE9A8" stopOpacity={0.9} />
+            <Stop offset="100%" stopColor="#FFD27A" stopOpacity={0} />
           </LinearGradient>
           <RadialGradient id="bcnLedge" cx="50%" cy="50%" r="50%">
             <Stop offset="0%" stopColor={skin.glow.center} stopOpacity={0.38} />
             <Stop offset="55%" stopColor={skin.glow.edge} stopOpacity={0.12} />
             <Stop offset="100%" stopColor={skin.glow.edge} stopOpacity={0} />
           </RadialGradient>
-          {/* Legibility scrim: darken top (status/tiles) and bottom (buttons), middle stays clear. */}
+        </Defs>
+
+        <Rect x={0} y={0} width={W} height={H} fill={BEACONS_FLOOR} />
+        {iy > 0 ? <Rect x={0} y={0} width={W} height={iy + 2} fill={BEACONS_SKY} /> : null}
+        <SvgImage x={ix} y={iy} width={imgW} height={imgH} href={BEACONS_BG} preserveAspectRatio="none" />
+
+        <AnimatedG animatedProps={ledgeProps}>
+          <Ellipse cx={ax} cy={nearTop + 4} rx={112} ry={42} fill="url(#bcnLedge)" />
+        </AnimatedG>
+
+        {/* the chain, far to near so nearer sites overlap farther ones: one site per real person,
+            nearest first (see the header) */}
+        {sites.map((p) => (
+          <ChainFire
+            key={`bcnF${p.i}`}
+            env={envs[p.i]}
+            clock={clock}
+            motion={motion}
+            seed={SEEDS[p.i]}
+            site={p.c}
+            x={p.x}
+            y={p.y}
+            w={p.w}
+            h={p.h}
+            rally={p.rally}
+          />
+        ))}
+      </Svg>
+
+      {/* the fires: the same shader as your own pyre, one small rect per site */}
+      {fireEffect ? (
+        <Canvas style={StyleSheet.flatten([styles.fill, { width: W, height: H }])}>
+          {sites.map((p) => (
+            <ChainFlame
+              key={`bcnS${p.i}`}
+              env={envs[p.i]}
+              clock={clock}
+              skin={skin}
+              px={p.px}
+              seat={p.seat}
+              fh={p.s * (p.rally ? 5.2 : 3.9)}
+              offset={p.i * 7.3}
+              rally={p.rally}
+            />
+          ))}
+        </Canvas>
+      ) : null}
+
+      {/* names (over the fires), then the legibility scrim */}
+      <Svg pointerEvents="none" style={styles.fill} width={W} height={H}>
+        <Defs>
           <LinearGradient id="bcnScrim" x1="0" y1="0" x2="0" y2="1">
             <Stop offset="0%" stopColor="#000" stopOpacity={0.5} />
             <Stop offset="22%" stopColor="#000" stopOpacity={0} />
@@ -342,49 +447,9 @@ export default function BeaconsScene({ skin, active, focused = true, anchorX, an
             <Stop offset="100%" stopColor="#000" stopOpacity={0.58} />
           </LinearGradient>
         </Defs>
-
-        <Rect x={0} y={0} width={W} height={H} fill="url(#bcnSky)" />
-        {STARS.map((st, i) => (
-          <Circle key={`bcnSt${i}`} cx={W * st.x} cy={H * st.y} r={st.r} fill="#D8E4F6" opacity={st.o} />
-        ))}
-
-        {RIDGES.map((r, i) => (
-          <Path key={`bcnR${i}`} d={ridgePath(r.pts, W, H, nearTop - r.lift * span, span)} fill={r.color} />
-        ))}
-        <Rect x={0} y={hazeY} width={W} height={hazeH} fill="url(#bcnHaze)" />
-        {SNOW.map((sn, i) => (
-          <Path
-            key={`bcnSn${i}`}
-            d={snowPath(W * sn.x, nearTop - sn.lift * span + 1)}
-            stroke="#9FB3D1"
-            strokeWidth={1.2}
-            strokeLinecap="round"
-            fill="none"
-            opacity={0.45}
-          />
-        ))}
-        <Path d={nearPath} fill="#0A1220" />
-
-        <AnimatedG animatedProps={ledgeProps}>
-          <Ellipse cx={ax} cy={nearTop + 4} rx={112} ry={42} fill="url(#bcnLedge)" />
-        </AnimatedG>
-
-        {/* the chain: one pile per real person, nearest first (see the header) */}
-        {CHAIN.map((c, i) => (
-          <ChainFire
-            key={`bcnF${i}`}
-            env={envs[i]}
-            clock={clock}
-            motion={motion}
-            seed={c.seed}
-            x={W * c.x}
-            y={nearTop - c.lift * span - 2 - 1.3 * c.s * GLYPH}
-            s={c.s * GLYPH}
-            label={labels[i]}
-            rally={i < n && people[i].rally === true && !(i === CHAIN.length - 1 && people.length > CHAIN.length)}
-          />
-        ))}
-
+        {sites.map((p) =>
+          labels[p.i] ? <SiteLabel key={`bcnL${p.i}`} env={envs[p.i]} x={p.cx} ground={p.ground} w={p.w} label={labels[p.i]} /> : null
+        )}
         <Rect x={0} y={0} width={W} height={H} fill="url(#bcnScrim)" />
       </Svg>
     </View>
